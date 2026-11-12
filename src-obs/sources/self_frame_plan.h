@@ -84,8 +84,9 @@ inline SelfFrameLookup lookup_self_frame(const std::vector<SelfSourceCandidate> 
 enum class SelfShare { Unknown, Off, On };
 
 // 状態が動くきっかけ。Poll は周期の処理 (自分の共有の変化を見る)。DockOn と DockOff は、ドックで自分の行のチェックを
-// 付けた・外した。
-enum class SelfFrameEvent { Poll, DockOn, DockOff };
+// 付けた・外した。Refused は、付けたチェックを Pipeline が断った (自分の枠を使い始めることを Pipeline に渡したときに、
+// Discord の人がもう画面共有の枠を 4 つとも埋めていた。pipeline/stream_router.h の accepted_self_frame_in_use)。
+enum class SelfFrameEvent { Poll, DockOn, DockOff, Refused };
 
 // 自分の枠を出すかの状態。on は出す (ドックのチェックの状態そのもの)。excluded は、ドックで外した (ほかの人の
 // StreamRouter の excluded_ と同じで、自分の共有をやめて始め直すまで自動では付けない)。prev は直前に分かっていた
@@ -124,9 +125,11 @@ struct SelfFrameResult {
 //   共有の間ずっと    今が On。選び方が自動で、excluded が偽なら、on を真にする (枠が空いたら載る)。
 //   共有をやめた間    今が Off。excluded を偽にする (外した人は、やめて始め直すまで付けない)。on は変えない。
 //   分からない        状態も prev も変えない。
+//   Pipeline が断った on を偽にする。excluded は変えない (付けるはずの枠が埋まっていて見送ったときと同じ。自動なら、
+//                     枠が空けば付く)。
 // 付ける向きは、Discord の人が枠を埋めているときは押しのけず、見送る (deferred)。映像を OBS から選んでいない間
 // (selected が偽) は、on を変えない (prev と excluded は進める)。共有の始まりと終わりは Poll のときだけ見る。ドックの
-// 出来事は prev を変えない (同じ瞬間の始まりを取りこぼさない)。
+// 出来事と Pipeline が断ったことは prev を変えない (同じ瞬間の始まりを取りこぼさない)。
 inline SelfFrameResult plan_self_frame(const SelfFrameInput &in)
 {
 	SelfFrameResult out;
@@ -139,6 +142,9 @@ inline SelfFrameResult plan_self_frame(const SelfFrameInput &in)
 	case SelfFrameEvent::DockOff:
 		out.state.on = false;
 		out.state.excluded = true;
+		break;
+	case SelfFrameEvent::Refused:
+		out.state.on = false;
 		break;
 	case SelfFrameEvent::Poll:
 		if (in.share == SelfShare::Unknown)

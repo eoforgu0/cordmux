@@ -47,10 +47,12 @@ constexpr bool self_frame_in_use(bool video_selected, bool check_on)
 
 // 画面共有の枠に載せられる人数。合成のソースはキャンバスを 4 等分して描くので、自分の枠を使っている間は、自分の枠が
 // 1 つを使い、画面共有の枠に載せられるのは 1 人少ない。手動で載せる操作 (ledger/actions.cpp の SetSlot) も、[枠に載せる人の
-// 選び方] の「自動」と [自動で枠に載せる] で載せる経路 (pipeline/stream_router.h) も、この値を超えて新しい人を載せない。
+// 選び方] の「自動」と [自動で枠に載せる] で載せる経路 (pipeline/stream_router.h) も、この値を超えて新しい人を載せない
+// (手動は、ドックが押せなくし、Pipeline::assign_slot も割り当て表と同じロックの中で断る)。
 // 載せられない人は、手動で載せられない人と同じく、名前ラベルが画面共有していない参加者の並びに出る。すでに載っている人は、
-// 自分の枠を後から使い始めても外さない (Discord の人で 4 つ埋まっている間は、自分の枠のチェックを付けられない。
-// ledger/actions.cpp の SetSelfFrame)。
+// 自分の枠を後から使い始めても外さない (Discord の人で 4 つ埋まっている間は、自分の枠のチェックを付けられず、自分の枠を
+// 使い始めることを Pipeline::set_assign_policy も断る。ledger/actions.cpp の SetSelfFrame と、pipeline/stream_router.h の
+// accepted_self_frame_in_use)。
 constexpr int screen_slot_capacity(bool self_frame_in_use)
 {
 	return self_frame_in_use ? kScreenSlotCount - 1 : kScreenSlotCount;

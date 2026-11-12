@@ -76,11 +76,13 @@ struct RouteChange {
 //
 // self_frame_in_use (自分の枠を使っている間。config::self_frame_in_use) は、画面の枠に新しく載せられる人数を 1 つ減らす
 // (config::screen_slot_capacity。4 つが 3 つになる)。自動でも「自動で載せる」でも、admit_sharers でも同じである。合成のソースは
-// キャンバスを 4 等分して描くので、自分の枠と Discord の 4 人で 5 つになると、1 つを描けない。手動で載せる操作は、ドックが同じ
-// 上限で押せなくする (ledger/observation.h の self_frame_limit_reached) ので、2 つの経路で人数が食い違わない。上限に達して
+// キャンバスを 4 等分して描くので、自分の枠と Discord の 4 人で 5 つになると、1 つを描けない。手動で載せる操作
+// (Pipeline::assign_slot) も同じ上限で断る (ドックも同じ上限で押せなくする。ledger/observation.h の self_frame_limit_reached)
+// ので、経路によって人数が食い違わない。上限に達して
 // 載せられない人は、手動で載せていない人と同じく経路を持たない (全画面で映す人なら focus_only の経路を作る)。すでに枠を
-// 持つ人は、上限を超えていても外さない (Discord の人で 4 つ埋まっている間は、自分の枠のチェックを付けられないので、
-// 普通は超えない)。自分の枠を使うのをやめて上限が上がったときは、呼び出し元 (Pipeline::set_assign_policy) が直前の
+// 持つ人は、上限を超えていても外さない (Discord の人で 4 つ埋まっている間は、自分の枠を使い始めることを
+// Pipeline::set_assign_policy が断るので、超えない。accepted_self_frame_in_use)。自分の枠を使うのをやめて上限が上がったときは、
+// 呼び出し元 (Pipeline::set_assign_policy) が直前の
 // configure を適用し直すので、待っていた人が空いた枠に載る。「自動で載せる」の人は、ほかの理由で載らなかったときと同じく、
 // 画面共有を始め直すまで載らない (始めたときにだけ載せる規則のため)。
 //
@@ -142,6 +144,31 @@ struct AssignPolicy {
 inline bool screen_slot_room(const config::AllocationTable &table, const AssignPolicy &policy)
 {
 	return table.assigned_count(config::SlotKind::Screen) < config::screen_slot_capacity(policy.self_frame_in_use);
+}
+
+// 自分の枠を使っていることにしてよいか (AssignPolicy::self_frame_in_use に入れる値)。使い始める (in_use_now が偽で、requested が
+// 真) ときは、Discord の人が画面の枠をもう 4 つとも埋めていれば断り、偽を返す。自分の枠を足すと 5 つになり、1 つを描けない
+// ためである。すでに枠に載っている人は外さない (押しのけない。ドックの自分の枠のチェックと同じ規則。sources/self_frame_plan.h)。
+// 数えるとき、自分の枠の人 (self_owner。メインアカウント、メインアカウントが空なら Vesktop のアカウント。ドックの
+// self_frame_user_id と同じ) の枠は数えない (自分の枠に映す映像を OBS から選んでいる間、その人の画面の枠は apply_configure が
+// 空ける)。やめる向きと、使い続ける向きは断らない。
+//
+// ドックが自分の枠を付ける判断は、最大 1 周期前のスナップショットの人数で行うので、その後に自動で載せる経路が 4 人目を載せて
+// いることがある。この判断を割り当て表と同じロックの中で行い (Pipeline::set_assign_policy)、断ったらドックがチェックを外す。
+inline bool accepted_self_frame_in_use(const config::AllocationTable &table, bool in_use_now, bool requested,
+				       const std::string &self_owner)
+{
+	if (!requested)
+		return false;
+	if (in_use_now)
+		return true;
+	int discord_slotted = 0;
+	for (int slot = 1; slot <= table.slot_extent(config::SlotKind::Screen); ++slot) {
+		const config::SlotAssignment *a = table.assignment(config::SlotKind::Screen, slot);
+		if (a != nullptr && a->owner_user_id != self_owner)
+			++discord_slotted;
+	}
+	return discord_slotted <= config::screen_slot_capacity(true);
 }
 
 // 同じ stream_id が、画面のまま別の人か別の枠に替わったか。true なら pipeline.cpp はデコードのスレッド一式

@@ -3,15 +3,18 @@
 // pipeline/stream_router.h の単体テスト。stream_id から枠への経路の作り方、
 // 音声と映像を出してよいかの判定を確認する。誰を枠に入れるかの決め方 (手動、自動、「自動で載せる」) と、
 // 使う声の置き換えのテストはファイルの後半に、OBS を起動し直した後 (割り当て表は空から始まる) のテストは
-// 後ろのほうにある。自分の枠を使っている間の人数の上限と、描く物が 4 つを超えないことのテストは末尾にある。
+// 後ろのほうにある。自分の枠を使っている間の人数の上限と、描く物が 4 つを超えないことのテストと、ドックと Pipeline のスレッドの
+// 間の競合のテストは末尾にある。
 
 #include "doctest.h"
 
 #include "pipeline/pipeline.h"
 #include "pipeline/stream_router.h"
 #include "sources/composite_input.h"
+#include "sources/self_frame_plan.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <set>
@@ -1888,9 +1891,11 @@ void check_drawn_within_four(const AllocationTable &table, bool self_shown)
 			CHECK(layout.dropped.empty());
 			const std::vector<cordmux::sources::CompositeFocusTile> focus = cordmux::sources::composite_focus_tiles(input);
 			CHECK(focus.size() == expected);
+			// 自分の枠のタイルは、自分の枠の名前で見分ける (メインアカウントを画面共有の枠に載せると、その枠も "main" になる)。
 			const bool self_focusable =
-				std::any_of(focus.begin(), focus.end(),
-					    [](const cordmux::sources::CompositeFocusTile &tile) { return tile.user_id == "main"; });
+				std::any_of(focus.begin(), focus.end(), [](const cordmux::sources::CompositeFocusTile &tile) {
+					return tile.user_id == "main" && tile.name == "zzz";
+				});
 			CHECK(self_focusable == self_shown);
 		}
 	}
@@ -2130,5 +2135,315 @@ TEST_CASE("自分の枠を使っている間は、どの経路を通っても、
 	off.self_frame_in_use = false;
 	router.apply_configure(with_fg, table, off);
 	CHECK(table.assigned_count(SlotKind::Screen) == 4);
+	check_drawn_within_four(table, false);
+
+	// (9) ドックが (8) の前のスナップショット (Discord の人が 3 人) で自分の枠をまた付けると判断し、Pipeline に渡したときには
+	// (8) で 4 人目が載っていた。Pipeline は使い始めることを断る (ドックはチェックを外す)。
+	using cordmux::pipeline::accepted_self_frame_in_use;
+	CHECK_FALSE(accepted_self_frame_in_use(table, false, true, "main"));
+	check_drawn_within_four(table, false);
+
+	// (10) 1 人 (c) が画面共有をやめて枠が空き、次の周期で付けると、割り込みがなければ受け付ける。その後は自動で待っている人
+	// (g) が載らない。
+	table.release(SlotKind::Screen, table.slot_of_owner(SlotKind::Screen, "c"));
+	REQUIRE(accepted_self_frame_in_use(table, false, true, "main"));
+	const ConfigureMessage without_c = screens_of({"a", "d", "e", "f", "g"});
+	router.apply_configure(without_c, table, auto_policy);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "g") == 0);
+	check_drawn_within_four(table, true);
+
+	// (11) 手動に替えて 1 人 (f) を外した後、ドックが 2 人のスナップショットで g を載せると判断した。Pipeline に渡す前に、
+	// [自動で枠に載せる] の h が画面共有を始めて 3 人目に載った。手動で載せる操作は断る (Insufficient)。
+	using cordmux::pipeline::assign_slot_in;
+	using cordmux::pipeline::release_slot_in;
+	const AssignPolicy manual_h = in_use(manual_with({"h"}));
+	router.apply_configure(without_c, table, manual_h);
+	REQUIRE(release_slot_in(table, router, SlotKind::Screen, "f").outcome ==
+		cordmux::pipeline::Pipeline::SlotChange::Outcome::Released);
+	REQUIRE(screen_slot_room(table, manual_h)); // ドックの判断 (2 人なので押せる)
+	const ConfigureMessage with_h = screens_of({"a", "d", "e", "f", "g", "h"});
+	router.apply_configure(with_h, table, manual_h);
+	REQUIRE(table.slot_of_owner(SlotKind::Screen, "h") != 0);
+	CHECK(assign_slot_in(table, router, manual_h, SlotKind::Screen, "g").outcome ==
+	      cordmux::pipeline::Pipeline::SlotChange::Outcome::Insufficient);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "g") == 0);
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	check_drawn_within_four(table, true);
+
+	// (12) 自分の枠の映像を「Discordの画面共有」に替え、メインアカウントを 4 人目に載せる (1 回の呼び出し)。自分の枠は描かない。
+	using cordmux::pipeline::move_self_frame_in;
+	AssignPolicy moving = manual_h;
+	CHECK(move_self_frame_in(table, router, moving, "main", "main", false).change.outcome ==
+	      cordmux::pipeline::Pipeline::SlotChange::Outcome::Assigned);
+	CHECK(table.assigned_count(SlotKind::Screen) == 4);
+	check_drawn_within_four(table, false);
+
+	// (13) OBS のソースに戻し、メインアカウントの枠を自分の枠に替える (1 回の呼び出し)。
+	CHECK(move_self_frame_in(table, router, moving, "main", "main", true).self_frame_in_use);
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	check_drawn_within_four(table, true);
+}
+
+// ---------------------------------------------------------------------------
+// ドックと Pipeline のスレッドの間の競合。ドックは、自分の枠を付けるか、4 人目を載せるかを、スナップショット (最大 1 周期前) の
+// 人数で決める。Pipeline に渡す前に、Pipeline のスレッド (configure と facts) が自動で人を載せていることがある。上限の判断は、
+// 割り当て表と同じロック (Pipeline の Impl::mu) の中で動く関数 (stream_router.h の accepted_self_frame_in_use、pipeline.h の
+// assign_slot_in と move_self_frame_in) が持つので、ここでは決まった順で割り込ませて確かめる。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using cordmux::pipeline::accepted_self_frame_in_use;
+using cordmux::pipeline::assign_slot_in;
+using cordmux::pipeline::move_self_frame_in;
+using cordmux::pipeline::release_slot_in;
+using Outcome = cordmux::pipeline::Pipeline::SlotChange::Outcome;
+
+// ドックが見るスナップショットの、Discord の人で埋まっている画面の枠の数 (自分の枠の人 "main" を数えない。dock/dock_poll.cpp の
+// discord_slotted_of と同じ数え方)。
+int discord_slotted_in(const AllocationTable &table)
+{
+	int n = 0;
+	for (int slot = 1; slot <= cordmux::config::kScreenSlotCount; ++slot) {
+		const cordmux::config::SlotAssignment *a = table.assignment(SlotKind::Screen, slot);
+		if (a != nullptr && a->owner_user_id != "main")
+			++n;
+	}
+	return n;
+}
+
+// ドックの自分の枠の状態を、スナップショットの人数で 1 つ進める (dock/dock_poll.cpp の step_self_frame と set_self_frame)。
+cordmux::sources::SelfFrameResult dock_step(const cordmux::sources::SelfFrameState &state,
+					    cordmux::sources::SelfFrameEvent event, int discord_slotted)
+{
+	cordmux::sources::SelfFrameInput in;
+	in.state = state;
+	in.event = event;
+	in.share = cordmux::sources::SelfShare::On;
+	in.selected = true;
+	in.bound = true;
+	in.automatic = true;
+	in.discord_slotted = discord_slotted;
+	return cordmux::sources::plan_self_frame(in);
+}
+
+} // namespace
+
+TEST_CASE("自分の枠を使い始めてよいかは、自分の枠の人の枠を数えずに、Discord の人が 4 人いるかで決める")
+{
+	AllocationTable four_discord;
+	for (const char *id : {"a", "b", "c", "d"})
+		REQUIRE(four_discord.try_assign(SlotKind::Screen, id).outcome == cordmux::config::AssignOutcome::Assigned);
+	CHECK_FALSE(accepted_self_frame_in_use(four_discord, false, true, "main"));
+	// 使っている間に渡し直しても断らない (押しのけない。普通は 4 人にならない)。やめる向きは断らない。
+	CHECK(accepted_self_frame_in_use(four_discord, true, true, "main"));
+	CHECK_FALSE(accepted_self_frame_in_use(four_discord, false, false, "main"));
+	CHECK_FALSE(accepted_self_frame_in_use(four_discord, true, false, "main"));
+
+	// メインアカウントの画面共有の枠は数えない (自分の枠に映す映像を OBS から選ぶと、apply_configure が空ける)。
+	AllocationTable with_main;
+	for (const char *id : {"a", "main", "b", "c"})
+		REQUIRE(with_main.try_assign(SlotKind::Screen, id).outcome == cordmux::config::AssignOutcome::Assigned);
+	CHECK(accepted_self_frame_in_use(with_main, false, true, "main"));
+	// 自分の枠の人がほかの人 (メインアカウントだけの構成の Vesktop のアカウント) なら、メインアカウントの枠も数える。
+	CHECK_FALSE(accepted_self_frame_in_use(with_main, false, true, "vesktop"));
+	AllocationTable with_vesktop;
+	for (const char *id : {"a", "vesktop", "b", "c"})
+		REQUIRE(with_vesktop.try_assign(SlotKind::Screen, id).outcome == cordmux::config::AssignOutcome::Assigned);
+	CHECK(accepted_self_frame_in_use(with_vesktop, false, true, "vesktop"));
+	// 空いていれば受け付ける。
+	AllocationTable three;
+	for (const char *id : {"a", "b", "c"})
+		REQUIRE(three.try_assign(SlotKind::Screen, id).outcome == cordmux::config::AssignOutcome::Assigned);
+	CHECK(accepted_self_frame_in_use(three, false, true, "main"));
+}
+
+TEST_CASE("競合: ドックが自分の枠を付けると判断した後に、自動で 4 人目が載っていれば、Pipeline が断りチェックが外れる")
+{
+	using cordmux::sources::SelfFrameEvent;
+	// 周期の処理 (自動で、共有の間に枠が空いた) と、ドックのチェックの操作 (SetSelfFrame) の 2 つの判断。
+	for (const SelfFrameEvent event : {SelfFrameEvent::Poll, SelfFrameEvent::DockOn}) {
+		CAPTURE(static_cast<int>(event));
+		AllocationTable table;
+		StreamRouter router;
+		AssignPolicy policy = in_use(kAuto);
+		policy.self_frame_in_use = false; // 映像は OBS から選んでいて、チェックはまだ付いていない
+		const ConfigureMessage three = screens_of({"a", "b", "c"});
+		router.apply_configure(three, table, policy);
+		REQUIRE(table.assigned_count(SlotKind::Screen) == 3);
+
+		// ドックが、Discord の人が 3 人のスナップショットで、自分の枠を付けると判断した。
+		cordmux::sources::SelfFrameState state;
+		state.prev = cordmux::sources::SelfShare::On;
+		const cordmux::sources::SelfFrameResult decided = dock_step(state, event, discord_slotted_in(table));
+		REQUIRE(decided.state.on);
+
+		// Pipeline に渡す前に、Pipeline のスレッドが configure を適用し、自動で d を 4 人目に載せた。
+		const ConfigureMessage four = screens_of({"a", "b", "c", "d"});
+		router.apply_configure(four, table, policy);
+		REQUIRE(table.assigned_count(SlotKind::Screen) == 4);
+
+		// ドックが自分の枠を使い始めることを渡す。Pipeline は割り当て表と同じロックの中で断る。
+		policy.self_frame_in_use = accepted_self_frame_in_use(table, policy.self_frame_in_use, true, "main");
+		CHECK_FALSE(policy.self_frame_in_use);
+		// ドックはチェックを外す。excluded にはしない。
+		const cordmux::sources::SelfFrameResult refused = dock_step(decided.state, SelfFrameEvent::Refused, 4);
+		CHECK_FALSE(refused.state.on);
+		CHECK_FALSE(refused.shown);
+		CHECK_FALSE(refused.state.excluded);
+		check_drawn_within_four(table, refused.shown);
+
+		// 次の周期は 4 人のスナップショットで見送る。d が画面共有をやめて枠が空くと、自動では付き、今度は受け付ける。
+		const cordmux::sources::SelfFrameResult deferred =
+			dock_step(refused.state, SelfFrameEvent::Poll, discord_slotted_in(table));
+		CHECK(deferred.deferred);
+		CHECK_FALSE(deferred.state.on);
+		table.release(SlotKind::Screen, table.slot_of_owner(SlotKind::Screen, "d"));
+		const cordmux::sources::SelfFrameResult again =
+			dock_step(deferred.state, SelfFrameEvent::Poll, discord_slotted_in(table));
+		REQUIRE(again.state.on);
+		policy.self_frame_in_use = accepted_self_frame_in_use(table, policy.self_frame_in_use, true, "main");
+		CHECK(policy.self_frame_in_use);
+		// d が画面共有を始め直しても、自分の枠の分の枠には載らない。
+		router.apply_configure(four, table, policy);
+		CHECK(table.slot_of_owner(SlotKind::Screen, "d") == 0);
+		check_drawn_within_four(table, again.shown);
+	}
+}
+
+TEST_CASE("競合: 手動で 4 人目を載せると判断した後に、[自動で枠に載せる] の人が 3 人目に載っていれば、Pipeline が断る")
+{
+	AllocationTable table;
+	StreamRouter router;
+	const AssignPolicy policy = in_use(manual_with({"c"}));
+	for (const char *id : {"a", "b"})
+		REQUIRE(assign_slot_in(table, router, policy, SlotKind::Screen, id).outcome == Outcome::Assigned);
+	router.apply_configure(screens_of({"a", "b", "d"}), table, policy);
+
+	// ドックが、2 人のスナップショットで d を載せられると判断した (ledger の self_frame_limit_reached と同じ上限)。
+	REQUIRE(screen_slot_room(table, policy));
+	// Pipeline に渡す前に、[自動で枠に載せる] の c が画面共有を始め、3 人目に載った。
+	const ConfigureMessage with_c = screens_of({"a", "b", "d", "c"});
+	router.apply_configure(with_c, table, policy);
+	REQUIRE(table.slot_of_owner(SlotKind::Screen, "c") != 0);
+
+	// 手動で載せる操作は、割り当て表と同じロックの中で上限を見て断る (ドックの扱いは、空いている枠がないときと同じ)。
+	const cordmux::pipeline::Pipeline::SlotChange refused = assign_slot_in(table, router, policy, SlotKind::Screen, "d");
+	CHECK(refused.outcome == Outcome::Insufficient);
+	CHECK(refused.slot == 0);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "d") == 0);
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	check_drawn_within_four(table, true);
+
+	// もう載っている人は上限に関係なく AlreadyOwned。自分の枠を使っていなければ 4 人目を載せられる。
+	CHECK(assign_slot_in(table, router, policy, SlotKind::Screen, "a").outcome == Outcome::AlreadyOwned);
+	AssignPolicy off = policy;
+	off.self_frame_in_use = false;
+	const cordmux::pipeline::Pipeline::SlotChange assigned = assign_slot_in(table, router, off, SlotKind::Screen, "d");
+	CHECK(assigned.outcome == Outcome::Assigned);
+	CHECK(assigned.retargeted == 0); // d の経路はまだない (Pipeline::assign_slot は直前の configure を適用し直す)
+	router.apply_configure(with_c, table, off);
+	REQUIRE(router.route(3).has_value());
+	CHECK(router.route(3)->slot == assigned.slot);
+}
+
+TEST_CASE("競合: 自分の枠の映像を OBS のソース -> Discordの画面共有 -> OBS のソースと替えても、自動で待っている人がいても 4 つを超えない")
+{
+	// メインアカウント (main) は画面共有していて、自分の枠に映す映像は OBS のソース。Discord の a、b、c が載り、e が自動で
+	// 待っている。
+	AllocationTable table;
+	StreamRouter router;
+	AssignPolicy policy = in_use(kAuto);
+	const ConfigureMessage msg = screens_of({"a", "b", "c", "main", "e"});
+	router.apply_configure(msg, table, policy);
+	REQUIRE(table.assigned_count(SlotKind::Screen) == 3);
+	REQUIRE(table.slot_of_owner(SlotKind::Screen, "e") == 0);
+	check_drawn_within_four(table, true);
+	// 自分の枠の載せた順の印 (ドックの self_order_mark_)。a の後、b の前に並んでいたことにする。
+	const std::int64_t mark = table.assignment(SlotKind::Screen, table.slot_of_owner(SlotKind::Screen, "a"))->added_order;
+
+	// ---- OBS のソース -> Discordの画面共有 ----
+	{
+		// 分けて渡す 2 つの順は、どちらもメインアカウントを載せ直せない。
+		// (1) 自分の枠を使っている間に載せる: 上限 (3 人) で断られる。
+		AllocationTable t1 = table;
+		StreamRouter r1 = router;
+		CHECK(assign_slot_in(t1, r1, policy, SlotKind::Screen, "main").outcome == Outcome::Insufficient);
+		// (2) 先に使うのをやめる: その間に Pipeline のスレッドが configure を適用すると、e が 4 つ目の枠に載り、メインアカウントは
+		// 載らない。
+		AllocationTable t2 = table;
+		StreamRouter r2 = router;
+		AssignPolicy p2 = policy;
+		p2.self_frame_in_use = false;
+		r2.apply_configure(msg, t2, p2);
+		CHECK(t2.slot_of_owner(SlotKind::Screen, "e") != 0);
+		CHECK(assign_slot_in(t2, r2, p2, SlotKind::Screen, "main").outcome == Outcome::Insufficient);
+	}
+	// 1 回の呼び出し (Pipeline::move_self_frame) なら、自分の枠の分の枠にメインアカウントが載る。
+	const cordmux::pipeline::Pipeline::SelfFrameMove to_slot = move_self_frame_in(table, router, policy, "main", "main", false, mark);
+	CHECK(to_slot.change.outcome == Outcome::Assigned);
+	CHECK_FALSE(to_slot.self_frame_in_use);
+	CHECK_FALSE(policy.self_frame_in_use);
+	CHECK_FALSE(policy.self_frame_selected);
+	// 載せた順は、自分の枠の位置 (a の後) を引き継ぐ。
+	const int main_slot = table.slot_of_owner(SlotKind::Screen, "main");
+	REQUIRE(main_slot != 0);
+	CHECK(table.assignment(SlotKind::Screen, main_slot)->added_order == mark + 1);
+	// 呼び出しの後に Pipeline のスレッドが configure を適用しても、e は載らず、メインアカウントの画面に経路ができる。
+	router.apply_configure(msg, table, policy);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "e") == 0);
+	REQUIRE(router.route(4).has_value());
+	CHECK(router.route(4)->slot == main_slot);
+	check_drawn_within_four(table, false);
+
+	// ---- Discordの画面共有 -> OBS のソース ----
+	{
+		// 分けて渡すと、枠を空けた後に Pipeline のスレッドが configure を適用し、e が空いた枠に載って、自分の枠を使い始める
+		// ことが断られる (メインアカウントが配信から消える)。
+		AllocationTable t3 = table;
+		StreamRouter r3 = router;
+		REQUIRE(release_slot_in(t3, r3, SlotKind::Screen, "main").outcome == Outcome::Released);
+		r3.apply_configure(msg, t3, policy);
+		CHECK(t3.slot_of_owner(SlotKind::Screen, "e") != 0);
+		CHECK_FALSE(accepted_self_frame_in_use(t3, false, true, "main"));
+	}
+	// 1 回の呼び出しなら、メインアカウントの枠を空けて、自分の枠を使い始める。
+	const cordmux::pipeline::Pipeline::SelfFrameMove to_self = move_self_frame_in(table, router, policy, "main", "main", true);
+	CHECK(to_self.change.outcome == Outcome::Released);
+	CHECK(to_self.change.slot == main_slot);
+	CHECK(to_self.self_frame_in_use);
+	CHECK(policy.self_frame_in_use);
+	CHECK(policy.self_frame_selected);
+	CHECK(router.is_excluded("main")); // 外した人として覚える (release_slot と同じ)
+	// 呼び出しの後に configure を適用しても、e は自分の枠の分の枠に載らず、メインアカウントの画面の経路はなくなる。
+	router.apply_configure(msg, table, policy);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "e") == 0);
+	CHECK_FALSE(router.route(4).has_value());
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	check_drawn_within_four(table, true);
+
+	// もう 1 度 Discordの画面共有に替えても、同じく載せ直せる。
+	CHECK(move_self_frame_in(table, router, policy, "main", "main", false).change.outcome == Outcome::Assigned);
+	router.apply_configure(msg, table, policy);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "e") == 0);
+	check_drawn_within_four(table, false);
+}
+
+TEST_CASE("自分の枠に替えるとき、メインアカウントの枠がもう空いていて Discord の人が 4 人なら、使い始めることを断る")
+{
+	// ドックのスナップショットではメインアカウントが載っていたが、渡す前にメインアカウントが画面共有をやめて枠が空き
+	// (pipeline/slot_release.h)、自動で待っていた e が載っていた。
+	AllocationTable table;
+	StreamRouter router;
+	AssignPolicy policy = in_use(kAuto);
+	policy.self_frame_selected = false;
+	policy.self_frame_in_use = false;
+	for (const char *id : {"a", "b", "c", "e"})
+		REQUIRE(table.try_assign(SlotKind::Screen, id).outcome == cordmux::config::AssignOutcome::Assigned);
+	const cordmux::pipeline::Pipeline::SelfFrameMove moved = move_self_frame_in(table, router, policy, "main", "main", true);
+	CHECK(moved.change.outcome == Outcome::NotAssigned);
+	CHECK_FALSE(moved.self_frame_in_use);
+	CHECK_FALSE(policy.self_frame_in_use);
+	CHECK(policy.self_frame_selected); // 映像の選択は替わる (メインアカウントの画面を画面の枠に入れない)
 	check_drawn_within_four(table, false);
 }

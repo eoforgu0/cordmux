@@ -960,17 +960,32 @@ public:
 		int retargeted = 0; // 付け替えた経路の数 (stream_router.h の retarget_user)
 	};
 
-	// after_order があれば、画面の枠に新しく載せた人の載せた順を、番号 after_order の人の後、次の番号の人の前にする
-	// (place_added_order_after)。自分の枠から「Discordの画面共有」に替えて、メインアカウントを載せ直すときに、自分の枠の
-	// 載せた順の位置を引き継ぐ (dock/dock_poll.cpp の carry_self_frame_check)。もう載っていた人 (AlreadyOwned) の番号は
-	// 変えない。
-	// 自分の枠を使っている間の人数の上限 (config::screen_slot_capacity) は、ここでは見ない。手動で載せる操作は、ドックが同じ
-	// 上限で押せなくしている (ledger/observation.h の self_frame_limit_reached)。ここで見ると、自分の枠から「Discordの画面
-	// 共有」に替えたときに、自分の枠を使っていたことがまだ伝わっていない間に、メインアカウントを自分の枠の位置へ載せ直せない
-	// (carry_self_frame_check は、載せ直してから自分の枠を使っていないことを渡す)。
-	SlotChange assign_slot(config::SlotKind kind, const std::string &user_id,
-			       std::optional<std::int64_t> after_order = std::nullopt);
+	// 画面の枠に新しく載せる人は、載せられる人数 (config::screen_slot_capacity。自分の枠を使っている間は 3 人) に達して
+	// いれば、空いている枠があっても載せず、Insufficient を返す (自動で載せる経路と同じ上限。assign_slot_in)。ドックも同じ上限で
+	// 押せなくしている (ledger/observation.h の self_frame_limit_reached) が、その判断は最大 1 周期前の Observation で行うので、
+	// 同じ周期に自動で載せる経路 ([自動で枠に載せる]) が載せた人は、ここで割り当て表と同じロックの中で数える。
+	SlotChange assign_slot(config::SlotKind kind, const std::string &user_id);
 	SlotChange release_slot(config::SlotKind kind, const std::string &user_id);
+
+	// 自分の枠に映す映像を「Discordの画面共有」と OBS のソースかシーンの間で替えたときに、メインアカウント (user_id) を配信に
+	// 出す場所を、画面共有の枠と自分の枠の間で移す (dock/dock_poll.cpp の carry_self_frame_check)。割り当て表と、
+	// set_assign_policy の self_frame_selected と self_frame_in_use を、1 回のロックの中で一緒に変える。別々の呼び出しにすると、
+	// その間に自動で載せる経路が、空いた枠に待っていた人を載せる (自分の枠と合わせて 5 つになるか、メインアカウントを載せ直せ
+	// なくなる)。
+	//   to_self_frame が真 (OBS のソースかシーンに替えた): user_id の画面の枠を空け (release_slot と同じ)、自分の枠に映す映像を
+	//     OBS から選んでいることにし、自分の枠を使い始める (set_assign_policy と同じく、Discord の人が枠を 4 つとも埋めていれば
+	//     断る。空けた枠の分で使うので、普通は断らない)。
+	//   偽 (「Discordの画面共有」に替えた): 自分の枠を使うのをやめてから、user_id を画面の枠に載せる (assign_slot と同じ上限。
+	//     自分の枠の分の枠が空くので、普通は載る)。after_order があれば、載せた順を、番号 after_order の人の後、次の番号の人の
+	//     前にする (place_added_order_after。自分の枠の並びの位置を引き継ぐ)。もう載っていた人 (AlreadyOwned) の番号は変えない。
+	// どちらも、変えた後に直前の configure を適用し直す (set_assign_policy と同じ)。どのスレッドから呼んでもよい (ドックの UI の
+	// スレッドから呼ぶ)。
+	struct SelfFrameMove {
+		SlotChange change;             // 枠を空けたか載せたかの結果 (release_slot と assign_slot と同じ)
+		bool self_frame_in_use = false; // 受け付けた、自分の枠を使っているか (set_assign_policy の戻り値と同じ)
+	};
+	SelfFrameMove move_self_frame(const std::string &user_id, bool to_self_frame,
+				      std::optional<std::int64_t> after_order = std::nullopt);
 
 	// 枠に載っている out_user_id を外し、同じ枠に in_user_id を載せる (ドックの [入れ替える])。割り当て表と経路を 1 回の
 	// ロックの中で書き換えるので、人が抜けて詰まった並びが配信に出ることはない。
@@ -1011,9 +1026,14 @@ public:
 	// 載せ直すので、自動では待っていた人が空いた枠に載る。ドックは、自分の行のチェックが変わるたびに渡し直す。起動のときの
 	// 値は、main_account_user_id と同じく、コンストラクターが settings からコピーする (シーンの読み込みが終わる前に届く facts で
 	// 枠に載せる人を決めるときに、もう分かっている)。
+	// 偽から真に変える (自分の枠を使い始める) ときは、割り当て表と同じロックの中で、Discord の人が画面の枠をもう 4 つとも
+	// 埋めていれば断り、偽のままにする (stream_router.h の accepted_self_frame_in_use)。ドックが付ける判断はスナップショット
+	// (最大 1 周期前) の人数で行うので、その後に自動で載せる経路が 4 人目を載せていると、自分の枠と合わせて 5 つになるためである。
+	// ほかの値は、断ったときも渡されたとおりにする。戻り値は、受け付けた self_frame_in_use (渡した値が偽なら偽、断ったら偽)。
+	// ドックは、真を渡して偽が返ったら、自分の行のチェックを外す (dock/dock_poll.cpp の refuse_self_frame)。
 	//
 	// どのスレッドから呼んでもよい (ドックの UI のスレッドから呼ぶ)。
-	void set_assign_policy(config::AssignMode mode, std::set<std::string> always_on,
+	bool set_assign_policy(config::AssignMode mode, std::set<std::string> always_on,
 			       std::map<std::string, std::string> voice_links, std::string main_account_user_id,
 			       bool self_frame_selected = false, bool self_frame_in_use = false);
 
@@ -1303,6 +1323,99 @@ inline Pipeline::SlotChange replace_slot_in(config::AllocationTable &table, Stre
 	change.slot = slot;
 	change.retargeted = in_n;
 	return change;
+}
+
+// assign_slot の、割り当て表と経路を書き換える部分。呼び出し元は表と経路を守るロック (Impl::mu) を持っていること。
+// 画面の枠に新しく載せる人は、載せられる人数 (stream_router.h の screen_slot_room。policy.self_frame_in_use が真なら 3 人) に
+// 達していれば、空いている枠があっても載せず、Insufficient を返す (自動で載せる経路と同じ上限)。載せたら (もう載っていた
+// ときも)、外した人の一覧から消し (StreamRouter::include_user)、その人の経路を枠へ付け替える。after_order があれば、新しく
+// 載せた人の載せた順を、番号 after_order の人の後にする (place_added_order_after)。retargeted が 0 なら、呼び出し元が直前の
+// configure を適用し直す。
+inline Pipeline::SlotChange assign_slot_in(config::AllocationTable &table, StreamRouter &router, const AssignPolicy &policy,
+					   config::SlotKind kind, const std::string &user_id,
+					   std::optional<std::int64_t> after_order = std::nullopt)
+{
+	using Outcome = Pipeline::SlotChange::Outcome;
+	Pipeline::SlotChange out;
+	if (user_id.empty())
+		return out;
+	const bool over_capacity = kind == config::SlotKind::Screen && table.slot_of_owner(kind, user_id) == 0 &&
+				   !screen_slot_room(table, policy);
+	const config::AssignResult result = over_capacity ? config::AssignResult{} : table.try_assign(kind, user_id);
+	switch (result.outcome) {
+	case config::AssignOutcome::AlreadyOwned:
+		out.outcome = Outcome::AlreadyOwned;
+		break;
+	case config::AssignOutcome::Assigned:
+		out.outcome = Outcome::Assigned;
+		if (kind == config::SlotKind::Screen && after_order.has_value())
+			place_added_order_after(table, result.slot, *after_order);
+		break;
+	case config::AssignOutcome::Insufficient:
+		out.outcome = Outcome::Insufficient;
+		return out;
+	}
+	out.slot = result.slot;
+	// 外した人をまたチェックを付けたときは、外した人の一覧から消す (stream_router.h の exclude_user)。
+	if (kind == config::SlotKind::Screen)
+		router.include_user(user_id);
+	// 経路も同じロックの下で付け替える (表と経路が食い違う間を作らない)。
+	out.retargeted = router.retarget_user(user_id, kind, out.slot);
+	return out;
+}
+
+// release_slot の、割り当て表と経路を書き換える部分。呼び出し元は Impl::mu を持っていること。外した人は、画面共有をやめて
+// 始め直すまで、次の configure でも枠に戻さない (StreamRouter::exclude_user)。外した人の経路は消さず、枠の番号 0 を指させる
+// (音声は output_allowed、映像は video_allowed が止める。stream_router.h の retarget_user)。
+//
+// 枠 0 の経路 (経路はあるが、どの枠でもない) は try_assign では作れない組み合わせなので、通る所を 1 つずつ確認してある。
+//   - AllocationTable::entry() は範囲の外で nullptr を返し、is_output_allowed と is_video_allowed は false
+//     (config/allocation.h)。
+//   - push_decoded_frame の待ち行列に積む処理は、allowed の判定と frame_deliverable (枠の番号が 1 以上) の後にある。
+//   - handle_audio_frame も allowed を見てから AudioMixer に置く。置く組は mixer_key_for が枠の外では決めない
+//     (composite_audio_plan.h)。
+// つまり枠 0 の経路では、フレームは届いて数えられるが、OBS には 1 枚も渡らない。
+inline Pipeline::SlotChange release_slot_in(config::AllocationTable &table, StreamRouter &router, config::SlotKind kind,
+					    const std::string &user_id)
+{
+	Pipeline::SlotChange out;
+	out.outcome = Pipeline::SlotChange::Outcome::NotAssigned;
+	if (user_id.empty())
+		return out;
+	const int slot = table.slot_of_owner(kind, user_id);
+	if (slot == 0)
+		return out;
+	table.release(kind, slot);
+	if (kind == config::SlotKind::Screen)
+		router.exclude_user(user_id);
+	out.outcome = Pipeline::SlotChange::Outcome::Released;
+	out.slot = slot;
+	out.retargeted = router.retarget_user(user_id, kind, 0);
+	return out;
+}
+
+// move_self_frame の、割り当て表と経路と決め方 (policy の self_frame_selected と self_frame_in_use) を書き換える部分。呼び出し元は
+// Impl::mu を持っていること。self_owner は自分の枠の人 (stream_router.h の accepted_self_frame_in_use に渡す)。
+//   to_self_frame が真: user_id の画面の枠を空けてから (release_slot_in)、自分の枠を使い始める (accepted_self_frame_in_use)。
+//   偽: 自分の枠を使うのをやめてから、user_id を載せる (assign_slot_in)。上限は自分の枠を使っていないときの 4 人で見る。
+// 返す self_frame_in_use は、書き換えた後の policy.self_frame_in_use である。
+inline Pipeline::SelfFrameMove move_self_frame_in(config::AllocationTable &table, StreamRouter &router, AssignPolicy &policy,
+						  const std::string &self_owner, const std::string &user_id,
+						  bool to_self_frame, std::optional<std::int64_t> after_order = std::nullopt)
+{
+	Pipeline::SelfFrameMove out;
+	if (to_self_frame) {
+		out.change = release_slot_in(table, router, config::SlotKind::Screen, user_id);
+		policy.self_frame_selected = true;
+		policy.self_frame_in_use =
+			accepted_self_frame_in_use(table, policy.self_frame_in_use, true, self_owner);
+	} else {
+		policy.self_frame_selected = false;
+		policy.self_frame_in_use = false;
+		out.change = assign_slot_in(table, router, policy, config::SlotKind::Screen, user_id, after_order);
+	}
+	out.self_frame_in_use = policy.self_frame_in_use;
+	return out;
 }
 
 } // namespace cordmux::pipeline

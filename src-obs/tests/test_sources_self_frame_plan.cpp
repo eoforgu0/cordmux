@@ -298,6 +298,47 @@ TEST_CASE("自分の枠の状態: ドックで付けると on が真、excluded 
 	CHECK_FALSE(r.persist);
 }
 
+TEST_CASE("自分の枠の状態: Pipeline が断ると on が偽になり、excluded は変えず、書き換える")
+{
+	// ドックで付けた直後に断られた。外したのではないので、excluded にはしない。
+	SelfFrameInput in = poll_auto(true, SelfShare::On, SelfShare::On);
+	in.event = SelfFrameEvent::Refused;
+	SelfFrameResult r = plan_self_frame(in);
+	CHECK_FALSE(r.state.on);
+	CHECK_FALSE(r.state.excluded);
+	CHECK_FALSE(r.shown);
+	CHECK(r.persist);
+	CHECK(r.state.prev == SelfShare::On);
+	CHECK_FALSE(r.deferred);
+
+	// 自動では、次の周期に枠が埋まっていれば見送り、空けば付く (見送ったときと同じ扱い)。
+	SelfFrameInput after = next(in, r, SelfShare::On);
+	after.discord_slotted = 4;
+	r = plan_self_frame(after);
+	CHECK_FALSE(r.state.on);
+	CHECK(r.deferred);
+	after = next(after, r, SelfShare::On);
+	after.discord_slotted = 3;
+	r = plan_self_frame(after);
+	CHECK(r.state.on);
+
+	// [自動で載せる] で共有の始まりに付いた分が断られたときは、始め直すまで付かない (見送ったときと同じ)。
+	SelfFrameInput always = poll_always_on(false, SelfShare::Off, SelfShare::On);
+	r = plan_self_frame(always);
+	REQUIRE(r.state.on);
+	always.state = r.state;
+	always.event = SelfFrameEvent::Refused;
+	r = plan_self_frame(always);
+	CHECK_FALSE(r.state.on);
+	CHECK_FALSE(r.state.excluded);
+	r = plan_self_frame(next(always, r, SelfShare::On));
+	CHECK_FALSE(r.state.on);
+
+	// 外した後に断られても (起きないが)、excluded は残る。
+	in.state.excluded = true;
+	CHECK(plan_self_frame(in).state.excluded);
+}
+
 TEST_CASE("自分の枠の状態: ドックの出来事は prev を変えない")
 {
 	SelfFrameInput in;

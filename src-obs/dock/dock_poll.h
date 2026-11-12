@@ -228,6 +228,13 @@ private:
 	// チェックが変わる所 (layout_step、set_self_frame) から呼ぶ。設定を替えたときは、設定の後処理が push_assign_policy を呼ぶ。
 	void push_self_frame_in_use_if_changed();
 
+	// 自分の枠を使い始めることを Pipeline が断ったときに、自分の行のチェックを外す (Pipeline::set_assign_policy と
+	// move_self_frame の戻り値)。付ける判断はスナップショット (最大 1 周期前) の人数で行うので、その後に自動で載せる経路が
+	// 4 人目を載せていると断られる。外し方は、付けるはずの枠が埋まっていて見送ったときと同じで、excluded にはしない
+	// (sources/self_frame_plan.h の SelfFrameEvent::Refused。自動なら枠が空けば付く)。settings.json にも残し、この周期の
+	// 配置の入力 (self_frame_facts_) からも自分の枠を外す。
+	void refuse_self_frame();
+
 	// ダミーの表示をオンかオフにする。ダミーを表示していた時間帯は Pipeline が記録する。
 	void set_dummy_mode(bool on);
 
@@ -334,7 +341,8 @@ private:
 	sources::SelfFrameState self_frame_state_;
 	// 枠が埋まっていて自分の枠を付けられない間に、そのログを書いたか。
 	bool self_frame_deferred_logged_ = false;
-	// 最後に Pipeline に渡した、自分の枠を使っているか (push_assign_policy が書く)。
+	// 最後に Pipeline が受け付けた、自分の枠を使っているか (push_assign_policy と carry_self_frame_check が、Pipeline の戻り値を
+	// 書く)。
 	bool pushed_self_frame_in_use_ = false;
 	// 自分の枠を載せた順の印 (ledger/observation.h の Choices::self_frame_added_mark)。チェックが付いている間に、自分の枠が
 	// 初めて実際に映った時 (self_frame_shown_now が真になった時) に、その時の割り当て表の画面共有の枠の載せた順の番号の最大を

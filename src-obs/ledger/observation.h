@@ -1057,7 +1057,8 @@ inline int discord_slotted_count(const Observation &obs)
 
 // 自分の枠を使っていて、枠に載っている人数が、自分の枠を使っている間の上限 (config::screen_slot_capacity。3 人) に
 // 達しているか。押せる条件 (actions.cpp の SetSlot) と、一覧の上の 1 行 (rules_dock.cpp の list_reason) がこの関数を見る。
-// 自動で載せる経路 (pipeline/stream_router.h の screen_slot_room) も、同じ上限で新しい人を載せない。
+// 自動で載せる経路 (pipeline/stream_router.h の screen_slot_room) も、同じ上限で新しい人を載せない。この Observation は最大
+// 1 周期前の値なので、押した後に載せるときも、Pipeline::assign_slot が割り当て表と同じロックの中で同じ上限を見る。
 inline bool self_frame_limit_reached(const Observation &obs)
 {
 	return self_frame_in_use(obs) && screen_slotted_count(obs) >= config::screen_slot_capacity(true);

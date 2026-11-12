@@ -318,6 +318,24 @@ const char *on_off(bool on)
 	return on ? "on" : "off";
 }
 
+// ---- 自分の枠を使っているか ----
+
+// 自分の枠の人。メインアカウント、メインアカウントが空なら Vesktop のアカウント (ドックの self_frame_user_id と同じ決め方)。
+// 自分の枠を使い始めてよいかを数えるとき (stream_router.h の accepted_self_frame_in_use) に、この人の枠を数えない。
+std::string self_frame_owner_of(const std::string &main_account_user_id, const FactsSnapshot &facts)
+{
+	if (!main_account_user_id.empty())
+		return main_account_user_id;
+	return facts.self_user_id.value_or(std::string());
+}
+
+// 自分の枠を使っているかが変わったときのログ。画面の枠に載せられる人数も書く。
+void log_self_frame_in_use(bool in_use)
+{
+	diag::logf(LOG_INFO, "Self frame %s: up to %d people in screen slots", in_use ? "in use" : "not in use",
+		   config::screen_slot_capacity(in_use));
+}
+
 } // namespace
 
 struct Pipeline::Impl {
@@ -601,7 +619,7 @@ struct Pipeline::Impl {
 	std::optional<ws::ConfigureMessage> pending_configure;
 
 	// 誰を枠に入れるかの決め方 (pipeline.h の set_assign_policy) と、最後に適用した configure。適用し直す処理
-	// (set_assign_policy と assign_slot) がこの 1 通をもう一度適用する。configure はいま生きている
+	// (set_assign_policy、assign_slot、move_self_frame など) がこの 1 通をもう一度適用する。configure はいま生きている
 	// ストリームをすべて含むので、最新の 1 通だけ持てば足りる。接続が切れたら捨てる。
 	AssignPolicy assign_policy;
 	std::optional<ws::ConfigureMessage> last_configure;
@@ -840,7 +858,7 @@ struct Pipeline::Impl {
 	// ---- ws::Listener の on_* から呼ばれる (すべて asio の io_thread から。ws/listener.cpp で確認した) ----
 	void handle_video_frame(const ws::FrameHeader &header, const std::uint8_t *payload, std::size_t len);
 	void handle_audio_frame(const ws::FrameHeader &header, const std::uint8_t *payload, std::size_t len);
-	// expect_generation を渡すのは、適用し直す呼び出し (set_assign_policy と assign_slot) だけである。渡した
+	// expect_generation を渡すのは、適用し直す呼び出し (set_assign_policy、assign_slot、move_self_frame など) だけである。渡した
 	// 世代が現在の configure_generation と違えば、その間に新しい configure が適用されたということなので、古い
 	// 1 通は適用せずに戻る (適用すると、送信側がもう閉じたストリームの経路とデコードのスレッドを作り直してしまう)。
 	// 渡さない呼び出し (ws/ から届いた 1 通と、保留していた 1 通) が新しい configure で、last_configure と世代を
@@ -3614,8 +3632,7 @@ AudioLevels Pipeline::audio_levels() const
 	return out;
 }
 
-Pipeline::SlotChange Pipeline::assign_slot(config::SlotKind kind, const std::string &user_id,
-					   std::optional<std::int64_t> after_order)
+Pipeline::SlotChange Pipeline::assign_slot(config::SlotKind kind, const std::string &user_id)
 {
 	SlotChange out;
 	if (user_id.empty())
@@ -3626,27 +3643,11 @@ Pipeline::SlotChange Pipeline::assign_slot(config::SlotKind kind, const std::str
 	{
 		std::lock_guard<std::mutex> lock(impl_->mu);
 
-		const config::AssignResult result = impl_->table.try_assign(kind, user_id);
-		switch (result.outcome) {
-		case config::AssignOutcome::AlreadyOwned:
-			out.outcome = SlotChange::Outcome::AlreadyOwned;
-			break;
-		case config::AssignOutcome::Assigned:
-			out.outcome = SlotChange::Outcome::Assigned;
-			if (kind == config::SlotKind::Screen && after_order.has_value())
-				place_added_order_after(impl_->table, result.slot, *after_order);
-			break;
-		case config::AssignOutcome::Insufficient:
-			out.outcome = SlotChange::Outcome::Insufficient;
+		// 表と経路を書き換える。画面の枠に新しく載せるのは、載せられる人数 (自分の枠を使っている間は 3 人) までである
+		// (pipeline.h の宣言)。
+		out = assign_slot_in(impl_->table, impl_->router, impl_->assign_policy, kind, user_id);
+		if (out.outcome == SlotChange::Outcome::Insufficient)
 			return out;
-		}
-		out.slot = result.slot;
-		// 外した人をまたチェックを付けたときは、外した人の一覧から消す (stream_router.h の
-		// exclude_user)。
-		if (kind == config::SlotKind::Screen)
-			impl_->router.include_user(user_id);
-		// 経路も同じロックの下で付け替える (pipeline.h の宣言。表と経路が食い違う間を作らない)。
-		out.retargeted = impl_->router.retarget_user(user_id, kind, out.slot);
 		// 付け替えた画面のストリームは、次のデコードできたフレームで、名前ラベルに描く人を結び付け直す。枠から外したとき
 		// (DockPoll::after_slot_release) に描く人を外しているので、デコードのスレッドを作り直さない付け替えでは、
 		// 結び付け直さないと、載せ直した人の名前ラベルが出ない。
@@ -3675,7 +3676,7 @@ Pipeline::SlotChange Pipeline::assign_slot(config::SlotKind kind, const std::str
 	return out;
 }
 
-void Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> always_on,
+bool Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> always_on,
 				 std::map<std::string, std::string> voice_links, std::string main_account_user_id,
 				 bool self_frame_selected, bool self_frame_in_use)
 {
@@ -3684,6 +3685,11 @@ void Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> 
 	{
 		std::lock_guard<std::mutex> lock(impl_->mu);
 		const bool automatic = mode == config::AssignMode::Auto;
+		// 自分の枠を使い始めることは、割り当て表と同じこのロックの中で受け付けるか断る (pipeline.h の宣言)。断ったら、
+		// 使っていないことにして、ほかの値と同じく比べる (ほかに変わった値がなければ何もしない)。
+		self_frame_in_use =
+			accepted_self_frame_in_use(impl_->table, impl_->assign_policy.self_frame_in_use, self_frame_in_use,
+						   self_frame_owner_of(main_account_user_id, impl_->facts));
 		// 値が変わっていなければ何もしない。ドックはポーリングのたびにコピーを渡すので、ここで比べないと、
 		// ドックの周期ごとに configure を適用し直すことになる。使う声も比べる (比べないと、変えた瞬間に
 		// 適用し直さず、次の configure まで声が変わらない)。
@@ -3692,10 +3698,9 @@ void Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> 
 		    impl_->assign_policy.main_account_user_id == main_account_user_id &&
 		    impl_->assign_policy.self_frame_selected == self_frame_selected &&
 		    impl_->assign_policy.self_frame_in_use == self_frame_in_use)
-			return;
+			return self_frame_in_use;
 		if (impl_->assign_policy.self_frame_in_use != self_frame_in_use)
-			diag::logf(LOG_INFO, "Self frame %s: up to %d people in screen slots",
-				   self_frame_in_use ? "in use" : "not in use", config::screen_slot_capacity(self_frame_in_use));
+			log_self_frame_in_use(self_frame_in_use);
 		// 自動から手動に戻しても、いま画面の枠に載っている人は外さない (手動の割り当ては、枠に載っている人の
 		// 経路を保つ。stream_router.h の AssignPolicy の (1))。
 		// 選び方を切り替えたら、外した人の一覧を捨てる (stream_router.h の exclude_user)。
@@ -3727,6 +3732,44 @@ void Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> 
 	if (replay)
 		impl_->safe_call("the stream list after Slot Assignment changed",
 				 [&] { impl_->handle_configure(*replay, generation); });
+	return self_frame_in_use;
+}
+
+Pipeline::SelfFrameMove Pipeline::move_self_frame(const std::string &user_id, bool to_self_frame,
+						  std::optional<std::int64_t> after_order)
+{
+	SelfFrameMove out;
+	std::optional<ws::ConfigureMessage> replay;
+	std::uint64_t generation = 0;
+	{
+		std::lock_guard<std::mutex> lock(impl_->mu);
+		const bool in_use_before = impl_->assign_policy.self_frame_in_use;
+		out = move_self_frame_in(impl_->table, impl_->router, impl_->assign_policy,
+					 self_frame_owner_of(impl_->assign_policy.main_account_user_id, impl_->facts), user_id,
+					 to_self_frame, after_order);
+		if (impl_->assign_policy.self_frame_in_use != in_use_before)
+			log_self_frame_in_use(impl_->assign_policy.self_frame_in_use);
+		// 載せ直した人の名前ラベルを結び付け直す (assign_slot と同じ)。
+		if (!to_self_frame && out.change.retargeted > 0)
+			impl_->rearm_decor_owner_locked(user_id);
+		// 枠の付け外しの後と、決め方が変わった後に行うこと (assign_slot、release_slot、set_assign_policy と同じ)。
+		impl_->on_routes_changed_locked();
+		impl_->admit_sharers_from_facts_locked();
+		impl_->refresh_watch_scope_locked(to_self_frame ? "slot released" : "slot assigned");
+		if (impl_->receive_scope == config::ReceiveScope::Slots)
+			impl_->notify_recorder_formats_locked();
+		// 自分の枠に映す映像を替えたので、直前の configure を適用し直す (メインアカウントの画面の経路を作るか消す。
+		// set_assign_policy と同じく、シーンコレクションの読み込みが終わる前は適用し直さない)。
+		if (impl_->loading_finished) {
+			replay = impl_->last_configure;
+			generation = impl_->configure_generation;
+		}
+	}
+
+	if (replay)
+		impl_->safe_call("the stream list after the self frame video changed",
+				 [&] { impl_->handle_configure(*replay, generation); });
+	return out;
 }
 
 void Pipeline::set_focus_target(const std::string &user_id)
@@ -4116,37 +4159,12 @@ void Pipeline::on_listener_stopped()
 
 Pipeline::SlotChange Pipeline::release_slot(config::SlotKind kind, const std::string &user_id)
 {
-	SlotChange out;
-	out.outcome = SlotChange::Outcome::NotAssigned;
-	if (user_id.empty())
-		return out;
-
 	std::lock_guard<std::mutex> lock(impl_->mu);
 
-	const int slot = impl_->table.slot_of_owner(kind, user_id);
-	if (slot == 0)
+	// 表を書き換え、外した人を覚え、経路を枠 0 へ付け替える (release_slot_in。枠 0 の経路の扱いはその説明)。
+	const SlotChange out = release_slot_in(impl_->table, impl_->router, kind, user_id);
+	if (out.outcome != SlotChange::Outcome::Released)
 		return out;
-
-	impl_->table.release(kind, slot);
-	// 外した人は、画面共有をやめて始め直すまで、次の configure でも枠に戻さない (stream_router.h の
-	// exclude_user)。
-	if (kind == config::SlotKind::Screen)
-		impl_->router.exclude_user(user_id);
-	out.outcome = SlotChange::Outcome::Released;
-	out.slot = slot;
-	// 枠から外した経路は、枠の番号 0 を指す (音声は output_allowed、映像は video_allowed が止める。
-	// stream_router.h の retarget_user)。
-	//
-	// 枠 0 の経路 (経路はあるが、どの枠でもない) は try_assign では作れない組み合わせなので、通る所を 1 つずつ
-	// 確認してある。
-	//   - AllocationTable::entry() は範囲の外で nullptr を返し、is_output_allowed と is_video_allowed は false
-	//     (config/allocation.h)。
-	//   - push_decoded_frame の待ち行列に積む処理は、allowed の判定と frame_deliverable (枠の番号が 1 以上) の
-	//     後にある。
-	//   - handle_audio_frame も allowed を見てから AudioMixer に置く。置く組は mixer_key_for が枠の外では
-	//     決めない (composite_audio_plan.h)。
-	// つまり枠 0 の経路では、フレームは届いて数えられるが、OBS には 1 枚も渡らない。
-	out.retargeted = impl_->router.retarget_user(user_id, kind, 0);
 	// 枠から外した人の組を外す (残りの音を鳴らし続けない)。
 	impl_->on_routes_changed_locked();
 	// 枠に載っている人が減ったので、視聴する人の範囲と録画の対象を決め直す (受け取る範囲が Slots のとき)。

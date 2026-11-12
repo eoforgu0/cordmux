@@ -377,7 +377,8 @@ const ActionRule kActionRules[] = {
 	//   今と同じ状態にする向き                                           -> reason::kSameSelfFrame (押しても何も変わらない)
 	//   出す向きで、Discord の人が画面共有の枠 4 つをすべて埋めている   -> keys::kDockNoFreeSlotText
 	// 4 人目を押しのけて自分の枠を出すと、配信に出ていた人が突然消える (配置が、後ろの人を外すため)。消す向きは、
-	// 枠の埋まりによらず押せる。
+	// 枠の埋まりによらず押せる。この Observation は最大 1 周期前の値なので、押した後に自動で 4 人目が載っていたときは、
+	// Pipeline が断り、ドックがチェックを外す (pipeline/stream_router.h の accepted_self_frame_in_use)。
 	{ActionId::SetSelfFrame, IntentKind::SetSelfFrame,
 	 [](const Observation &obs, const ActionArgs &args) -> const char * {
 		 if (!obs.choices.self_frame_selected)
