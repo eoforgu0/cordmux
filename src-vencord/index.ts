@@ -372,8 +372,9 @@ const scaleCanvases = new Map<string, OffscreenCanvas>();
 let lastProfilesJson: string | null = null;
 
 // 映像と音声の原点 (送信側の時計とメディアのタイムスタンプの差。encode/clock_map.ts の定数)。原点が決まったときと
-// 変わったときに、ログに 1 行書く (encode/clock_origin_log.ts)。原点は、映像ではセッションが、音声では pumpAudio()
-// の chunker が持つので、ストリームごとにここにコピーする。
+// 変わったときに、ログに 1 行書く (encode/clock_origin_log.ts)。最初の行と差が大きく動いたときは出来事の行、ほかは
+// 統計の行にする。原点は、映像ではセッションが、音声では pumpAudio() の chunker が持つので、ストリームごとにここに
+// コピーする。
 /** streamId -> 音声の原点 (pushAudio() の戻り値から読む)。 */
 const audioClockOriginByStreamId = new Map<number, bigint | undefined>();
 /**
@@ -410,7 +411,7 @@ function log(line: string): void {
     logBook.event(`${new Date().toISOString()} ${line}`);
 }
 
-/** 数秒から 60 秒ごとの統計の行を 1 行書く (clock origin、playout、latency)。受信側は直近の行だけを保つ (discord-stats.log)。 */
+/** 数秒から 60 秒ごとの統計の行を 1 行書く (clock origin の細かい変化、playout、latency)。受信側は直近の行だけを保つ (discord-stats.log)。 */
 function logStats(line: string): void {
     logBook.stat(`${new Date().toISOString()} ${line}`);
 }
@@ -541,16 +542,18 @@ function concatHeaderPayload(header: FrameHeader, payload: Uint8Array): Uint8Arr
 }
 
 /**
- * 映像と音声の原点 (encode/clock_map.ts) をログに書くかを確認し、書くときだけリングバッファーに書く。書くかどうかの
- * 判断は encode/clock_origin_log.ts の純粋関数がする。`videoOriginUs` は呼び出し元が渡す。videoSink() は自分の
- * セッションから読み、pumpAudio() は videoClockOriginByStreamId から読む。
+ * 映像と音声の原点 (encode/clock_map.ts) をログに書くかを確認し、書くときだけリングバッファーに書く。書くかどうかと、
+ * 出来事の行にするか統計の行にするかの判断は、encode/clock_origin_log.ts の純粋関数がする。`videoOriginUs` は
+ * 呼び出し元が渡す。videoSink() は自分のセッションから読み、pumpAudio() は videoClockOriginByStreamId から読む。
  */
 function maybeLogClockOrigin(streamId: number, videoOriginUs: bigint | undefined): void {
     const audioOriginUs = audioClockOriginByStreamId.get(streamId);
     const state = clockOriginLogStateByStreamId.get(streamId) ?? createClockOriginLogState();
     const result = clockOriginLogLine(state, streamId, videoOriginUs, audioOriginUs, Date.now());
     clockOriginLogStateByStreamId.set(streamId, result.state);
-    if (result.line !== undefined) logStats(result.line);
+    if (result.line === undefined) return;
+    if (result.isEvent) log(result.line);
+    else logStats(result.line);
 }
 
 /* ==========================================================================

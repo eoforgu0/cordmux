@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // encode/clock_origin_log.ts のテスト。映像と音声の原点が決まったときと変わったときだけ、1 秒に 1 回まで、送信側の
-// ログに 1 行書くことを確認する。
+// ログに 1 行書くことと、その行を出来事の行にするか統計の行にするかを確認する。
 
 import { describe, expect, it } from "vitest";
 
 import {
+    CLOCK_ORIGIN_EVENT_DIFF_US,
     CLOCK_ORIGIN_LOG_INTERVAL_MS,
     clockOriginLogLine,
     createClockOriginLogState,
@@ -96,5 +97,67 @@ describe("clockOriginLogLine: 行を書く条件", () => {
         const resultB = clockOriginLogLine(createClockOriginLogState(), 2, 1_000n, undefined, T0_MS + 10);
         expect(resultB.line).toBe("clock origin stream 2: video=1000us audio=none diff=none");
         expect(stateA.lastVideoOriginUs).toBe(1_000n); // A の状態は、B の呼び出しで変わらない。
+    });
+});
+
+describe("clockOriginLogLine: 出来事の行と統計の行", () => {
+    it("ストリームの最初の行は出来事の行にする", () => {
+        const result = clockOriginLogLine(createClockOriginLogState(), 1, 1_000n, undefined, T0_MS);
+        expect(result.isEvent).toBe(true);
+    });
+
+    it("行がないときは出来事の行ではない", () => {
+        const result = clockOriginLogLine(createClockOriginLogState(), 1, undefined, undefined, T0_MS);
+        expect(result.isEvent).toBe(false);
+    });
+
+    it("片方だけの間の変化は統計の行で、差が初めて決まったときは出来事の行にする", () => {
+        const first = clockOriginLogLine(createClockOriginLogState(), 1, 1_000n, undefined, T0_MS);
+        const second = clockOriginLogLine(first.state, 1, 900n, undefined, T0_MS + 1_000);
+        expect(second.line).toBeDefined();
+        expect(second.isEvent).toBe(false);
+        const third = clockOriginLogLine(second.state, 1, 900n, 800n, T0_MS + 2_000);
+        expect(third.line).toBe("clock origin stream 1: video=900us audio=800us diff=100us");
+        expect(third.isEvent).toBe(true);
+        expect(third.state.lastEventDiffUs).toBe(100n);
+    });
+
+    it("差が前の出来事の行から小さくしか動かなければ統計の行にし、出来事の行の差を変えない", () => {
+        const first = clockOriginLogLine(createClockOriginLogState(), 1, 100_000n, 100_000n, T0_MS);
+        expect(first.isEvent).toBe(true);
+        const second = clockOriginLogLine(first.state, 1, 95_000n, 100_000n, T0_MS + 1_000);
+        expect(second.line).toBeDefined();
+        expect(second.isEvent).toBe(false);
+        expect(second.state.lastEventDiffUs).toBe(0n);
+    });
+
+    it("差が前の出来事の行からしきい値以上動いたら出来事の行にする (ちょうどしきい値も含む)", () => {
+        const first = clockOriginLogLine(createClockOriginLogState(), 1, 100_000n, 100_000n, T0_MS);
+        const edge = 100_000n - CLOCK_ORIGIN_EVENT_DIFF_US;
+        const second = clockOriginLogLine(first.state, 1, edge, 100_000n, T0_MS + 1_000);
+        expect(second.isEvent).toBe(true);
+        expect(second.state.lastEventDiffUs).toBe(-CLOCK_ORIGIN_EVENT_DIFF_US);
+    });
+
+    it("小さい動きが重なっても、前の出来事の行の差から測る (少しずつ下がり続けても、しきい値で出来事の行になる)", () => {
+        let state: ClockOriginLogState = createClockOriginLogState();
+        let result = clockOriginLogLine(state, 1, 1_000_000n, 1_000_000n, T0_MS);
+        state = result.state;
+        const events: boolean[] = [];
+        for (let i = 1; i <= 8; i++) {
+            result = clockOriginLogLine(state, 1, 1_000_000n - BigInt(i) * 5_000n, 1_000_000n, T0_MS + i * 1_000);
+            state = result.state;
+            events.push(result.isEvent);
+        }
+        // 5 ms ずつ下がる。4 回目 (-20 ms) と 8 回目 (-40 ms) で出来事の行になる。
+        expect(events).toEqual([false, false, false, true, false, false, false, true]);
+    });
+
+    it("声のように音声だけのストリームは、最初の行のあとは統計の行にする", () => {
+        const first = clockOriginLogLine(createClockOriginLogState(), 1, undefined, 1_000n, T0_MS);
+        expect(first.isEvent).toBe(true);
+        const second = clockOriginLogLine(first.state, 1, undefined, 900_000n, T0_MS + 1_000);
+        expect(second.line).toBeDefined();
+        expect(second.isEvent).toBe(false);
     });
 });

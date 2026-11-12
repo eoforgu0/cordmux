@@ -742,7 +742,7 @@ Vesktop には映像が届いているのに、枠の映像が止まったまま
 
 ログのリングバッファーは、上限を超えて捨てた行があれば、そのことを示す 1 行を先頭に書く。途中から始まるログを、そうと分からないまま渡さないためである。manifest.json にも、4 つのリングバッファーの捨てた行の数を別々に書く (`plugin_log_dropped`、`plugin_stats_log_dropped`、`discord_log_dropped`、`discord_stats_log_dropped`)。
 
-ログの行は、出来事の行と統計の行に分けて保つ。出来事の行は、状態が変わったときの行 (接続、切断、トラックの追加と終了と mute、ゲートの開閉、エンコードの段階の変更、映像が届かないことと受信のやり直し、枠の割り当て、メッセージの表示と解消など) で、通話の全体を残す。統計の行は、数秒から 60 秒ごとの行 (受信側の `Stats ...`、届くたびに書く `Facts`、`Profiles`、`Avatar`、合成のソースの画像の用意の行、送信側の `clock origin`、`playout`、`latency`) で、直近の分だけを残す。受信側は、統計の行を `diag::logf(diag::LineKind::Stats, ...)` で書く。送信側は 3 種類に分け (`src-vencord/core/logbook.ts`)、異常に関わる出来事の行 (alerts) は、受信側が OBS のログに LOG_WARNING で書く (docs/wire_format.md の「メッセージの種類」の log の扱い)。出来事の行の既定の 5000 行は、4 時間の通話を残せる大きさとして決めた (`src-obs/config/settings.h` の `kEventLogDefaultLines`)。
+ログの行は、出来事の行と統計の行に分けて保つ。出来事の行は、状態が変わったときの行 (接続、切断、トラックの追加と終了と mute、ゲートの開閉、エンコードの段階の変更、送信側の `clock origin` の最初の行と映像と音声の原点の差の大きな変化、映像が届かないことと受信のやり直し、枠の割り当て、メッセージの表示と解消など) で、通話の全体を残す。統計の行は、数秒から 60 秒ごとの行 (受信側の `Stats ...`、届くたびに書く `Facts`、`Profiles`、`Avatar`、合成のソースの画像の用意の行、送信側の `clock origin` の細かい変化、`playout`、`latency`) で、直近の分だけを残す。受信側は、統計の行を `diag::logf(diag::LineKind::Stats, ...)` で書く。送信側は 3 種類に分け (`src-vencord/core/logbook.ts`)、異常に関わる出来事の行 (alerts) は、受信側が OBS のログに LOG_WARNING で書く (docs/wire_format.md の「メッセージの種類」の log の扱い)。出来事の行の既定の 5000 行は、4 時間の通話を残せる大きさとして決めた (`src-obs/config/settings.h` の `kEventLogDefaultLines`)。
 
 10 秒ごとの統計の行 (`Stats stream=N video_latency` など) は `LOG_DEBUG` で書く。OBS は `--verbose` で起動したときだけ、この行をログに書く。読み方は `src-obs/pipeline/README.md` にある。
 
