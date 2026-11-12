@@ -12,6 +12,7 @@
 #### 不具合の修正
 
 - 自分の枠を使っている間に、[枠に載せる人の選び方] が「自動」のときや、[自動で枠に載せる] を付けた人が画面共有を始めたとき、それとほぼ同時にチェックを付けたときに、4人目が枠に載り、1人が描かれないことがある問題を修正しました。
+- サブアカウントを使わない構成で、[枠に載せる人の選び方] が「自動」のときや、自分の行の [自動で枠に載せる] を付けているときに、自分がDiscordで画面共有すると、表示されない枠を1つ使い、ほかの参加者を1人少なくしか枠に載せられない問題を修正しました。
 
 ### en
 
@@ -23,6 +24,7 @@
 #### Bug Fixes
 
 - Fixed an issue where a fourth person was added to a slot while the self slot was in use, when [Slot Assignment] was set to "Automatic", a person with [Add Automatically] started sharing, or a check box was selected at about the same time, so one slot wasn't drawn
+- Fixed an issue where, without an alt account, your own Discord screen share took a slot that wasn't drawn when [Slot Assignment] was set to "Automatic" or [Add Automatically] was selected in your row, so one fewer participant could be added to slots
 
 ## 1.0.0
 
