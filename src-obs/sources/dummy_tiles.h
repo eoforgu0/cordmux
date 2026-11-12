@@ -18,10 +18,11 @@
 
 namespace cordmux::sources {
 
-// 色の数 (自分の枠と、画面共有の枠 4 つ)。枠の番号をこの数で巡回させるので、番号が範囲の外でも色は必ず
+// 色の数 (画面共有の枠 4 つ。ダミー映像の間は自分の枠を描かないので、自分の枠の色は持たない。sources/composite_input.h の
+// dummy_composite_input)。枠の番号をこの数で巡回させるので、番号が範囲の外でも色は必ず
 // 1 つ決まる。ダミーは見た目を確認するためのものなので、番号を取り違えて真っ黒になるより、何かが表示される
 // ほうがよい。
-inline constexpr int kDummyTileColorCount = 5;
+inline constexpr int kDummyTileColorCount = 4;
 
 // 動く線の色 (0xAARRGGBB)。どの枠の色の上でも目立つ白にする。
 inline constexpr std::uint32_t kDummyMarkColor = 0xFFFFFFFFu;
@@ -34,18 +35,17 @@ inline constexpr int kDummyFps = 60;
 // 1 往復を 2 秒以上にするのは、同じ場所が明暗で何度も入れ替わる点滅を作らないためである。
 inline constexpr std::uint64_t kDefaultDummyCycleNs = 4'000'000'000ULL;
 
-// 枠ごとの背景の色 (0xAARRGGBB)。番号 0 は自分の枠 (scene_names.h の kSelfSlot)。
+// 画面共有の枠 slot (1 から 4) の背景の色 (0xAARRGGBB)。範囲の外の番号は巡回させる (5 は 1 と、0 は 4 と同じ色)。
 // 色は、隣り合う枠を見分けられることだけを条件にした値である。
 inline std::uint32_t dummy_tile_color(int slot)
 {
 	static constexpr std::uint32_t colors[kDummyTileColorCount] = {
-		0xFF3A3A48u, // 自分の枠
 		0xFF7A2E2Eu, // 画面共有の枠 1
 		0xFF2E7A3Au, // 画面共有の枠 2
 		0xFF2E3A7Au, // 画面共有の枠 3
 		0xFF7A6A2Eu, // 画面共有の枠 4
 	};
-	int index = slot % kDummyTileColorCount;
+	int index = (slot - 1) % kDummyTileColorCount;
 	if (index < 0)
 		index += kDummyTileColorCount;
 	return colors[index];

@@ -100,7 +100,7 @@ bool fill(int slot, int width, int height, std::uint64_t elapsed_ns, std::vector
 TEST_CASE("枠ごとに背景の色が違う")
 {
 	std::set<std::uint32_t> colors;
-	for (int slot = 0; slot <= 4; ++slot)
+	for (int slot = 1; slot <= 4; ++slot)
 		colors.insert(dummy_tile_color(slot));
 	CHECK(colors.size() == static_cast<std::size_t>(kDummyTileColorCount));
 	for (const std::uint32_t color : colors)
@@ -110,7 +110,7 @@ TEST_CASE("枠ごとに背景の色が違う")
 	const int width = 360;
 	const int height = 36;
 	std::set<std::uint32_t> painted;
-	for (int slot = 0; slot <= 4; ++slot) {
+	for (int slot = 1; slot <= 4; ++slot) {
 		std::vector<std::uint8_t> pixels = make_buffer(width, height);
 		REQUIRE(fill(slot, width, height, 0u, pixels));
 		CHECK(yuv_at(pixels, width, height, width - 1, height - 1) == yuv_of(dummy_tile_color(slot)));
@@ -119,8 +119,10 @@ TEST_CASE("枠ごとに背景の色が違う")
 	CHECK(painted.size() == static_cast<std::size_t>(kDummyTileColorCount));
 
 	// 範囲の外の番号でも色は決まる (巡回する)。
-	CHECK(dummy_tile_color(99) == dummy_tile_color(99 % kDummyTileColorCount));
-	CHECK(dummy_tile_color(-1) == dummy_tile_color(4));
+	CHECK(dummy_tile_color(5) == dummy_tile_color(1));
+	CHECK(dummy_tile_color(99) == dummy_tile_color(3));
+	CHECK(dummy_tile_color(0) == dummy_tile_color(4));
+	CHECK(dummy_tile_color(-1) == dummy_tile_color(3));
 }
 
 TEST_CASE("線の太さは高さの 180 分の 1 で、2 px より細くしない")
@@ -268,7 +270,7 @@ TEST_CASE("YUV への変換は、OBS が NV12 を RGB に戻す式 (BT.709 の�
 		*b = y + 2.0 * (1.0 - kKb) * u;
 	};
 	std::vector<std::uint32_t> colors{kDummyMarkColor, 0xFF000000u, 0xFF808080u, 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu};
-	for (int slot = 0; slot < kDummyTileColorCount; ++slot)
+	for (int slot = 1; slot <= kDummyTileColorCount; ++slot)
 		colors.push_back(dummy_tile_color(slot));
 	for (const std::uint32_t argb : colors) {
 		CAPTURE(argb);

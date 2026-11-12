@@ -1133,7 +1133,9 @@ void DockPoll::update_self_added_mark(const pipeline::PipelineSnapshot &snapshot
 		if (row.kind == config::SlotKind::Screen && !row.owner_user_id.empty())
 			max_order = std::max(max_order, row.added_order);
 	}
-	self_order_mark_ = sources::next_self_order_mark(self_order_mark_, self_frame_state_.on, self_frame_shown_now(), max_order);
+	// ダミー映像の間は自分の枠を描かない (sources/composite_input.h の dummy_composite_input) ので、映っていない間と同じに扱う。
+	const bool shown = self_frame_shown_now() && !sources::dummy_mode_active();
+	self_order_mark_ = sources::next_self_order_mark(self_order_mark_, self_frame_state_.on, shown, max_order);
 }
 
 bool DockPoll::self_frame_shown_now() const

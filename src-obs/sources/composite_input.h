@@ -98,6 +98,19 @@ inline CompositeInput make_composite_input(const std::vector<int> &visible_slots
 	return input;
 }
 
+// ダミー映像の間の配置の入力。画面共有の枠の 4 つすべてに、ダミーの人 (dummy_people。枠ごとの名前と、全画面で映す人を
+// 見分ける user_id) を置き、自分の枠は描かない。自分の枠の条件 (自分の行のチェック、自分の枠に映す映像、自分の画面共有、
+// [先頭に配置]) には依らない。ダミー映像は、通話がないときに画面共有の枠と名前ラベルの見た目を確かめるためのもので、自分の
+// 枠の映像は、選んだソースそのものを見れば確かめられるためである。4 つのダミーは、自分の枠がないときと同じ配置で描く。
+// 自分の枠のチェックと割り当ては変えないので、ダミーをやめると、自分の枠は前のとおりに描かれる。
+inline CompositeInput dummy_composite_input(const std::vector<SlotPerson> &dummy_people, bool full_when_single, int gap_px)
+{
+	std::vector<int> all_slots;
+	for (int slot = 1; slot <= kCompositeCellCount; ++slot)
+		all_slots.push_back(slot);
+	return make_composite_input(all_slots, dummy_people, false, full_when_single, gap_px);
+}
+
 // 配置の入力とキャンバスの大きさから、plan_composite_layout に渡す値を作る。focus_extra_ready は偽のまま返す (子に映像が
 // あるかは、描く側が描く直前に入れる)。
 inline CompositeLayoutRequest make_layout_request(const CompositeInput &input, int canvas_w, int canvas_h)

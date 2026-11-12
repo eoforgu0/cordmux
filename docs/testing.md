@@ -500,7 +500,7 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 | 自分の枠に映す映像を OBS から選んでいる間、メインアカウントの Discord の画面共有を枠に載せない。声と録画は変わらない。選択を外したら、ほかの人と同じに扱う | 単体テスト (`test_pipeline_stream_router.cpp` の `self_frame_selected`) |
 | 画質の上限を下げると、出力の解像度か fps が実際に下がる。画質を上げる操作はどこにもない | 単体テスト (`encode_limits.test.ts`、`encode_session.test.ts`)、実機テスト (`dock-view` の `degraded`) |
 | 設定ウィンドウで映像エンコーダとエンコードで優先する項目を変えると、次に始まる画面共有のエンコードが変わる (送信側のログの行の `preference` と `latencyMode` に出る) | 単体テスト (`encode_limits.test.ts`、`transport_control.test.ts`、`test_ws_control_messages.cpp`、`test_pipeline_wiring.cpp`)、ドックを操作するテスト (`windows`)、実機テスト (設定を変えて画面共有を始め直し、そのときの送信側のログの行を見る) |
-| 通話がない状態でも、ダミー映像で見た目を確認でき、その時間帯が録画ログで実際の映像と区別できる | 単体テスト (`test_pipeline_dummy_interval.cpp`)、実機テスト (`dock-view` の `dummy`) |
+| 通話がない状態でも、ダミー映像で見た目を確認でき、その時間帯が録画ログで実際の映像と区別できる。ダミー映像の間は、自分の枠の条件 (チェック、映す映像、自分の画面共有、[先頭に配置]) に依らず自分の枠を描かず、4 つの枠すべてにダミーを描き、やめると自分の枠が戻る | 単体テスト (`test_pipeline_dummy_interval.cpp`、`test_sources_composite_input.cpp` の `dummy_composite_input`、`test_sources_dummy_tiles.cpp`)、実機テスト (`dock-view` の `dummy`) |
 | 映像と音声がずれない | 単体テスト (`test_align_audio_drift.cpp` と `encode_clock_map.test.ts` の 10 時間の模擬)、実機テスト (`integration`。`sync.py`)、実際の通話 (`call-1`。テスト動画を共有して `sync.py` で測る) |
 | 1 時間や 10 時間続けても、映像と音声のずれが時間とともに開かない。音を取り出す時計と単調な時計の速さが +-100 ppm 違っても、システム時刻が飛んでも同じ | 単体テスト (`test_align_audio_drift.cpp` の「10 時間の模擬」、`encode_clock_map.test.ts` の「10 時間の模擬」、`encode_sender_clock.test.ts`、`test_pipeline_sender_clock.cpp`) |
 | チェックの付け外し、音量、ミュートの結果が、待たずに出力に反映される | 実際の通話、目視 |
