@@ -963,7 +963,8 @@ public:
 	// 画面の枠に新しく載せる人は、載せられる人数 (config::screen_slot_capacity。自分の枠を使っている間は 3 人) に達して
 	// いれば、空いている枠があっても載せず、Insufficient を返す (自動で載せる経路と同じ上限。assign_slot_in)。ドックも同じ上限で
 	// 押せなくしている (ledger/observation.h の self_frame_limit_reached) が、その判断は最大 1 周期前の Observation で行うので、
-	// 同じ周期に自動で載せる経路 ([自動で枠に載せる]) が載せた人は、ここで割り当て表と同じロックの中で数える。
+	// 同じ周期に自動で載せる経路 (選び方が「自動」のときの apply_configure と admit_sharers、[自動で枠に載せる] の人) が
+	// 載せた人は、ここで割り当て表と同じロックの中で数える。選び方が「自動」のときも、手動のチェックは押せる。
 	SlotChange assign_slot(config::SlotKind kind, const std::string &user_id);
 	SlotChange release_slot(config::SlotKind kind, const std::string &user_id);
 

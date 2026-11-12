@@ -2347,6 +2347,47 @@ TEST_CASE("競合: 手動で 4 人目を載せると判断した後に、[自動
 	CHECK(router.route(3)->slot == assigned.slot);
 }
 
+TEST_CASE("競合: 選び方が「自動」でも、手動で載せると判断した後に自動で 3 人目が載っていれば、Pipeline が断る")
+{
+	// 選び方が「自動」でも、手動のチェックは押せる (ledger/actions.cpp の SetSlot は選び方を見ない)。外した人 x を、もう一度
+	// 載せようとする形。
+	AllocationTable table;
+	StreamRouter router;
+	const AssignPolicy policy = in_use(kAuto);
+	router.apply_configure(screens_of({"a", "b", "x"}), table, policy);
+	REQUIRE(table.assigned_count(SlotKind::Screen) == 3);
+	REQUIRE(release_slot_in(table, router, SlotKind::Screen, "x").outcome == Outcome::Released);
+	REQUIRE(router.is_excluded("x"));
+
+	// ドックが、自分の枠と Discord の人 2 人のスナップショットで、x を載せられると判断した。
+	REQUIRE(screen_slot_room(table, policy));
+	// Pipeline に渡す前に、w が画面共有を始め、自動の configure で 3 人目に載った (外した x は載らない)。
+	const ConfigureMessage with_w = screens_of({"a", "b", "x", "w"});
+	router.apply_configure(with_w, table, policy);
+	REQUIRE(table.slot_of_owner(SlotKind::Screen, "w") != 0);
+	REQUIRE(table.slot_of_owner(SlotKind::Screen, "x") == 0);
+
+	// 手動で載せる操作は、割り当て表と同じロックの中で上限を見て断る。x は外した人のまま (次の configure でも載らない)。
+	const cordmux::pipeline::Pipeline::SlotChange refused = assign_slot_in(table, router, policy, SlotKind::Screen, "x");
+	CHECK(refused.outcome == Outcome::Insufficient);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "x") == 0);
+	CHECK(router.is_excluded("x"));
+	router.apply_configure(with_w, table, policy);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "x") == 0);
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	check_drawn_within_four(table, true);
+
+	// facts から載せる経路 (受け取る範囲が「枠に載せた人だけ」のとき) で w が載った形も同じ。
+	AllocationTable table2;
+	StreamRouter router2;
+	for (const char *id : {"a", "b"})
+		REQUIRE(assign_slot_in(table2, router2, policy, SlotKind::Screen, id).outcome == Outcome::Assigned);
+	REQUIRE(screen_slot_room(table2, policy));
+	CHECK(router2.admit_sharers({"a", "b", "w"}, table2, policy) == std::vector<std::string>{"w"});
+	CHECK(assign_slot_in(table2, router2, policy, SlotKind::Screen, "x").outcome == Outcome::Insufficient);
+	check_drawn_within_four(table2, true);
+}
+
 TEST_CASE("競合: 自分の枠の映像を OBS のソース -> Discordの画面共有 -> OBS のソースと替えても、自動で待っている人がいても 4 つを超えない")
 {
 	// メインアカウント (main) は画面共有していて、自分の枠に映す映像は OBS のソース。Discord の a、b、c が載り、e が自動で

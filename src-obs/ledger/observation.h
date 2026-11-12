@@ -873,7 +873,8 @@ struct OperationFacts {
 	std::optional<VesktopRemoveFailure> vesktop_remove_failure;
 	// 診断情報のエクスポートの結果。持たない = 結果を表示していない (設定ウィンドウを閉じると消す)。
 	std::optional<ExportResultFact> export_result;
-	// 押した直後に空きがなくて枠に載せられなかった人の userId。空 = いない (載ったか、空きができたら空に戻す)。
+	// 押した直後に空きがなくて枠に載せられなかった人の userId。空 = いない (その人が載ったら空に戻す。DockPoll)。空きができても
+	// 消さず、空いている枠がある間は、行に表示しない (rules_dock.cpp の refused_note)。
 	// 押した結果は、押した所のそば (その人の行) で伝える。
 	std::string last_slot_refused_user_id;
 	// 押して、結果をまだ見ていない [移動] か [退出]。持たない = ない。もう一度押すと押し直した時刻に替わり、結果が出るか、

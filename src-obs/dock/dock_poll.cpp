@@ -1404,9 +1404,10 @@ void DockPoll::set_slot(const ledger::ActionArgs &args)
 	case pipeline::Pipeline::SlotChange::Outcome::Released:
 	case pipeline::Pipeline::SlotChange::Outcome::NotAssigned:
 		diag::logf(LOG_WARNING, "Couldn't add the person to a slot: no slot is free");
-		// 押した直後に空きがなくなって、載せられなかった (競合。自分の枠を使っている間に、自動で載せる経路が 3 人目を
-		// 載せていたときも含む。Pipeline::assign_slot)。押した所の近く (その人の行) に表示するために
-		// 記録する。消すのは、載ったときか、ledger が空きを見つけたときである。
+		// 押した直後に空きがなくなって、載せられなかった (競合。自分の枠を使っている間に、自動で載せる経路 (選び方が「自動」の
+		// とき、[自動で枠に載せる] の人) が 3 人目を載せていたときも含む。Pipeline::assign_slot)。押した所の近く (その人の行) に
+		// 表示するために記録する。消すのは、その人が載ったとき (ここと replace_slot) だけである (別の人が載せられなかったときは、
+		// その人に替わる)。空きができても消さず、空いている枠がある間は、ledger が表示しない (ledger/rules_dock.cpp の refused_note)。
 		ops_.last_slot_refused_user_id = args.user_id;
 		break;
 	}
