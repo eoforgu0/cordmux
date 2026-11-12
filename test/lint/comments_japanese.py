@@ -85,6 +85,13 @@ def tokenize_c_like(text):
             i = j
             start = i
             continue
+        # C++14 の桁区切り (2'000'000) の ' は文字リテラルの始まりではないので、直前と直後がどちらも数字のときは、
+        # コードとして読み飛ばす。読み飛ばさないと、ファイルの最後までを閉じない文字列として読み、その後の名前を
+        # 1 つも検出できない。直前だけを見ると `u8'x'` のような文字リテラルの ' も読み飛ばすので、直後も数字である
+        # ことを条件にする。
+        if c == "'" and i > 0 and text[i - 1].isdigit() and i + 1 < n and text[i + 1].isdigit():
+            i += 1
+            continue
         if c in ('"', "'", "`"):
             flush(i)
             quote = c
@@ -440,6 +447,7 @@ SELFTEST_CASES = [
     (FIXTURES_DIR / "comments_japanese" / "bad.ts", False),
     (FIXTURES_DIR / "comments_japanese" / "bad_directive_prose.ts", False),
     (FIXTURES_DIR / "comments_japanese" / "bad_license_prose.ts", False),
+    (FIXTURES_DIR / "comments_japanese" / "bad_digit_separator.cpp", False),
     (FIXTURES_DIR / "comments_japanese" / "good.ts", True),
 ]
 

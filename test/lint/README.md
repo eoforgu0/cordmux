@@ -45,7 +45,7 @@ python test/lint/<lint>.py --selftest   NG 例と OK 例でセルフテストを
 
 ## コメントと文字列の切り分け
 
-C と C++ (`.h .hpp .c .cc .cpp`) と TypeScript と JavaScript (`.ts .tsx .mjs .js`) は、同じ処理で、コメント (`//` と `/* */`)、文字列 (`"..."`、`'...'`、`` `...` ``)、生文字列リテラル (`R"delim(...)delim"`) を分ける。文字列の中の `//` (URL など) をコメントと読み違えないことは、`fixtures/identifiers_english/good.cpp` で確認する。C++14 の桁区切り (`2'000'000`) の `'` は、文字リテラルの始まりと読まない (`identifiers_english.py` と `comments_japanese.py` を除く)。テンプレート文字列の中の `${...}` は、コードとして読まずに文字列の一部とする。Python は `#` と三重引用符を、PowerShell は `#`、`<# #>`、here-string (`@"..."@` と `@'...'@`) を、同じ考え方で分ける。
+C と C++ (`.h .hpp .c .cc .cpp`) と TypeScript と JavaScript (`.ts .tsx .mjs .js`) は、同じ処理で、コメント (`//` と `/* */`)、文字列 (`"..."`、`'...'`、`` `...` ``)、生文字列リテラル (`R"delim(...)delim"`) を分ける。文字列の中の `//` (URL など) をコメントと読み違えないことは、`fixtures/identifiers_english/good.cpp` で確認する。C++14 の桁区切り (`2'000'000`) の `'` は、文字リテラルの始まりと読まない。桁区切りの後の名前とコメントを読み飛ばさないことは、`fixtures/identifiers_english/bad_digit_separator.cpp` と `fixtures/comments_japanese/bad_digit_separator.cpp` で確認する。テンプレート文字列の中の `${...}` は、コードとして読まずに文字列の一部とする。Python は `#` と三重引用符を、PowerShell は `#`、`<# #>`、here-string (`@"..."@` と `@'...'@`) を、同じ考え方で分ける。
 
 ## comments_japanese.py
 
@@ -114,8 +114,8 @@ Markdown の読み方 (行の種類、インラインのコードとリンク、
 
 ```
 fixtures/
-  identifiers_english/       bad.cpp (日本語の識別子) / good.cpp (ASCII だけ。// を含む URL の文字列がある)
-  comments_japanese/         bad.ts (英語だけのコメント) / bad_directive_prose.ts (eslint の語を含むだけの英語の説明文) /
+  identifiers_english/       bad.cpp (日本語の識別子) / bad_digit_separator.cpp (C++14 の桁区切りの後の日本語の識別子) / good.cpp (ASCII だけ。// を含む URL の文字列がある)
+  comments_japanese/         bad.ts (英語だけのコメント) / bad_digit_separator.cpp (C++14 の桁区切りの後の英語だけのコメント) / bad_directive_prose.ts (eslint の語を含むだけの英語の説明文) /
                              bad_license_prose.ts (copyright の語を含むだけの英語の説明文) / good.ts (SPDX の行、URL だけの
                              コメント、eslint の指示と、日本語のコメント)
   commit_messages_japanese/  bad_subject.txt (英語だけの件名) / good_subject.txt (日本語を含む件名)
