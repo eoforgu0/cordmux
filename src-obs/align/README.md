@@ -12,6 +12,6 @@ pipeline/ が、画面共有のストリームごとに `TimestampAligner` と `
 
 ## 依存
 
-C++17 の標準ライブラリだけを使う。
+C++17 の標準ライブラリだけを使う。audio_drift.h は、x64 では変換の計算に SSE2 の組み込み関数 (emmintrin.h) も使う。組み込み関数を使わない予備の計算も持ち、テストが 2 つを比べる。
 
-テストは src-obs/tests/test_timestamp_aligner.cpp、src-obs/tests/test_av_offset.cpp、src-obs/tests/test_align_audio_drift.cpp にある。テストに使うタイムスタンプの列 (fixture) は src-obs/tests/fixtures.h が作る。fixture ごとの統計は、テスト「fixture ごとの整列の結果を表の形で出力する」が標準出力に書く。
+テストは src-obs/tests/test_timestamp_aligner.cpp、src-obs/tests/test_av_offset.cpp、src-obs/tests/test_align_audio_drift.cpp、src-obs/tests/test_align_audio_drift_ops.cpp にある。テストに使うタイムスタンプの列 (fixture) は src-obs/tests/fixtures.h が作る。fixture ごとの統計は、テスト「fixture ごとの整列の結果を表の形で出力する」が標準出力に書く。

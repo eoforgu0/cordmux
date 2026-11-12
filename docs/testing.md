@@ -45,7 +45,7 @@ C++ の単体テストは doctest で書き、実行ファイルを 2 つ作る�
 
 | フォルダー | テストのファイル |
 |---|---|
-| `src-obs/align` | `test_timestamp_aligner.cpp`、`test_av_offset.cpp`、`test_align_audio_drift.cpp` |
+| `src-obs/align` | `test_timestamp_aligner.cpp`、`test_av_offset.cpp`、`test_align_audio_drift.cpp`、`test_align_audio_drift_ops.cpp` |
 | `src-obs/bundle` | `test_bundle_*.cpp` |
 | `src-obs/config` | `test_config_*.cpp` |
 | `src-obs/decode` | `test_decode.cpp` |
@@ -99,6 +99,7 @@ C++ の単体テストは doctest で書き、実行ファイルを 2 つ作る�
 
 - テスト「fixture ごとの整列の結果を表の形で出力する」(`test_timestamp_aligner.cpp`) は、タイムスタンプの列 (fixture) ごとに、整列の統計の表を標準出力に書く。何も確認しないテストで、値を見るためにある。`-tc="fixture*"` で、このテストだけを実行できる。
 - `test_align_audio_drift.cpp` の「10 時間の模擬」のテストは、音を取り出す時計の速さの差、時刻の揺れ、上流の段、受信の途切れを入れた 10 時間分を、配信の経路と録画の経路の両方で流し、音と映像のずれの表 (終わり - 始め、最大の飛び、置き直しの回数) を標準出力に書く。`-sf="*test_align_audio_drift*"` で、このファイルのテストを実行できる。
+- `test_align_audio_drift_ops.cpp` は、音の変換の計算の 2 つの実装 (x64 の既定の SSE2 の計算と、組み込み関数を使わない予備の計算) を同じ入力で比べる。予備の計算は製品のビルドでは使われないので、ここでコンパイルして確かめる。書き出す位置と数は完全に一致すること、値の差は 32 個の積の和を足す順による丸めの誤差の上限 (入力の大きさの約 9e-6 倍) 以内であることを確かめる。
 - 製品の経路を通す長い模擬は、音の時計が +-500 ppm ずれたチャンクを、実物の `AudioMixer` (`test_pipeline_audio_mixer.cpp`)、実物の `place_audio` (`test_record_audio.cpp`)、`Recorder` の音声の書き込み (`test_record_io_recorder.cpp`) に流す。`AudioMixer` では、画面の音は `screen_audio_at_us`、声は `voice_audio_at_us` で置く時刻を作る。音に 1 秒ごとの目印のパルスを入れ、出した音か書いた音の中のパルスの時刻を測って、表を標準出力に書く。
 - 時間を測るテスト (`test_align_audio_drift.cpp` の 480 サンプルのチャンクを 1 つ置く時間、`test_pipeline_audio_mixer.cpp` の 30 組を混ぜる時間) は、Release の値を表で出し、値では合否を決めない。
 

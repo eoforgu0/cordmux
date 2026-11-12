@@ -4,7 +4,8 @@
 // (AudioDriftCorrector)。音を取り出す時計と出力の時計の速さの差を、ごくわずかなサンプルレートの変換で連続的に、
 // 両方の向きで吸収する。AudioMixer (配信) と録画が同じものを使う。決め方は docs/architecture.md の
 // 「音声の時計の差の吸収」にある。
-// libobs にも FFmpeg にも依存しない。C++17 の標準ライブラリだけを使う。スレッドセーフではない。
+// libobs にも FFmpeg にも依存しない。C++17 の標準ライブラリと、x64 では SSE2 の組み込み関数 (emmintrin.h) だけを
+// 使う。スレッドセーフではない。
 
 #pragma once
 
@@ -12,8 +13,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
+
+#if defined(_M_X64) || defined(__SSE2__)
+#include <emmintrin.h>
+#define CORDMUX_AUDIO_DRIFT_SSE2 1
+#endif
 
 namespace cordmux::align {
 
@@ -262,6 +269,10 @@ namespace detail {
 // 窓は Kaiser (beta 7) で、位相ごとに係数の和を 1 にそろえる (端数によって音量が変わらないため)。
 inline constexpr int kAudioDriftPhases = 256;
 inline constexpr int kAudioDriftTaps = kAudioDriftHalfTaps * 2;
+// 表の 1 行の長さ。位相 p の係数 (kAudioDriftTaps 個) と、位相 p + 1 の係数との差 (kAudioDriftTaps 個) を並べる。
+// 差を前もって作っておくと、サンプルごとの直線の補間は掛け算と足し算 1 回ずつになる。1 つのサンプルに要る係数が
+// 続いた 256 バイトに収まるので、キャッシュの行も 4 つで済む。
+inline constexpr int kAudioDriftRow = kAudioDriftTaps * 2;
 
 inline double bessel_i0(double x)
 {
@@ -277,12 +288,18 @@ inline double bessel_i0(double x)
 	return sum;
 }
 
-inline const std::vector<float> &audio_drift_kernel()
+// 係数の表。位相 p の行は p x kAudioDriftRow 番目から。行の先頭を 64 バイト (キャッシュの行) にそろえる。SSE2 の
+// 読み込みが 16 バイトにそろうと、読み込みを掛け算と足し算の命令の中に入れられるので、命令が減る。
+struct AudioDriftKernelTable {
+	alignas(64) float v[std::size_t(kAudioDriftPhases) * kAudioDriftRow];
+};
+
+inline const float *audio_drift_kernel()
 {
-	static const std::vector<float> table = [] {
+	static const std::unique_ptr<AudioDriftKernelTable> table = [] {
 		constexpr double kPi = 3.14159265358979323846;
 		constexpr double kBeta = 7.0;
-		std::vector<float> t(std::size_t(kAudioDriftPhases + 1) * kAudioDriftTaps);
+		std::vector<float> coef(std::size_t(kAudioDriftPhases + 1) * kAudioDriftTaps);
 		const double i0_beta = bessel_i0(kBeta);
 		for (int p = 0; p <= kAudioDriftPhases; ++p) {
 			const double frac = double(p) / double(kAudioDriftPhases);
@@ -300,25 +317,246 @@ inline const std::vector<float> &audio_drift_kernel()
 				sum += row[k];
 			}
 			for (int k = 0; k < kAudioDriftTaps; ++k)
-				t[std::size_t(p) * kAudioDriftTaps + std::size_t(k)] = float(row[k] / sum);
+				coef[std::size_t(p) * kAudioDriftTaps + std::size_t(k)] = float(row[k] / sum);
+		}
+		auto t = std::make_unique<AudioDriftKernelTable>();
+		for (int p = 0; p < kAudioDriftPhases; ++p) {
+			const float *row0 = &coef[std::size_t(p) * kAudioDriftTaps];
+			const float *row1 = row0 + kAudioDriftTaps;
+			float *out = &t->v[std::size_t(p) * kAudioDriftRow];
+			for (int k = 0; k < kAudioDriftTaps; ++k) {
+				out[k] = row0[k];
+				out[kAudioDriftTaps + k] = row1[k] - row0[k];
+			}
 		}
 		return t;
 	}();
-	return table;
+	return table->v;
 }
+
+// 1 つの出力 (j 番目) の位置。first は 32 タップの最初の入力の番号 (base + 整数部)、phase は位相の行 (-1 は入力の
+// サンプルそのもの)、frac は位相の間の端数。std::floor と同じ値の整数部を、整数への変換 (0 の向きへの切り捨て) と、
+// 負の数だけ 1 引くことで求める (x64 の SSE2 には端数を切り捨てる命令がなく、std::floor は関数の呼び出しになるため)。
+inline void audio_drift_position(double f0, double inc, std::int64_t base, std::size_t j, std::int64_t *first,
+				 int *phase, float *frac)
+{
+	const double pos = f0 + double(j) * inc;
+	std::int64_t whole = std::int64_t(pos);
+	if (double(whole) > pos)
+		--whole;
+	const double f = pos - double(whole);
+	*first = base + whole;
+	if (f == 0.0 && inc == 1.0) {
+		*phase = -1;
+		*frac = 0.0f;
+		return;
+	}
+	const double p = f * double(kAudioDriftPhases);
+	int pi = int(p);
+	if (pi >= kAudioDriftPhases)
+		pi = kAudioDriftPhases - 1;
+	*phase = pi;
+	*frac = float(p - double(pi));
+}
+
+// 変換の計算は 2 つの実装を持つ。x64 では SSE2 の組み込み関数を使う AudioDriftSse2Ops、それ以外では組み込み関数を
+// 使わない AudioDriftPortableOps を使う (AudioDriftDefaultOps)。どちらも同じ関数を持つ。
+//   coef       位相の行と端数から、32 個の係数を作る
+//   dot        係数と入力の 32 サンプルの内積
+//   stereo     2 チャンネルの 1 つの出力のサンプルを、インターリーブの 2 つのサンプルとして書く
+//   positions  j0 番目から n 個の出力の位置 (audio_drift_position と同じ値)。配列は n を偶数に切り上げた長さを持つ
+// 32 タップの和は、タップを 4 つずつの 8 つの組 (0 から 7) に分け、組 g と組 g + 4 の積の和を 4 つ (g = 0 から 3) 作り、
+// (0 + 2) + (1 + 3) と足す。その 4 つの値 (組の中の位置ごと) も (0 + 2) + (1 + 3) と足す。1 つの和に順に足すと、
+// 足し算が前の結果を待つ鎖 (32 段) になり、そこで時間が決まるので、鎖を短くする。2 つの実装はこの順で足すので、
+// MSVC の x64 では同じ値になる。テスト (test_align_audio_drift_ops.cpp) は、2 つの実装の位置が 1 ビットも違わないことと、
+// 値の差が丸めの誤差の見積もりの上限以内であることを確かめる。
+struct AudioDriftPortableOps {
+	struct Coef {
+		float v[kAudioDriftTaps];
+	};
+
+	static void coef(const float *row, float pf, Coef *c)
+	{
+		for (int k = 0; k < kAudioDriftTaps; ++k)
+			c->v[k] = row[k] + row[kAudioDriftTaps + k] * pf;
+	}
+
+	static float dot(const Coef &c, const float *src)
+	{
+		float s[4];
+		for (int m = 0; m < 4; ++m) {
+			float a[4];
+			for (int g = 0; g < 4; ++g)
+				a[g] = c.v[4 * g + m] * src[4 * g + m] + c.v[4 * g + 16 + m] * src[4 * g + 16 + m];
+			s[m] = (a[0] + a[2]) + (a[1] + a[3]);
+		}
+		return (s[0] + s[2]) + (s[1] + s[3]);
+	}
+
+	static void stereo(const float *row, float pf, const float *left, const float *right, float *dst)
+	{
+		Coef c;
+		coef(row, pf, &c);
+		dst[0] = dot(c, left);
+		dst[1] = dot(c, right);
+	}
+
+	static void positions(double f0, double inc, std::int64_t base, std::size_t j0, std::size_t n,
+			      std::int64_t *first, int *phase, float *frac)
+	{
+		for (std::size_t b = 0; b < n; ++b)
+			audio_drift_position(f0, inc, base, j0 + b, &first[b], &phase[b], &frac[b]);
+	}
+};
+
+#if defined(CORDMUX_AUDIO_DRIFT_SSE2)
+
+struct AudioDriftSse2Ops {
+	// 係数 (kAudioDriftTaps 個) を 4 つずつ持つ。
+	struct Coef {
+		__m128 v[kAudioDriftTaps / 4];
+	};
+
+	// 係数の組 g (row は表の行で、16 バイトにそろっている。f は位相の間の端数を 4 つ並べたもの)。
+	static __m128 coef4(const float *row, __m128 f, int g)
+	{
+		return _mm_add_ps(_mm_load_ps(row + 4 * g), _mm_mul_ps(_mm_load_ps(row + kAudioDriftTaps + 4 * g), f));
+	}
+
+	static void coef(const float *row, float pf, Coef *c)
+	{
+		const __m128 f = _mm_set1_ps(pf);
+		for (int g = 0; g < kAudioDriftTaps / 4; ++g)
+			c->v[g] = coef4(row, f, g);
+	}
+
+	// 組の中の位置ごとの 4 つの和。
+	static __m128 dot4(const Coef &c, const float *src)
+	{
+		__m128 a[4];
+		for (int g = 0; g < 4; ++g)
+			a[g] = _mm_add_ps(_mm_mul_ps(c.v[g], _mm_loadu_ps(src + 4 * g)),
+					  _mm_mul_ps(c.v[g + 4], _mm_loadu_ps(src + 4 * g + 16)));
+		return _mm_add_ps(_mm_add_ps(a[0], a[2]), _mm_add_ps(a[1], a[3]));
+	}
+
+	static float dot(const Coef &c, const float *src)
+	{
+		const __m128 s = dot4(c, src);
+		const __m128 t = _mm_add_ps(s, _mm_movehl_ps(s, s));
+		return _mm_cvtss_f32(_mm_add_ss(t, _mm_shuffle_ps(t, t, 1)));
+	}
+
+	// 係数は作ったその場で両方のチャンネルに使う (係数を一度メモリーに置くより、レジスターだけで済む)。ループで
+	// 書くと MSVC が展開せず、係数を配列の添字で読むことになるので、8 つの組を並べて書く。
+	static void stereo(const float *row, float pf, const float *left, const float *right, float *dst)
+	{
+		const __m128 f = _mm_set1_ps(pf);
+		__m128 c = coef4(row, f, 0);
+		__m128 l0 = _mm_mul_ps(c, _mm_loadu_ps(left));
+		__m128 r0 = _mm_mul_ps(c, _mm_loadu_ps(right));
+		c = coef4(row, f, 1);
+		__m128 l1 = _mm_mul_ps(c, _mm_loadu_ps(left + 4));
+		__m128 r1 = _mm_mul_ps(c, _mm_loadu_ps(right + 4));
+		c = coef4(row, f, 2);
+		__m128 l2 = _mm_mul_ps(c, _mm_loadu_ps(left + 8));
+		__m128 r2 = _mm_mul_ps(c, _mm_loadu_ps(right + 8));
+		c = coef4(row, f, 3);
+		__m128 l3 = _mm_mul_ps(c, _mm_loadu_ps(left + 12));
+		__m128 r3 = _mm_mul_ps(c, _mm_loadu_ps(right + 12));
+		c = coef4(row, f, 4);
+		l0 = _mm_add_ps(l0, _mm_mul_ps(c, _mm_loadu_ps(left + 16)));
+		r0 = _mm_add_ps(r0, _mm_mul_ps(c, _mm_loadu_ps(right + 16)));
+		c = coef4(row, f, 5);
+		l1 = _mm_add_ps(l1, _mm_mul_ps(c, _mm_loadu_ps(left + 20)));
+		r1 = _mm_add_ps(r1, _mm_mul_ps(c, _mm_loadu_ps(right + 20)));
+		c = coef4(row, f, 6);
+		l2 = _mm_add_ps(l2, _mm_mul_ps(c, _mm_loadu_ps(left + 24)));
+		r2 = _mm_add_ps(r2, _mm_mul_ps(c, _mm_loadu_ps(right + 24)));
+		c = coef4(row, f, 7);
+		l3 = _mm_add_ps(l3, _mm_mul_ps(c, _mm_loadu_ps(left + 28)));
+		r3 = _mm_add_ps(r3, _mm_mul_ps(c, _mm_loadu_ps(right + 28)));
+		const __m128 l = _mm_add_ps(_mm_add_ps(l0, l2), _mm_add_ps(l1, l3));
+		const __m128 r = _mm_add_ps(_mm_add_ps(r0, r2), _mm_add_ps(r1, r3));
+		// (l0 + l2, r0 + r2, l1 + l3, r1 + r3)
+		const __m128 t = _mm_add_ps(_mm_unpacklo_ps(l, r), _mm_unpackhi_ps(l, r));
+		_mm_storel_pi(reinterpret_cast<__m64 *>(dst), _mm_add_ps(t, _mm_movehl_ps(t, t)));
+	}
+
+	// 位置を 2 つずつ、倍精度の命令で求める。整数部を 32 ビットで扱うので、位置の絶対値 (1 + (j0 + n + 1) x |inc|
+	// より小さい) が 2^31 に届きうるときは、1 つずつ求める (1 回のチャンクの長さとしては届かない)。
+	static void positions(double f0, double inc, std::int64_t base, std::size_t j0, std::size_t n,
+			      std::int64_t *first, int *phase, float *frac)
+	{
+		if (!(std::fabs(double(j0 + n + 1) * inc) < 1073741824.0)) {
+			AudioDriftPortableOps::positions(f0, inc, base, j0, n, first, phase, frac);
+			return;
+		}
+		const __m128d vf0 = _mm_set1_pd(f0);
+		const __m128d vinc = _mm_set1_pd(inc);
+		const __m128d one = _mm_set1_pd(1.0);
+		const __m128d two = _mm_set1_pd(2.0);
+		const __m128d phases = _mm_set1_pd(double(kAudioDriftPhases));
+		const __m128i last = _mm_set1_epi32(kAudioDriftPhases - 1);
+		const bool unit = inc == 1.0;
+		__m128d jd = _mm_set_pd(double(j0 + 1), double(j0));
+		for (std::size_t b = 0; b < n; b += 2, jd = _mm_add_pd(jd, two)) {
+			const __m128d pos = _mm_add_pd(vf0, _mm_mul_pd(jd, vinc));
+			// 0 の向きへ切り捨て、切り捨てた値が pos より大きい (pos が負) ときは 1 引く。
+			__m128d whole = _mm_cvtepi32_pd(_mm_cvttpd_epi32(pos));
+			whole = _mm_sub_pd(whole, _mm_and_pd(_mm_cmpgt_pd(whole, pos), one));
+			const __m128i wi = _mm_cvttpd_epi32(whole);
+			const __m128d f = _mm_sub_pd(pos, whole);
+			const __m128d p = _mm_mul_pd(f, phases);
+			__m128i pi = _mm_cvttpd_epi32(p);
+			pi = _mm_add_epi32(pi, _mm_cmpgt_epi32(pi, last)); // kAudioDriftPhases 以上は 1 引く
+			const __m128 pf = _mm_cvtpd_ps(_mm_sub_pd(p, _mm_cvtepi32_pd(pi)));
+			first[b] = base + _mm_cvtsi128_si32(wi);
+			first[b + 1] = base + _mm_cvtsi128_si32(_mm_srli_si128(wi, 4));
+			_mm_storel_epi64(reinterpret_cast<__m128i *>(phase + b), pi);
+			_mm_storel_pi(reinterpret_cast<__m64 *>(frac + b), pf);
+			if (unit) {
+				const int zero = _mm_movemask_pd(_mm_cmpeq_pd(f, _mm_setzero_pd()));
+				for (int k = 0; k < 2; ++k) {
+					if (zero & (1 << k)) {
+						phase[b + std::size_t(k)] = -1;
+						frac[b + std::size_t(k)] = 0.0f;
+					}
+				}
+			}
+		}
+	}
+};
+
+using AudioDriftDefaultOps = AudioDriftSse2Ops;
+
+#else
+
+using AudioDriftDefaultOps = AudioDriftPortableOps;
+
+#endif
 
 } // namespace detail
 
 // 音のチャンクを目標の位置に追従させ、変換したサンプルを書き出す。AudioDriftTracker が位置を決め、ここで窓をかけた
-// sinc でサンプルの値を計算する。チャンネル数は作るときに決める (インターリーブ)。
+// sinc でサンプルの値を計算する。チャンネル数は作るときに決める (受け取るサンプルと書き出すサンプルはインターリーブ)。
+// 受け取った入力はチャンネルごとに分けて持つ。1 つのチャンネルの 32 タップが続いた場所に並ぶので、4 つずつまとめて
+// 掛けて足せる。
+//
+// Ops は変換の計算の実装 (detail の AudioDriftSse2Ops か AudioDriftPortableOps)。製品は既定の計算の
+// AudioDriftCorrector を使い、テストは組み込み関数を使わない計算で作ったものと出力を比べる。マクロで切り替えないのは、
+// 同じ名前のクラスの中身が翻訳単位ごとに違うと (ODR の違反)、リンクでどちらか一方だけが残り、2 つを比べたつもりで
+// 同じものを比べることになるためである。
 //
 // FFmpeg の libswresample (swr_set_compensation) を使わないのは、次の 2 つのためである。(1) 変換の内部にためる
 // サンプルの数が呼び出しごとに変わり、書き出したサンプルが入力のどの位置に当たるかを、ここで決めた位置と 1 サンプルの
 // 単位で突き合わせる必要がある。(2) 配信と録画の両方の単体テストで、時刻の追従を FFmpeg なしで確かめたい。
-class AudioDriftCorrector {
+template<class Ops> class BasicAudioDriftCorrector {
 public:
-	explicit AudioDriftCorrector(const AudioDriftConfig &config = AudioDriftConfig{}, std::size_t channels = 2)
-		: tracker_(config), channels_(channels > 0 ? channels : 1)
+	explicit BasicAudioDriftCorrector(const AudioDriftConfig &config = AudioDriftConfig{}, std::size_t channels = 2)
+		: tracker_(config),
+		  channels_(channels > 0 ? channels : 1),
+		  history_(channels_)
 	{
 	}
 
@@ -330,10 +568,10 @@ public:
 	{
 		const AudioDriftStep step = tracker_.push(target_pos, frames, min_pos);
 		if (step.resynced) {
-			history_.clear();
+			length_ = 0;
 			history_start_ = 0;
 		}
-		history_.insert(history_.end(), samples, samples + frames * channels_);
+		append(samples, frames);
 		render(step.frames, out);
 		return step;
 	}
@@ -344,76 +582,165 @@ public:
 	const AudioDriftStats &stats() const { return tracker_.stats(); }
 
 private:
+	// 受け取ったサンプルを、チャンネルごとの履歴の末尾に追加する。領域は足りないときだけ広げ、0 で埋め直さない。
+	void append(const float *samples, std::size_t frames)
+	{
+		const std::size_t old = length_;
+		length_ = old + frames;
+		if (length_ > history_[0].size()) {
+			for (std::vector<float> &h : history_)
+				h.resize(std::max(length_, h.size() * 2));
+		}
+		if (channels_ == 2) {
+			float *left = history_[0].data() + old;
+			float *right = history_[1].data() + old;
+			for (std::size_t f = 0; f < frames; ++f) {
+				left[f] = samples[f * 2];
+				right[f] = samples[f * 2 + 1];
+			}
+			return;
+		}
+		for (std::size_t c = 0; c < channels_; ++c) {
+			float *dst = history_[c].data() + old;
+			for (std::size_t f = 0; f < frames; ++f)
+				dst[f] = samples[f * channels_ + c];
+		}
+	}
+
 	// 入力の i 番目のサンプル (チャンネル c)。受け取る前と、置き直す前の番号 (負) は無音にする。
 	float input_at(std::int64_t i, std::size_t c) const
 	{
 		if (i < history_start_)
 			return 0.0f;
-		const std::size_t index = std::size_t(i - history_start_) * channels_ + c;
-		return index < history_.size() ? history_[index] : 0.0f;
+		const std::size_t index = std::size_t(i - history_start_);
+		return index < length_ ? history_[c][index] : 0.0f;
 	}
 
 	void render(std::size_t count, std::vector<float> *out)
 	{
-		out->assign(count * channels_, 0.0f);
-		const std::vector<float> &kernel = detail::audio_drift_kernel();
+		// 下で全部のサンプルを書くので、0 で埋めない。
+		out->resize(count * channels_);
 		const std::int64_t i0 = tracker_.first_input_int();
 		const double f0 = tracker_.first_input_frac();
 		const double inc = tracker_.input_step();
-		float coef[detail::kAudioDriftTaps];
-		std::int64_t i = i0;
-		for (std::size_t j = 0; j < count; ++j) {
-			const double pos = f0 + double(j) * inc;
-			const double whole = std::floor(pos);
-			i = i0 + std::int64_t(whole);
-			const double f = pos - whole;
-			if (f == 0.0 && inc == 1.0) {
-				for (std::size_t c = 0; c < channels_; ++c)
-					(*out)[j * channels_ + c] = input_at(i, c);
-			} else {
-				const double p = f * double(detail::kAudioDriftPhases);
-				int pi = int(p);
-				if (pi >= detail::kAudioDriftPhases)
-					pi = detail::kAudioDriftPhases - 1;
-				const float pf = float(p - double(pi));
-				const float *row0 = &kernel[std::size_t(pi) * detail::kAudioDriftTaps];
-				const float *row1 = row0 + detail::kAudioDriftTaps;
-				for (int k = 0; k < detail::kAudioDriftTaps; ++k)
-					coef[k] = row0[k] + (row1[k] - row0[k]) * pf;
-				const std::int64_t first = i - (kAudioDriftHalfTaps - 1);
-				const bool inside = first >= history_start_ &&
-						    std::size_t(first - history_start_ + detail::kAudioDriftTaps) * channels_ <=
-							    history_.size();
-				for (std::size_t c = 0; c < channels_; ++c) {
-					float acc = 0.0f;
-					if (inside) {
-						const std::size_t at = std::size_t(first - history_start_) * channels_ + c;
-						const float *src = &history_[at];
-						for (int k = 0; k < detail::kAudioDriftTaps; ++k)
-							acc += coef[k] * src[std::size_t(k) * channels_];
-					} else {
-						for (int k = 0; k < detail::kAudioDriftTaps; ++k)
-							acc += coef[k] * input_at(first + k, c);
-					}
-					(*out)[j * channels_ + c] = acc;
+		if (f0 == 0.0 && inc == 1.0)
+			copy_exact(i0, count, out->data());
+		else
+			convert(i0, f0, inc, count, out->data());
+		discard_old();
+	}
+
+	// 比が 1 で端数がない間は、j 番目は入力の i0 + j 番目のサンプルそのもの。
+	void copy_exact(std::int64_t i0, std::size_t count, float *dst) const
+	{
+		// メンバーをループの前で変数に移す (convert_block と同じ理由)。
+		const std::size_t channels = channels_;
+		const std::int64_t start = history_start_;
+		const std::size_t length = length_;
+		const float *left = history_[0].data();
+		const float *right = channels == 2 ? history_[1].data() : nullptr;
+		for (std::size_t j = 0; j < count; ++j, dst += channels) {
+			const std::int64_t i = i0 + std::int64_t(j);
+			if (i < start || std::size_t(i - start) >= length) {
+				for (std::size_t c = 0; c < channels; ++c)
+					dst[c] = 0.0f;
+				continue;
+			}
+			const std::size_t at = std::size_t(i - start);
+			if (right != nullptr) {
+				dst[0] = left[at];
+				dst[1] = right[at];
+				continue;
+			}
+			for (std::size_t c = 0; c < channels; ++c)
+				dst[c] = history_[c][at];
+		}
+	}
+
+	// kBlock 個ずつ、先に全部の位置 (入力の整数部と位相) を求め、その後で値を計算する。1 つのサンプルの中で位置から
+	// 値までを続けて計算すると、位置の変換と係数と内積が前の結果を待つ長い鎖になり、CPU が次のサンプルの計算を
+	// 重ねきれない。位置だけのループと値だけのループに分けると、それぞれが重なる。
+	void convert(std::int64_t i0, double f0, double inc, std::size_t count, float *dst) const
+	{
+		constexpr std::size_t kBlock = 64; // 偶数 (Ops::positions が 2 つずつ書くため)
+		std::int64_t firsts[kBlock];       // 32 タップの最初の入力の番号
+		int phases[kBlock];                // 位相の行の番号。-1 は、入力のサンプルそのもの (端数がない)
+		float fracs[kBlock];               // 位相の間の端数
+		const std::int64_t base = i0 - (kAudioDriftHalfTaps - 1);
+		for (std::size_t j0 = 0; j0 < count; j0 += kBlock) {
+			const std::size_t n = std::min(kBlock, count - j0);
+			Ops::positions(f0, inc, base, j0, n, firsts, phases, fracs);
+			convert_block(firsts, phases, fracs, n, dst + j0 * channels_);
+		}
+	}
+
+	// 位置を求めた n 個の出力の値を計算する。
+	void convert_block(const std::int64_t *firsts, const int *phases, const float *fracs, std::size_t n,
+			   float *dst) const
+	{
+		// メンバーをループの前で変数に移す (dst への書き込みがメンバーを書き換えうるとみなされ、毎回メモリーから
+		// 読まないようにするため)。
+		const std::size_t channels = channels_;
+		const std::int64_t start = history_start_;
+		const std::size_t length = length_;
+		const float *left = history_[0].data();
+		const float *right = channels == 2 ? history_[1].data() : nullptr;
+		const float *kernel = detail::audio_drift_kernel();
+		for (std::size_t b = 0; b < n; ++b, dst += channels) {
+			const std::int64_t first = firsts[b];
+			if (phases[b] < 0) {
+				for (std::size_t c = 0; c < channels; ++c)
+					dst[c] = input_at(first + (kAudioDriftHalfTaps - 1), c);
+				continue;
+			}
+			const float *row = kernel + std::size_t(phases[b]) * detail::kAudioDriftRow;
+			const bool inside = first >= start &&
+					    std::size_t(first - start) + std::size_t(detail::kAudioDriftTaps) <= length;
+			if (inside && right != nullptr) {
+				const std::size_t at = std::size_t(first - start);
+				Ops::stereo(row, fracs[b], left + at, right + at, dst);
+				continue;
+			}
+			typename Ops::Coef coef;
+			Ops::coef(row, fracs[b], &coef);
+			for (std::size_t c = 0; c < channels; ++c) {
+				if (inside) {
+					dst[c] = Ops::dot(coef, history_[c].data() + (first - start));
+					continue;
 				}
+				// 置き直した直後の、受け取る前の番号を含む所。無音を詰めた 32 サンプルで同じ計算をする。
+				float window[detail::kAudioDriftTaps];
+				for (int k = 0; k < detail::kAudioDriftTaps; ++k)
+					window[k] = input_at(first + k, c);
+				dst[c] = Ops::dot(coef, window);
 			}
 		}
-		// 次の計算に要らない古いサンプルを捨てる (次に書き出す位置の前 kAudioDriftHalfTaps サンプルは残す)。
-		i = tracker_.next_read_int();
-		const std::int64_t keep_from = i - kAudioDriftHalfTaps;
-		if (keep_from > history_start_) {
-			const std::size_t drop =
-				std::min(std::size_t(keep_from - history_start_) * channels_, history_.size());
-			history_.erase(history_.begin(), history_.begin() + std::ptrdiff_t(drop));
-			history_start_ += std::int64_t(drop / channels_);
-		}
+	}
+
+	// 次の計算に要らない古いサンプルを捨てる (次に書き出す位置の前 kAudioDriftHalfTaps サンプルは残す)。
+	void discard_old()
+	{
+		const std::int64_t keep_from = tracker_.next_read_int() - kAudioDriftHalfTaps;
+		if (keep_from <= history_start_)
+			return;
+		const std::size_t drop = std::min(std::size_t(keep_from - history_start_), length_);
+		for (std::vector<float> &h : history_)
+			std::copy(h.begin() + std::ptrdiff_t(drop), h.begin() + std::ptrdiff_t(length_), h.begin());
+		length_ -= drop;
+		history_start_ += std::int64_t(drop);
 	}
 
 	AudioDriftTracker tracker_;
 	std::size_t channels_;
-	std::vector<float> history_;    // 受け取った入力 (インターリーブ)。history_start_ 番目から
+	// チャンネルごとの、受け取った入力。history_start_ 番目から length_ 個。領域の長さは length_ 以上。
+	std::vector<std::vector<float>> history_;
+	std::size_t length_ = 0;
 	std::int64_t history_start_ = 0;
 };
 
+// 配信 (AudioMixer) と録画が使う、既定の計算の AudioDriftCorrector。
+using AudioDriftCorrector = BasicAudioDriftCorrector<detail::AudioDriftDefaultOps>;
+
 } // namespace cordmux::align
+
+#undef CORDMUX_AUDIO_DRIFT_SSE2
