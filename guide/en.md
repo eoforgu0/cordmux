@@ -158,7 +158,7 @@ You can temporarily show just one person full screen, from the people in slots a
 
 ### Checking the look with placeholders
 
-To check how the slots and name labels look without a call, you can show placeholders in all slots. Turn them on or off with the [Show] check box under "Placeholders" at the bottom of the [Display] tab of the dock. While they're shown, nothing from the people in the call appears on the stream. During that time, the first line of the dock starts with "Showing placeholders".
+To check how the slots and name labels look without a call, you can show placeholders in all slots. Turn them on or off with the [Show] check box under "Placeholders" at the bottom of the [Display] tab of the dock. While they're shown, nothing from the people in the call appears on the stream, and the self slot isn't shown. During that time, the first line of the dock starts with "Showing placeholders".
 
 ### Incoming video and encoding settings
 
@@ -249,6 +249,7 @@ The self slot appears only while an OBS source or scene is selected in the [Vide
 - Starting a screen share in Discord doesn't always select the check box. It's selected only when the [Slot Assignment] box is "Automatic" or [Add Automatically] in the row's menu is selected.
 - When other participants fill all four slots, you can't select the check box. Clear another participant's check box to free a slot.
 - If the row shows "Video not found", the source or scene you chose can't be found. Choose one again in the [Video for Self Slot] box.
+- While placeholders are shown, the self slot isn't shown.
 
 ### No voice or screen share audio in OBS
 
