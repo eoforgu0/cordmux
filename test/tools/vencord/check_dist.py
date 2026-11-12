@@ -15,10 +15,12 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
-# Vesktop が読む Vencord の 5 つのファイル。3 つの JS と CSS のほかに、package.json も必要である。
-# Vesktop 1.6.7 は、起動したときに vencordDir にこの 5 つがそろっているかを確認 (src/main/utils/vencordLoader.ts の
-# isValidVencordInstall)、1 つでもなければ、公式の最新の Vencord をダウンロードして vencordDir に書く (同じファイルの
-# ensureVencordFiles。src/main/mainWindow.ts の createWindows から呼ばれる)。cordmux の Vencord はそれで上書きされる。
+# Vesktop が読む Vencord の 5 つのファイル。3 つの JS と CSS のほかに、package.json も置く。
+# Vesktop は、起動したときに vencordDir のファイルがそろっているかを確認し (src/main/utils/vencordLoader.ts の
+# isValidVencordInstall)、1 つでもなければ、公式の最新の Vencord をダウンロードして vencordDir に書く。cordmux の Vencord は
+# それで上書きされる。確かめるファイルは、Vesktop 1.6.7 では package.json を含む 5 つ (同じファイルの ensureVencordFiles。
+# src/main/mainWindow.ts の createWindows から呼ばれる)、1.6.9 では package.json を除く 4 つ (mainWindow.ts の起動の処理が
+# downloadVencordFiles を呼ぶ) である。どちらでも上書きされないように、5 つともそろえる。
 #   - 中身は {} のままにし、バージョンを書かない (バージョンは cordmux-build.txt が持つ)。中身の照合もしない。
 #     Vesktop も、Vencord をダウンロードしたときに、中身が {} の package.json を書く。
 #   - pnpm build は package.json を書かないので、CI (.github/workflows/vencord-plugin.yml) が、ないときだけ {} を

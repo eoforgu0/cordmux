@@ -212,8 +212,8 @@ outside_button: 設定
 outside_button: 音声
 # OBS の [設定] の [ホットキー] ページ (Basic.Settings.Hotkeys)。cordmux の全画面のホットキーにキーを割り当てる所。
 outside_button: ホットキー
-# Vesktop の通知領域のアイコンのメニューの [Restart] と [Quit] (Vesktop 1.6.7 の resources\app.asar のトレイのメニュー:
-# Open、About、Repair Vencord、Reset Vesktop、Restart、Quit。英語だけなので、日本語のセットにも同じ文字列)。Vesktop 1.6.7 は
+# Vesktop の通知領域のアイコンのメニューの [Restart] と [Quit] (Vesktop 1.6.7 の resources\app.asar と 1.6.9 のソースのトレイのメニュー:
+# Open、About、Repair Vencord、Reset Vesktop、Restart、Quit。英語だけなので、日本語のセットにも同じ文字列)。Vesktop 1.6.7 と 1.6.9 は
 # 設定 Minimize to tray が既定で有効で、ウィンドウを閉じても終了せずに通知領域に残るので、手順書は終了と再起動をこの
 # メニューで書く。アプリのメニューの "Relaunch" は別の項目なので使わない。Windows の通知領域の、隠れたアイコンを表示する
 # [^] (ボタンには文字がなく、上向きの山形のアイコン。ツールチップは「隠れているインジケーターを表示します」/

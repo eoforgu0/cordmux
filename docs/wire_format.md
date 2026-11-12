@@ -317,7 +317,7 @@ timestamp_us は単調に増えるとは限らない。定数を下げたとき�
 
 Host の検証は、ブラウザーで開いたページが DNS リバインディングで 127.0.0.1 に接続するのを防ぐ。Origin の検証は、ブラウザーで開いたほかのサイトのページからの接続を断る。どちらも、ブラウザーでないプログラムは好きな値を送れるので、認証の本体はトークン (hello の secret) である。トークンで守れる範囲は、docs/architecture.md の「接続の認証と制限」にある。
 
-許可する Origin の一覧は `ListenerConfig::allowed_origins` で変えられる。Vesktop 1.6.7 は discord.com を開き、Vesktop の設定で canary か ptb を選ぶと、それぞれのホストを開く。そのため、一覧はこの 3 つにしてある。Vesktop が接続のときに Origin ヘッダーを送るか、送るならどの値かは、確認していない。実際の Vesktop からの接続は、この一覧で受け付けられている。テスト用の送信側は `https://discord.com` を送る。
+許可する Origin の一覧は `ListenerConfig::allowed_origins` で変えられる。Vesktop 1.6.7 と 1.6.9 は discord.com を開き、Vesktop の設定で canary か ptb を選ぶと、それぞれのホストを開く。そのため、一覧はこの 3 つにしてある。Vesktop が接続のときに Origin ヘッダーを送るか、送るならどの値かは、確認していない。実際の Vesktop からの接続は、この一覧で受け付けられている。テスト用の送信側は `https://discord.com` を送る。
 
 ### トークンファイル
 

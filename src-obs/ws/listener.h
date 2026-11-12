@@ -49,7 +49,7 @@ struct ListenerConfig {
 	// 1 つのメッセージの長さの上限 (バイト)。目安の値で、測って決めたものではない。
 	size_t max_message_bytes = 64ull * 1024 * 1024;
 	// Origin ヘッダーがない接続は許す。Origin ヘッダーがあれば、この一覧のどれかと一致するときだけ許す (一覧が空なら、
-	// Origin ヘッダーのある接続をすべて拒む)。Vesktop 1.6.7 の src/main/mainWindow.ts の loadUrl は、Discord の
+	// Origin ヘッダーのある接続をすべて拒む)。Vesktop 1.6.7 と 1.6.9 の src/main/mainWindow.ts の loadUrl は、Discord の
 	// ページを既定では https://discord.com から読み込み、設定によって canary か ptb から読み込むので、この 3 つにする。
 	// これはソースを読んで決めた一覧で、実際の Vesktop が送る Origin ヘッダーの値 (送らないかどうかも含めて) は確認
 	// していない。実際の Vesktop から接続したときのハンドシェイクの Origin ヘッダーを読めば決まる。
