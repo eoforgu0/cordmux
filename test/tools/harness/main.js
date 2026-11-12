@@ -1,6 +1,6 @@
 'use strict';
 
-// NVENC (H.264 1080p60) を Vesktop 1.6.7 と同じ Electron/Chromium で測るハーネス。
+// NVENC (H.264 1080p60) を Vesktop 1.6.9 と同じ Electron/Chromium で測るハーネス。
 // レンダラーから届いた結果 (または途中経過) を JSON として _work/out に書き出す。
 // 検証用の起動では環境変数 HARNESS_TIMEOUT_MS で内部タイムアウトを短縮できる
 // (既定 120000ms は本番用。20 秒以内に終わらせたい検証時は短い値を渡す)。

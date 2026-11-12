@@ -7,10 +7,10 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "esbuild sender.ts --bundle --format=iife --platform=browser --target=chrome150 --outfile=dist/sender.js"
+    "build": "esbuild sender.ts --bundle --format=iife --platform=browser --target=chrome156 --outfile=dist/sender.js"
   },
   "dependencies": {
-    "electron": "43.8.9",
+    "electron": "45.2.3",
     "ws": "^8.21.3"
   },
   "devDependencies": {

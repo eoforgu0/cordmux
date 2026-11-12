@@ -1,6 +1,6 @@
 # テスト用の送信側 (harness)
 
-cordmux の受信側 (OBS のプラグイン) に、映像と音声を送るテスト用の Electron アプリである。Vesktop 1.6.7 と同じ Electron 43 の系列 (Chromium 150。セキュリティの修正を含む 43.8.9) で動くので、Vesktop 1.6.7 と同じ WebCodecs のエンコーダを使う。Discord にも Vesktop にも接続しない。実機テストで、送信側の代わりに使う。
+cordmux の受信側 (OBS のプラグイン) に、映像と音声を送るテスト用の Electron アプリである。Vesktop 1.6.9 と同じ Electron 45.2.3 (Chromium 156) で動くので、Vesktop 1.6.9 と同じ WebCodecs のエンコーダを使う。Discord にも Vesktop にも接続しない。実機テストで、送信側の代わりに使う。
 
 動作のモードは 4 つあり、環境変数 `HARNESS_MODE` で選ぶ。
 
