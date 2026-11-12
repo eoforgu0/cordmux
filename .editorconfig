@@ -1,0 +1,39 @@
+# エディターの設定 (EditorConfig)。C++ の整形の設定は src-obs/.clang-format にある。
+#
+# C++ のインデントは、src-obs/.clang-format の最初のセクション (Language を指定していないので C++ に適用される) の
+# IndentWidth 8 と UseTab: ForContinuationAndIndentation に合わせる。同じファイルの Language: ObjC のセクションの
+# IndentWidth 4 は、.h と .cpp には適用されない。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h,cc,hh,cpp,hpp,cxx,hxx}]
+indent_style = tab
+indent_size = 8
+tab_width = 8
+
+[*.{ts,tsx,js,jsx,mjs,cjs}]
+indent_style = space
+indent_size = 4
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# Markdown では、行末の 2 つの空白が改行を表す。
+[*.md]
+trim_trailing_whitespace = false
+
+# Windows PowerShell 5.1 は、BOM のない .ps1 をシステムの ANSI コードページ (日本語の Windows では CP932) で
+# 読むので、日本語が文字化けする。
+[*.ps1]
+charset = utf-8-bom

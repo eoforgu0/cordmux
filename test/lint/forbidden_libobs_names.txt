@@ -1,0 +1,23 @@
+# forbidden_libobs_usage.py が読む、cordmux が使わない libobs の使い方の一覧。src-obs のどこに書いてもエラーになる。
+#
+# 各行は Python の正規表現 (re.search、大文字と小文字を区別する)。空行と # で始まる行は読み飛ばす。行の末尾に
+# 「  REQUIRES: <正規表現>」(前に半角の空白 2 つ) を付けると、その行に一致しても、同じファイルのコメントの外に
+# REQUIRES: の正規表現が見つかればエラーにしない。
+#
+# 音量とミュートは読むだけで、書き換えない。どちらも OBS のミキサーで利用者が決める値で、cordmux が書き換えると、
+# 利用者がミュートした音が鳴り出すことがある。読む関数 (obs_source_get_volume と obs_source_muted) は一覧に入れない。
+obs_source_set_volume\s*\(
+obs_source_set_muted\s*\(
+
+# obs_source_info の audio_render を自作しない。音声は、受け取ったソースから obs_source_output_audio で 1 回だけ
+# 出力する。子のソースの音を親の audio_render で合成し直す形は、音声の異常の原因の候補で、原因かどうかは確認していない。
+# また、libobs は同じソースの音を 2 回ミックスしないように非公開のフィールド audio_is_duplicated を使うが、自作の
+# audio_render からはこれを読めないので、同じ音が 2 回鳴るのを防げない。
+\baudio_render\s*=
+
+# 自作の親のソースが obs_source_add_active_child で子を持つときは、obs_source_info の enum_active_sources と
+# enum_all_sources の両方を実装する。add_active_child は、呼び出した時点の親の状態を子に伝えるだけで、その後に親が
+# 表示されたりアクティブになったりしたことは、enum_active_sources を通して子に伝わる。同じ正規表現の行を 2 つに分けて
+# REQUIRES: を 1 つずつ付けることで、両方がそろっていることを求める (どちらかがなければ、その行で検出する)。
+obs_source_add_active_child\s*\(  REQUIRES: enum_active_sources
+obs_source_add_active_child\s*\(  REQUIRES: enum_all_sources

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>テストパターン (フレーム番号つき)</title>
+<!--
+  画面共有の中身に使う 1 ページ。1280x720 の canvas に 60 fps で、大きなフレーム番号、左右に往復する円、
+  左上にフレーム番号の「時計つきの帯」(test/tools/obs-run/bit_strip.py の並び) を描く。受け側の録画を
+  frames.py に実行すると、フレームの欠落・凍結を数えられる。外部のリソースは読まない。
+
+  フレーム番号は描いた回数ではなく経過時間から決める (floor(経過 ms * 60 / 1000))。画面の更新が
+  144 Hz でも 60 fps の番号のまま進み、番号が変わったときだけ描き直す。
+
+  canvas の裏の大きさは 1280x720 のデバイスピクセルに固定し、表示の大きさを devicePixelRatio で割る
+  (Windows の拡大率が 125% でもページの上で升の大きさが変わらない)。全画面にしても拡大せず、黒い余白の中に
+  等倍で置く。
+
+  帯は、frames.py が区画の中のどこにどの倍率で写っても自分で探して測る形にしている。実際の共有では、
+  ブラウザのウィンドウのタブの列・アドレスの欄の下に、ウィンドウごと 1280x720 へ縮められて写る。
+  そのため、枠の左上に等倍で載っている前提で読む方式では、タブの列を読んで全部のフレームを 0 と
+  してしまう。
+  帯の形: 横に 35 升 x 縦に 6 升 (黒い余白の中に、白黒交互の時計 33 升、24 ビットの番号 + CRC-8 の 32 升
+  (高さ 2 升)、白い棒)。並びの理由は bit_strip.py の冒頭に書いてある。番号は 24 ビットで回る
+  (60 fps で 77 時間)。
+  升は 32 px (STRIP_CELL)。1920 幅のウィンドウを 1280 に縮め、枠で 0.5 倍 (全体で 1/3) にすると 10.7 px、
+  4K のウィンドウ (1/6) でも 5.3 px になり、frames.py が読める下限 (3 px) の上に余裕がある。帯は 1120x192 px で
+  canvas の上の 27% に収まる。16 px では 4K のウィンドウで 2.7 px になり、下限を切る。
+  帯は canvas の外 (ページの左上) には出さない。ウィンドウの共有ではページの左上もタブの列の下にあり、
+  どこに写るかはウィンドウの大きさで変わる。探す形なら canvas の中でよい。
+  描き方を変えるときは bit_strip.py と test/tools/obs-run/pattern-strip.test.ts も変更する
+  (印の間の関数をテストが読む)。
+-->
+<style>
+  html, body { margin: 0; background: #202020; color: #eee; font-family: sans-serif; }
+  #wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px; }
+  #stage { background: #000; display: flex; align-items: center; justify-content: center; }
+  #stage:fullscreen { width: 100vw; height: 100vh; }
+  canvas { image-rendering: pixelated; display: block; }
+  #info { font-size: 16px; color: #bbb; }
+  button { font-size: 18px; padding: 8px 24px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage"><canvas id="canvas" width="1280" height="720"></canvas></div>
+  <div id="info"></div>
+  <button id="full">全画面にする</button>
+</div>
+<script>
+  const WIDTH = 1280;
+  const HEIGHT = 720;
+  const FPS = 60;
+  const STRIP_CELL = 32; // 帯の升の一辺 (理由は上のコメント)
+  const CYCLE = 180; // 円の往復の周期 (フレーム数。sender.ts の cyclePeriod と同じ)
+  const BACKGROUND = "#3a3a3a"; // 真っ黒にしない (black_span.py が黒埋めと見分けられなくなる)
+
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const info = document.getElementById("info");
+
+  function fitToDevicePixels() {
+    // 裏の 1280x720 が装置ピクセルと 1:1 になるように表示の大きさを決める。
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = (WIDTH / dpr) + "px";
+    canvas.style.height = (HEIGHT / dpr) + "px";
+    info.textContent = "1280x720 / 60 fps / 拡大率 " + dpr + " (帯の升 " + STRIP_CELL + " px)";
+  }
+
+  // BEGIN strip-drawing (test/tools/obs-run/pattern-strip.test.ts がこの印の間を読んで bit_strip.py と同じ値かを試す)
+  // CRC-8 (多項式 0x07、初期値 0、反転なし)。bit_strip.py の crc8 と同じ。
+  function stripCrc8(bytes) {
+    let crc = 0;
+    for (const byte of bytes) {
+      crc ^= byte;
+      for (let i = 0; i < 8; i++) crc = (crc & 0x80) ? ((crc << 1) ^ 0x07) & 0xff : (crc << 1) & 0xff;
+    }
+    return crc;
+  }
+
+  // データの行の 32 升 (左から。1 = 白): 24 ビットの番号 (最上位が左) と、その 3 バイトの CRC-8。
+  function stripDataBits(frame) {
+    const n = frame % 16777216; // 24 ビットで回る
+    const crc = stripCrc8([(n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
+    const bits = [];
+    for (let i = 23; i >= 0; i--) bits.push((n >>> i) & 1);
+    for (let i = 7; i >= 0; i--) bits.push((crc >>> i) & 1);
+    return bits;
+  }
+
+  // (x, y) を左上に帯を描く。横 35 升 x 縦 6 升: 黒い静かの中に、時計 (33 升の白黒交互、左端が白) の行、
+  // データ (32 升、高さ 2 升。33 番の升は黒のまま) の行、33 升の幅の白い棒。
+  function drawStrip(target, frame, x, y, u) {
+    target.fillStyle = "#000000";
+    target.fillRect(x, y, 35 * u, 6 * u);
+    target.fillStyle = "#ffffff";
+    for (let i = 0; i < 33; i += 2) target.fillRect(x + (1 + i) * u, y + u, u, u);
+    const bits = stripDataBits(frame);
+    for (let i = 0; i < 32; i++) if (bits[i]) target.fillRect(x + (1 + i) * u, y + 2 * u, u, 2 * u);
+    target.fillRect(x + u, y + 4 * u, 33 * u, u);
+  }
+  // END strip-drawing
+
+  function draw(frame) {
+    ctx.fillStyle = BACKGROUND;
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+    // 薄い格子 (動きのない所でも一様な面にしない)
+    ctx.fillStyle = "#444444";
+    for (let y = 0; y < HEIGHT; y += 80) {
+      for (let x = ((y / 80) % 2) * 40; x < WIDTH; x += 80) ctx.fillRect(x, y, 40, 80);
+    }
+
+    const phase = (frame % CYCLE) / CYCLE;
+    const sweep = phase < 0.5 ? phase * 2 : 2 - phase * 2;
+    const cx = 60 + sweep * (WIDTH - 120);
+    ctx.fillStyle = "hsl(" + ((Math.floor(frame / 60) * 7) % 360) + ", 70%, 55%)";
+    ctx.beginPath();
+    ctx.arc(cx, HEIGHT / 2, Math.min(WIDTH, HEIGHT) * 0.05, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold " + Math.round(HEIGHT * 0.2) + "px sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(frame), 40, HEIGHT * 0.7);
+
+    drawStrip(ctx, frame, 0, 0, STRIP_CELL);
+  }
+
+  let start = null;
+  let lastFrame = -1;
+  function tick(now) {
+    if (start === null) start = now;
+    const frame = Math.floor((now - start) * FPS / 1000);
+    if (frame !== lastFrame) {
+      draw(frame);
+      lastFrame = frame;
+    }
+    requestAnimationFrame(tick);
+  }
+
+  document.getElementById("full").addEventListener("click", () => {
+    const stage = document.getElementById("stage");
+    if (stage.requestFullscreen) stage.requestFullscreen();
+  });
+  window.addEventListener("resize", fitToDevicePixels);
+  fitToDevicePixels();
+  draw(0);
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>

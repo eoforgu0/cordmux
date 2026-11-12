@@ -1,0 +1,364 @@
+# install_guide.py が読む、手順書 (guide/ja.md と guide/en.md) の lint の見出しと語。lint のコードを変えずに見出しと語を
+# 直せるように、データとしてここに置き、日本語のセットと英語のセットを同じキーで並べて書く。手順書の書き方は
+# docs/ui_guidelines.md の「手順書の書き方」に、Markdown の形と zip のテキストへの変換は dist/README.md の「手順書の形」にある。
+# 配布用の zip のツール (test/tools/dist-zip) も、このファイルの target、zip_name、heading、role、placeholder を読む。
+#
+# 形: 1 行に 1 つの「キー: 値」。空行と # で始まる行は読まない。target: の行から次の target: の行の手前までが、1 つの
+# 手順書のセット。セットは 2 つ (guide/ja.md と guide/en.md)。
+#
+#   target:           チェックする手順書 (リポジトリのルートからのパス。Markdown)
+#   ini:              [ ] の名前と「」の中の文字列を照合し、手順書への参照を探す ini (同じ言語の ini)。ファイル名の先頭
+#                     (ja か en) が手順書の言語になる
+#   zip_name:         zip の中の手順書の名前。make_dist_zip.py が target を変換して、この名前で zip の最上位に置く。画面の文言は
+#                     この名前で手順書を指す
+#   title:            1 行目の # のタイトル
+#   heading:          ## の節の見出し。書いた順に、手順書の中にも同じ順で 1 回ずつ書く
+#   procedure:        【最初の節】 【最後の節】。手順の部分の範囲 (1 つ以上)。forbidden の語と、引用 (quote_check) の照合は
+#                     この範囲の節だけを見る
+#   max_steps:        【節】 <数>。その節の手順の数の上限 (節の直下の番号付きの項目と、### N. の見出しを数える)
+#   forbidden:        手順の部分に書かない語 (Python の正規表現。大文字と小文字を区別せず、\b は ASCII の英数字だけで
+#                     境界を作る。forbidden_ui_words.py の re.ASCII と同じ理由)
+#   copied:           【節の見出し】 <ini のキー>。その節に ini の値をコピーしてある (%1 %2 などの所は何が書いてあってもよい。
+#                     空白は比べない)
+#   fixture:          このセットのセルフテストの OK 例のフォルダー (リポジトリのルートから。セットごとに必ず 1 つ)。中に
+#                     target と同じ名前の手順書 (ja.md か en.md) と、ini: と同じ名前の ini を置く。同じ親フォルダーの bad_* が、このセットの NG 例 (ini が
+#                     なければ OK 例の ini を使う。どれも expect.txt に、出力されるはずの問題の文の一部を書く)
+#   role:             【見出し】 <役割>。役割は maintenance (互換性の節)、update (更新) の 2 つで、セットごとにちょうど
+#                     1 回ずつ書く。zip のチェックとリリースノートのツールは見出しの文字列を持たず、この行で節を探す
+#   placeholder:      後で書く所に置く仮の文字列 (正規表現でなく、文字列のまま)。セットごとにちょうど 1 つ。手順書の lint は
+#                     placeholder を許すが、この文字列のまま書く (括弧を変えると問題にする。リリースのツールが文字列で
+#                     探すため)。接尾辞のないタグ (正式版) のリリースでは、1 つでも残っていれば失敗する。role が
+#                     maintenance の節はリリースノートにそのまま載るので、-rc のタグでも placeholder があれば失敗する
+#   forbidden_all:    手順書のどこにも書かない語 (Python の正規表現。forbidden と同じフラグ)。タイトルと全部の節を
+#                     チェックする
+#   contains:         【節の見出し】 <文>。その節にその文がある (空白は比べない。copied と同じ)
+#   quote_check:      手順の部分の引用の開きと閉じ (ja は「」、en は "")。中の文字列は、ini の値 (先頭や末尾を省いた形も)、
+#                     手順書の ## と ### の見出し、outside_text のどれか。リンクはテキストで比べる。入れ子の引用は、
+#                     外側が合えば内側を見ない
+#   outside_text:     引用のチェックで許す、ini にない文字列 (OBS、Windows、Discord の画面の文字列と、ファイルとフォルダーの名前)
+#   ini_term:         引用のチェックで許す、ini の値の中で使う語 (画面のメッセージの中の語を説明するときの引用)。lint は、
+#                     その語が ini のどれかの値にあることも確かめる (画面の語を変えたら、手順書の引用も直すため)
+#   item_titles:      【節】。その節の項目は ### の見出しで書く (節の直下に - と番号付きの項目を置かない)。画面の文言と、
+#                     手順の中の「うまくいかないときは」のリンクが、項目の見出しを指すため
+#   component_word:   <語> <種類>[,<種類>]。[ ] のすぐ後ろにこの語が続くとき、その種類のキーの値と比べる
+#   outside_button:   [ ] で許す、ほかのアプリの UI 要素の名前 (OBS、Windows、Discord、Vesktop の画面の文字列のまま)
+#   ini_ref:          ini の値が手順書を指す形 (Python の正規表現)。{zip_name} を zip_name に置き換えてから使う。
+#                     (?P<heading>...) の見出しが手順書の ## か ### にあり、(?P<step>...) の番号があれば、その ## の節に
+#                     ### <番号>. の見出しがあることを確かめる。ini の値に zip_name があるのにどの形にも一致しなければ、
+#                     参照の形が読めないので問題にする
+#   target_optional:  yes のとき、target のファイルがなくても lint を失敗にしない (NOTE の 1 行を出力して飛ばす)。
+#                     ファイルがあるのにこの行が残っていれば失敗にする (ファイルを置くときに、この行を消す)
+# 節を指すキー (copied、contains、role、procedure、max_steps、item_titles) は、英語の見出しが空白を含むので【見出し】の形で書く。
+# forbidden と forbidden_all は、語を探す前に、リンクをテキストにし、[ ] の中 (ini の名前と照合した名前) と節の見出しの
+# 名前を伏せる。
+#
+# 手順の部分の範囲: 「始める前に」から「アンインストール」まで (「互換性」と「ソースコードとライセンス」のほかの全部)。
+# 前の手順書では「知っておくこと」(操作の手順を持たない節) を外していたが、新しい「使い方」は話題ごとに操作を書く節で、
+# 画面の文字列を「」で引用するので、引用が画面とずれないように手順の部分に入れる。ほかのアプリの画面の文字列を引用する
+# ときは outside_text に書く。
+
+target: guide/ja.md
+ini: src-obs/data/locale/ja-JP.ini
+zip_name: はじめに.txt
+fixture: test/lint/fixtures/install_guide/good
+title: cordmuxのインストールと使い方
+
+heading: 始める前に
+heading: インストール
+heading: 配信のたびにすること
+heading: 使い方
+heading: 困ったとき
+heading: 更新
+heading: アンインストール
+heading: 互換性
+heading: ソースコードとライセンス
+
+procedure: 【始める前に】 【アンインストール】
+# 1 つの手順の手数の上限。インストールは ### 1. から ### 4. の見出し、配信のたびにすることは番号付きの項目で数える。
+max_steps: 【インストール】 4
+max_steps: 【配信のたびにすること】 4
+
+# 見出しの文字列を持たないツールが、節を探すための名前。update は、リリースノートのツールが「更新」の節を案内する 1 文に使う。
+role: 【互換性】 maintenance
+role: 【更新】 update
+
+# 公開の前に書く所に置く placeholder。
+placeholder: (確認してから書きます)
+
+# 画面の文言が手順書を指す形: 「はじめに.txt」の「インストール」の手順2、「はじめに.txt」の「通話の声が二重に聞こえる」。
+ini_ref: 「{zip_name}」の「(?P<heading>[^「」]+)」(?:の手順(?P<step>[0-9]+))?
+
+# 手順の部分の禁止語 (コマンドとビルドの語)。インストールと更新の手順を、コマンドを入力しなくても済むように書くため。
+forbidden: コマンドプロンプト
+forbidden: \bpowershell\b
+forbidden: ターミナル
+forbidden: \bcmd\b
+forbidden: \bnpm\b
+forbidden: \bpnpm\b
+forbidden: \bnode\b
+forbidden: \bgit\b
+forbidden: ビルド
+forbidden: 管理者として実行
+forbidden: ファイル名を指定して実行
+# 行の先頭 (字下げの後も含む) の > と $ (全角も)。コマンドを入力する例の形。
+forbidden: (?m)^[ \t\u3000]*[>$\uFF1E\uFF04]
+# 「クリック」は使わない (入力の方法によらない「押す」「選ぶ」と書く)。「右クリック」と「ダブルクリック」だけは許す。
+# Discord の [ユーザーIDをコピー] は名前を右クリックして表示するメニューの項目で、ドックの音量のつまみは
+# ダブルクリックで 100% に戻る。どちらも入力の方法によらない言い方の定訳がなく、Discord のヘルプも「右クリック」と書くため。
+forbidden: (?<!右)(?<!ダブル)クリック
+
+# 依頼の形の語。手順書に 1 つでもあれば問題にする。画面共有をする人に、いつもどおりの画面共有のほかの操作を頼まないため。
+forbidden_all: てもら[いうえおっ]
+forbidden_all: 頼んで
+forbidden_all: 頼みます
+forbidden_all: お願いして
+forbidden_all: でもら[いうえおっ]
+forbidden_all: [てで]いただ[きくけこい]
+# 記号の行 (forbidden_ui_words.txt の symbols のセットのうち、手順書で使わないもの)。疑問符は全角の「？」を使うので
+# (ja_style.txt の question=fullwidth)、感嘆符だけを書かない語にする。中黒「・」は加えない (「互換性」の文が
+# 「OBS・Vesktop・Discord」と書く)。太字と斜体の記号は、lint の記法のチェックが問題にする。
+forbidden_all: [〜～]
+forbidden_all: ！
+forbidden_all: !
+forbidden_all: \u3000
+# 不具合の報告先の語。手順書には報告先を書かない (画面とリリースノートにも書かない)。
+forbidden_all: \bissues?\b
+forbidden_all: \bissue\s+tracker\b
+forbidden_all: 問い合わせ先
+
+# ini からコピーする文。画面と手順書で同じ文を使うため、lint が照合する。ダイアログの全文ではなく、アンインストールの確認と
+# 結果のダイアログの見出しをコピーする。アンインストールを完了できなかったときの 1 文 (設定を元に戻すまで、cordmux の
+# ファイルを削除しない) と、映像が届かないときの知らせの次の操作の文 (Vesktop で画面共有の映像が映っているかを確かめる
+# よう勧める文) は、「困ったとき」にコピーする。完了できなかったときの 1 文は、dont_delete_folder.text ではなく
+# dont_delete_files.text をコピーする。dont_delete_folder.text は「次のフォルダー」と書き、ダイアログの直後のパスの行を
+# 指すが、手順書にはパスの行がないため。
+copied: 【アンインストール】 cordmux.dialog.uninstall_confirm.headline
+copied: 【アンインストール】 cordmux.dialog.uninstall_done.headline
+copied: 【困ったとき】 cordmux.dialog.dont_delete_files.text
+copied: 【困ったとき】 cordmux.dock.no_video_next.text
+# 同じ知らせの、もう 1 つの次の操作の文 (no_video_cant_show_next.text。画面共有を始め直すよう、共有している人に頼む文) は
+# コピーしない。共有している人に操作を頼む文を手順書に置くことになり、上の forbidden_all の依頼の形の語にも一致するため。
+# 手順書は、ドックの行の文字列を「」で引用し、ドックの知らせを見るように案内する。依頼の語を避けて言い換えても、
+# 共有している人に操作を頼む文であることは変わらないので、言い換えた文を置くこともしない。
+
+# 必要なものの定型の文。通話のほかの参加者は、インストールも設定も要らないこと。
+contains: 【始める前に】 通話のほかの参加者は、インストールも設定も不要です。
+# 先にファイルを削除したときに起きることの 1 文 (確認のダイアログには書かず、手順書に書く)。「困ったとき」にコピーする
+# dont_delete_files.text と同じものを、同じ語 (「cordmuxのファイル」) で言う。
+contains: 【アンインストール】 アンインストールが終わるまで、cordmuxのファイルを削除しないでください。先に削除すると、Vesktopがその場所に公式のVencordをインストールします。
+
+# 手順の部分の「」の中の文字列を、ini と照合する。
+quote_check: 「」
+item_titles: 【困ったとき】
+# ini にない文字列: OBS の画面の文字列 (OBS 33.0.1 の ja-JP.ini からコピーした) と、ファイルとフォルダーの名前。
+outside_text: 音声ミキサー
+# OBS の設定の値と、ソースの名前 (win-wasapi の ApplicationAudioCapture) と、OBS の [設定] の [出力] の欄の名前 (Basic.Settings.Output.Simple.SavePath)。
+outside_text: 無効
+outside_text: アプリケーション音声キャプチャ (ベータ版)
+outside_text: 録画ファイルのパス
+outside_text: プラグイン読み込みエラー
+# OBS のドックのタイトル Basic.Main.Sources「ソース」と、音声のデバイスの名前 Basic.DesktopDevice1「デスクトップ音声」。
+outside_text: ソース
+outside_text: デスクトップ音声
+outside_text: obs-studio
+outside_text: plugins
+outside_text: C:\ProgramData
+outside_text: plugins\cordmux\cordmux.dll
+outside_text: licenses
+# cordmux の録画の保存先の、元のデータのフォルダーの名前。
+outside_text: data
+# 文言が読み込めないときに画面に出る、キーの先頭の文字列。
+outside_text: cordmux.
+# ドックのメッセージの中で使う語 (cordmux.dock.vencord_overwritten.headline など)。
+ini_term: Vesktop側のcordmux
+# [ ] の後ろに書く、UI 要素の種類の語
+component_word: ページ page
+component_word: タブ label
+component_word: 欄 label
+component_word: チェックボックス check
+# ほかのアプリの UI 要素の名前。OBS のメニューとボタン (OBS の ja-JP.ini の文字列から「(&D)」のようなアクセスキーを
+# 除いたもの)、OBS の [ドック] メニューの cordmux の項目 (ドックのタイトル cordmux.dock.window.title)、OBS の設定の
+# ウィンドウと、ソースを追加した後に開くプロパティのウィンドウ (Basic.PropertiesWindow) の [OK]、[キャンセル]、
+# Discord の UI 要素の名前 (Discord のヘルプの文字列)。[ツール] メニューの
+# [プラグインマネージャー] は、OBS の ja-JP.ini の Basic.OpenPluginManager (en-US.ini は "Plugin Manager")。
+# 手順書は OBS 33 の画面で書くので、OBS の文字列は 33.0.1 の ini のもの。
+outside_button: ドック
+outside_button: ツール
+outside_button: プラグインマネージャー
+outside_button: ヘルプ
+outside_button: OBS Studioについて
+outside_button: 通常モードで再起動
+outside_button: セーフモードで実行
+outside_button: 通常モードで実行
+outside_button: cordmux
+outside_button: OK
+outside_button: キャンセル
+# Windows のエクスプローラーの、管理者の権限を求める確認のボタン。
+outside_button: 続行
+# Discord の、サーバーの一覧の [+] から招待リンクで参加するときのボタン。
+outside_button: サーバーに参加
+outside_button: ユーザー設定
+outside_button: 詳細設定
+outside_button: 開発者モード
+outside_button: ユーザーIDをコピー
+# OBS の「ソース」の [+] (ツールチップは AddSource「ソース追加」で、ボタンには文字がなく + のアイコン)。その [+] で
+# cordmux を選んだ後の [新規作成] (「ソースを追加」のウィンドウのボタン。Basic.SourceSelect.CreateButton)。
+# OBS の [ファイル] メニューの [設定] の [音声] ページ (Basic.MainMenu.File、Basic.MainMenu.File.Settings、
+# Basic.Settings.Audio)。
+outside_button: +
+outside_button: 新規作成
+outside_button: ファイル
+outside_button: 設定
+outside_button: 音声
+# OBS の [設定] の [ホットキー] ページ (Basic.Settings.Hotkeys)。cordmux の全画面のホットキーにキーを割り当てる所。
+outside_button: ホットキー
+# Vesktop の通知領域のアイコンのメニューの [Restart] と [Quit] (Vesktop 1.6.7 の resources\app.asar のトレイのメニュー:
+# Open、About、Repair Vencord、Reset Vesktop、Restart、Quit。英語だけなので、日本語のセットにも同じ文字列)。Vesktop 1.6.7 は
+# 設定 Minimize to tray が既定で有効で、ウィンドウを閉じても終了せずに通知領域に残るので、手順書は終了と再起動をこの
+# メニューで書く。アプリのメニューの "Relaunch" は別の項目なので使わない。Windows の通知領域の、隠れたアイコンを表示する
+# [^] (ボタンには文字がなく、上向きの山形のアイコン。ツールチップは「隠れているインジケーターを表示します」/
+# "Show hidden icons"。OBS の [+] と同じ書き方)。
+outside_button: Restart
+outside_button: Quit
+outside_button: ^
+# 同じトレイのメニューの [Repair Vencord]。公式の最新の Vencord を Vesktop の vencordDir (cordmux が同梱の Vencord を
+# 指すように設定した場所) に書くので、「Vesktop側のcordmuxが上書きされています」の原因になる (app.asar の
+# downloadVencordFiles)。アプリのメニューの "Force Update Vencord" も同じ動作だが、Windows のメインウィンドウでは
+# メニューバーが表示されないので書かない。
+outside_button: Repair Vencord
+# 同じトレイのメニューの [Reset Vesktop]。Vesktop の設定を初期状態に戻し、vencordDir も外す。アンインストールのためのバックアップが壊れていて
+# cordmux が前の Vencord の場所を戻せないときの、手で戻す最後の道として手順書の「困ったとき」に書く。
+outside_button: Reset Vesktop
+
+# ---- 英語のセット ----
+# 見出しや定型の文を変えるときは、ここと、セルフテストの例 (test/lint/fixtures/install_guide/en/) と guide/en.md を一緒に直す。
+
+target: guide/en.md
+ini: src-obs/data/locale/en-US.ini
+zip_name: README-en.txt
+fixture: test/lint/fixtures/install_guide/en/good
+title: Installing and Using cordmux
+
+heading: Before You Start
+heading: Installation
+heading: Each Time You Stream
+heading: Using cordmux
+heading: Troubleshooting
+heading: Updating
+heading: Uninstalling
+heading: Compatibility
+heading: Source Code and Licenses
+
+procedure: 【Before You Start】 【Uninstalling】
+max_steps: 【Installation】 4
+max_steps: 【Each Time You Stream】 4
+
+role: 【Compatibility】 maintenance
+role: 【Updating】 update
+
+placeholder: (to be written after testing)
+
+# 画面の文言が手順書を指す形: step 2 of "Installation" in README-en.txt、"Call voices are heard twice" in README-en.txt。
+ini_ref: (?:step (?P<step>[0-9]+) of )?"(?P<heading>[^"]+)" in {zip_name}
+
+# 英語の禁止語。build と compile は語形の変化も含める。built は含めない ("built-in" のように、ビルドの手順でない所で
+# 使うため)。Win+R は Windows key + R の書き方も含める (同じキーの操作)。
+forbidden: \bcommand\s+prompt\b
+forbidden: \bterminal\b
+forbidden: \brun\s+as\s+(an\s+)?administrator\b
+forbidden: \bwin(dows)?(\s+key)?\s*\+\s*r\b
+forbidden: \bbuild(s|ing)?\b
+forbidden: \bcompil(e|es|ed|ing)\b
+forbidden: \bpowershell\b
+forbidden: \bcmd\b
+forbidden: \bnpm\b
+forbidden: \bpnpm\b
+forbidden: \bnode\b
+forbidden: \bgit\b
+forbidden: (?m)^[ \t\u3000]*[>$\uFF1E\uFF04]
+# 「click」は使わない。"right-click" と "double-click" だけは許す (日本語のセットと同じ理由)。
+forbidden: (?<!right-)(?<!double-)\bclick
+
+# 依頼の形の語 (日本語のセットと同じ理由)。語の間の空白は \s+ で書く。
+forbidden_all: \bask\s+(them|the|someone|your)\b
+forbidden_all: \bhave\s+them\b
+forbidden_all: \bget\s+(them|someone)\s+to\b
+forbidden_all: \bask\s+(a|an|another|other|each)\b
+forbidden_all: \bhave\s+(your|the)\s+(friend|friends|owner|server\s+owner|admin|moderator)s?\b
+# 人を広く指す語 (anyone など) も、依頼の形に数える (ini の cordmux.dock.no_video_cant_show_next.text の英語の文
+# "Ask anyone whose ..." のような形)。
+forbidden_all: \bask\s+(anyone|everyone|people|whoever)\b
+# 記号の行 (日本語のセットと同じ理由)。
+forbidden_all: [〜～]
+forbidden_all: [？！]
+forbidden_all: !
+forbidden_all: \u3000
+# 不具合の報告先の語 (日本語のセットと同じ理由)
+forbidden_all: \bissues?\b
+forbidden_all: \bissue\s+tracker\b
+forbidden_all: \bcontact\s+(us|the\s+author)\b
+
+copied: 【Uninstalling】 cordmux.dialog.uninstall_confirm.headline
+copied: 【Uninstalling】 cordmux.dialog.uninstall_done.headline
+copied: 【Troubleshooting】 cordmux.dialog.dont_delete_files.text
+copied: 【Troubleshooting】 cordmux.dock.no_video_next.text
+
+# 定型の文 (日本語のセットの文を英語にしたもの)。文には短縮形 (don't) を使う。
+contains: 【Before You Start】 Other people in the call don't need to install or set up anything.
+contains: 【Uninstalling】 Don't delete the cordmux files until uninstalling is finished. If you delete them first, Vesktop puts the official Vencord where they were.
+
+quote_check: ""
+item_titles: 【Troubleshooting】
+outside_text: Audio Mixer
+outside_text: Disabled
+outside_text: Application Audio Capture (BETA)
+outside_text: Recording Path
+outside_text: Plugin Load Error
+# OBS の画面の文字列 (日本語のセットと同じ)
+outside_text: Sources
+outside_text: Desktop Audio
+outside_text: obs-studio
+outside_text: plugins
+outside_text: C:\ProgramData
+outside_text: plugins\cordmux\cordmux.dll
+outside_text: licenses
+outside_text: data
+outside_text: cordmux.
+ini_term: cordmux in Vesktop
+component_word: page page
+component_word: tab label
+component_word: box label
+component_word: check box check
+outside_button: Docks
+outside_button: Tools
+outside_button: Plugin Manager
+outside_button: Help
+outside_button: About
+outside_button: Restart in Normal Mode
+outside_button: Run in Safe Mode
+outside_button: Run in Normal Mode
+outside_button: cordmux
+outside_button: OK
+outside_button: Cancel
+outside_button: Continue
+outside_button: Join a Server
+outside_button: Join Server
+outside_button: User Settings
+outside_button: Advanced
+outside_button: Developer Mode
+outside_button: Copy User ID
+# OBS の UI 要素の名前 (日本語のセットと同じ)
+outside_button: +
+outside_button: Create New
+outside_button: File
+outside_button: Settings
+outside_button: Audio
+outside_button: Hotkeys
+# Vesktop の通知領域のアイコンのメニューと、Windows の [^] (日本語のセットと同じ)
+outside_button: Restart
+outside_button: Quit
+outside_button: ^
+# Vesktop の通知領域のアイコンのメニューの [Repair Vencord] (日本語のセットと同じ)
+outside_button: Repair Vencord
+# 同じメニューの [Reset Vesktop] (日本語のセットと同じ)
+outside_button: Reset Vesktop

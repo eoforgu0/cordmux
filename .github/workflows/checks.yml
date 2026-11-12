@@ -1,0 +1,45 @@
+# プルリクエストと main へのプッシュで、OBS プラグインと送信側をビルドしてテストする。
+# 中身は workflow_call で呼ぶ obs-plugin.yml と vencord-plugin.yml にあり、dist.yml も同じ 2 つを呼ぶ。
+# 取得とビルドの手順を 1 か所にだけ書くためである。配布用の zip はここでは作らない。
+# dist.yml とまとめると、プルリクエストのたびに zip のジョブを飛ばす条件が必要になるので、分けておく。
+# そのため main へのプッシュでは、同じビルドが 2 回実行される。
+#
+# 配布用の zip と同じ手順をプルリクエストのたびに通すため、ここでも cordmux.dll と送信側のバージョンに
+# 短いコミットを入れる (build_info.py meta)。成果物は後で使わないので、保持を 1 日にする。
+
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      build_id: ${{ steps.meta.outputs.build_id }}
+      short_commit: ${{ steps.meta.outputs.short_commit }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: ビルドの識別子を決める (build_info.py meta)
+        id: meta
+        run: python3 test/tools/dist-zip/build_info.py meta --sha "$GITHUB_SHA" --ref "$GITHUB_REF" >> "$GITHUB_OUTPUT"
+
+  obs-plugin:
+    needs: meta
+    uses: ./.github/workflows/obs-plugin.yml
+    with:
+      build_commit: ${{ needs.meta.outputs.short_commit }}
+      retention_days: 1
+
+  vencord-plugin:
+    needs: meta
+    uses: ./.github/workflows/vencord-plugin.yml
+    with:
+      build_id: ${{ needs.meta.outputs.build_id }}
+      retention_days: 1

@@ -1,0 +1,31 @@
+// src-vencord の型チェックの設定 (npm run typecheck)。
+// exclude に挙げたファイルは、Vencord のソースツリーの中で pnpm test:ts がチェックする
+// (.github/workflows/vencord-plugin.yml)。index.ts、native.ts、adapter/vencord.ts は、Vencord のモジュール
+// (@utils/types、@webpack) か Electron の型を import するので、リポジトリのルートでは型を解決できない。
+// encode/track_source.ts と audio/track_source.ts は、ブラウザーにしか無い MediaStreamTrackProcessor を使う。
+// exclude は include のパターンから外すだけなので、対象のファイルが import するファイルはここでもチェックする
+// (tests/audio_track_source.test.ts が import する audio/track_source.ts)。
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src-vencord/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "src-vencord/index.ts",
+    "src-vencord/native.ts",
+    "src-vencord/adapter/vencord.ts",
+    "src-vencord/encode/track_source.ts",
+    "src-vencord/audio/track_source.ts"
+  ]
+}

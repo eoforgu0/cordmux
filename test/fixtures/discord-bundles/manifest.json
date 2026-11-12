@@ -1,0 +1,130 @@
+[
+  {
+    "fetchedAt": "2000-01-01T00:00:00.000Z",
+    "channel": "stable",
+    "build": "611316",
+    "fileCount": 5376,
+    "totalBytes": 163596058,
+    "digest": "6c5e784beca0bb29071cb758fb646c71e0cd1f0b2e9a225c17d92155ac1458c5"
+  },
+  {
+    "fetchedAt": "2000-01-01T00:00:30.000Z",
+    "channel": "canary",
+    "build": "612347",
+    "fileCount": 5405,
+    "totalBytes": 164119484,
+    "digest": "18904d223fbf3685f58fea013798537e04296b211730f64971bfe5bc590d3246"
+  },
+  {
+    "fetchedAt": "2000-01-02T00:00:00.000Z",
+    "channel": "stable",
+    "build": "623968",
+    "fileCount": 5519,
+    "totalBytes": 165304892,
+    "digest": "a1f6b174e1f07e0ab83c0f813b64d798acefcf88237c83a2082261187198df9c"
+  },
+  {
+    "fetchedAt": "2000-01-02T00:00:30.000Z",
+    "channel": "canary",
+    "build": "625277",
+    "fileCount": 5561,
+    "totalBytes": 165576023,
+    "digest": "3e5a2c28d3d291ac1260549420c890fea5b664c0e3c509637c4d84f96c1563a2"
+  },
+  {
+    "fetchedAt": "2000-01-03T00:00:00.000Z",
+    "channel": "stable",
+    "build": "637268",
+    "fileCount": 6132,
+    "totalBytes": 167772990,
+    "digest": "b88e54bf8dc1faac41cf2c6c99c29924280a84da9e158f4b0412fed9f04e6cbd"
+  },
+  {
+    "fetchedAt": "2000-01-03T00:00:30.000Z",
+    "channel": "canary",
+    "build": "638523",
+    "fileCount": 6134,
+    "totalBytes": 167937880,
+    "digest": "2f94899a0cbfe67595f4a3c11676b47909d09bcbd7c3053882d5d27b3fc5e80d"
+  },
+  {
+    "fetchedAt": "2000-01-04T00:00:00.000Z",
+    "channel": "stable",
+    "build": "650389",
+    "fileCount": 6228,
+    "totalBytes": 168318191,
+    "digest": "ca59970a2c2f83e0eb95afd16b057b0a5212809a634a4f760e68725a99c6d488"
+  },
+  {
+    "fetchedAt": "2000-01-04T00:00:30.000Z",
+    "channel": "canary",
+    "build": "652215",
+    "fileCount": 6251,
+    "totalBytes": 168387270,
+    "digest": "74d58767d07f6c059f4a326fd9812740c9a7b9d0647f405e11bd370313b91591"
+  },
+  {
+    "fetchedAt": "2000-01-05T00:00:00.000Z",
+    "channel": "stable",
+    "build": "652418",
+    "fileCount": 6282,
+    "totalBytes": 168518477,
+    "digest": "140f93a47cc251e6aea54fc583be0631ce127f89522d9c4986df4a2e6474e9be"
+  },
+  {
+    "fetchedAt": "2000-01-05T00:00:30.000Z",
+    "channel": "canary",
+    "build": "653876",
+    "fileCount": 6285,
+    "totalBytes": 168706729,
+    "digest": "90374d8eac8d768110568de3c2a16d56f51875d054cf6b87326457122022d520"
+  },
+  {
+    "fetchedAt": "2000-01-06T00:00:00.000Z",
+    "channel": "stable",
+    "build": "663810",
+    "fileCount": 6302,
+    "totalBytes": 169939075,
+    "digest": "3da0f48b880416fa077f431413f4e45e3416a3cb79737aa050a69678f2eff3a7"
+  },
+  {
+    "fetchedAt": "2000-01-06T00:00:30.000Z",
+    "channel": "canary",
+    "build": "667714",
+    "fileCount": 6524,
+    "totalBytes": 168907734,
+    "digest": "9e2e2b29339e12d4ae0358dc1db6c3cbac4de37a57c444496b1468e5267cbf86"
+  },
+  {
+    "fetchedAt": "2000-01-07T00:00:00.000Z",
+    "channel": "stable",
+    "build": "667580",
+    "fileCount": 6524,
+    "totalBytes": 168901983,
+    "digest": "3db8a2b96a8d6fa3b95b1d81cc39d8c9568895135b88cac593a1d1f1a79cebd9"
+  },
+  {
+    "fetchedAt": "2000-01-07T00:00:30.000Z",
+    "channel": "canary",
+    "build": "668830",
+    "fileCount": 6501,
+    "totalBytes": 168992186,
+    "digest": "2d6b5094bdd8aa17a72ba43ece48eb2fb9a759abbda2b8869c69b41e90b55ad5"
+  },
+  {
+    "fetchedAt": "2000-01-08T00:00:00.000Z",
+    "channel": "stable",
+    "build": "670026",
+    "fileCount": 6508,
+    "totalBytes": 169389442,
+    "digest": "0a019b3fac86c2364f19cc9e4ae2af091a0d2795c5449c447e6cdad0d2d501ac"
+  },
+  {
+    "fetchedAt": "2000-01-08T00:00:30.000Z",
+    "channel": "canary",
+    "build": "670902",
+    "fileCount": 6628,
+    "totalBytes": 170205799,
+    "digest": "49695d638fa9d686103077b7cb84c6431fd5c32fd17cb7bc84f76219072209d2"
+  }
+]

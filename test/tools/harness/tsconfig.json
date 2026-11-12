@@ -1,0 +1,21 @@
+// sender.tsはsrc-vencordの送信部をimportする。esbuildでバンドルするときは型を見ないので、
+// 型を確認するときはこのtsconfig.jsonでrepo直下のtsc (node_modules/typescript) を指す:
+//   node_modules/.bin/tsc -p test/tools/harness/tsconfig.json --noEmit  (repo直下から実行)
+// src-vencordのtsconfig.jsonと違い、ここは実物のブラウザ (Electronレンダラー) を前提に
+// するので lib に DOM を含める (WebSocket・OffscreenCanvas・VideoEncoder等の実物の型)。
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": [],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["sender.ts"]
+}

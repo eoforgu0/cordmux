@@ -1,0 +1,13 @@
+# テキストファイルの改行は、リポジトリでも作業ツリーでも LF にする。Git の core.autocrlf の設定によらない。
+* text=auto eol=lf
+
+# バイナリファイル。改行を変換せず、テキストとして差分を表示したりマージしたりしない。
+*.png binary
+*.ttf binary
+*.zip binary
+*.dll binary
+*.exe binary
+*.mkv binary
+*.mp4 binary
+*.wav binary
+*.h264 binary

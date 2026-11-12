@@ -1,0 +1,19 @@
+# 配布用の zip の最上位 (cordmux-<label>/ の直下) に、dist/ から置くファイル。make_dist_zip.py と check_dist_zip.py などが
+# 読む。日本語のファイル名を、どのツールも同じ 1 か所から読むように、データとしてここに置く。
+# 手順書 (はじめに.txt と README-en.txt) は、ここに書かない。make_dist_zip.py が、test/lint/install_guide_rules.txt の
+# セットごとに、target の Markdown (guide/ja.md と guide/en.md) を guide_to_text.py で変換し、zip_name の名前で最上位に置く。
+#
+# 形: 1 行に「種類 名前」(区切りは空白 1 つ)。# で始まる行と空行は読まない。置く種類は 4 つ:
+#   required-file   なければ zip を作らず、zip のチェックも失敗にする
+#   optional-file   あれば置く
+#   source-offer    required-file と同じに扱い、加えてコンポーネントの行と、FFmpeg を GPL と書いた行をチェックする
+#   required-dir    フォルダーごと置く。中にファイルが 1 つもなければ失敗にする
+#
+# 差し込みの種類:
+#   fill-values     「fill-values <言語> <名前>」の 3 語。ファイルを置く行 (上の 3 つの種類) の名前のうち、{{source_url}} に
+#                   このバージョンのソースの URL を差し込むファイルを指定する。言語は ja か en (そのファイルの言語)。
+#                   名前がファイルを置く行にないときと、同じ名前が 2 行あるときは失敗にする。
+#                   読む関数は dist_common.fill_targets (置く行を読む top_level_entries は、fill-values の行を返さない)
+source-offer ソースコードの入手先.txt
+required-dir licenses
+fill-values ja ソースコードの入手先.txt

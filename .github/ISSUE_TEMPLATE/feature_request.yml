@@ -1,0 +1,35 @@
+name: 機能の要望 / Feature request
+description: cordmux に機能の追加や変更を要望します。 / Suggest a new feature or a change to cordmux.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        [診断情報をエクスポート] で作る zip は添付しないでください。スクリーンショットを添付するときは、ほかの人の名前が写っていないかを確認してください。
+
+        Don't attach the zip file you create with [Export Diagnostics]. If you attach a screenshot, check that it doesn't show other people's names.
+  - type: textarea
+    id: goal
+    attributes:
+      label: 実現したいこと / What you want to do
+      description: |
+        どのような場面で、何をしたいかを書いてください。
+        Describe the situation and what you want to do.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 現在の方法で困っていること / What's difficult now
+      description: |
+        今はどのようにしているかと、何に困っているかを書いてください。
+        Describe how you do it now and what's difficult about it.
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 確認 / Confirmation
+      options:
+        - label: 診断情報の zip を添付していません。 / I haven't attached the diagnostics zip file.
+          required: true

@@ -1,0 +1,39 @@
+cordmuxのソースコードの入手先 (Where to get the source code)
+
+cordmux本体のコードは、Apache-2.0 (Apache License 2.0) で公開しています。このzipファイルには、GPLのコンポーネント (Vencord、FFmpegなど) が含まれています。そのため、全体としてはGPLに従い、対応するソースコードを公開しています。ライセンスの本文は、このzipファイルのlicensesフォルダーにあります。
+同梱のFFmpegはGPL第3版以降のビルド (--enable-gpl --enable-version3) で、GPL-3.0-or-laterの条件で公開しています。
+このバージョンのソースコード: {{source_url}}
+リリースとして公開するバージョンでは、コンポーネントごとのソースコードのコピーを同じリリースに添付しています。
+
+The code of cordmux itself is published under Apache-2.0 (Apache License 2.0). This zip file contains GPL components (Vencord, FFmpeg and others), so the corresponding source code is published as the GPL requires. The license texts are in the licenses folder of this zip file.
+The bundled FFmpeg is a GPL version 3 or later build (--enable-gpl --enable-version3) and is published under GPL-3.0-or-later.
+Source code of this version: {{source_url}}
+For released versions, a copy of the source code of each component is attached to the same release.
+
+コンポーネントの一覧 (形は「- 名前 バージョン (ライセンス): 入手先」):
+Components (in the form "- name version (license): where to get it"):
+
+- cordmux tag matching this package's version / このzipファイルと同じバージョンのタグ (Apache-2.0): https://github.com/eoforgu0/cordmux
+- Vencord v1.15.17 commit 795ed0ff5b7e6b8db7488d0fcc95512a58edc919 (GPL-3.0-or-later): https://github.com/Vendicated/Vencord/tree/795ed0ff5b7e6b8db7488d0fcc95512a58edc919
+- pnpm-lock.yaml pins the dependencies of Vencord, same commit as Vencord above / Vencordの依存関係の固定。上のVencordと同じコミット (GPL-3.0-or-later): https://github.com/Vendicated/Vencord/blob/795ed0ff5b7e6b8db7488d0fcc95512a58edc919/pnpm-lock.yaml
+- userplugin the Discord side of cordmux, tag matching this package's version / cordmuxのDiscord側。このzipファイルと同じバージョンのタグ (Apache-2.0; built into the Vencord files, which are GPL-3.0-or-later as a whole / Vencordのファイルに組み込まれ、全体はGPL-3.0-or-later): https://github.com/eoforgu0/cordmux (src-vencord folder / src-vencordフォルダー)
+- obs-deps 2025-07-11 (how FFmpeg and its dependencies were built / FFmpegとその依存関係のビルド手順): https://github.com/obsproject/obs-deps/tree/2025-07-11
+- FFmpeg n7.1.1 commit db69d06eeeab4f46da15030a80d539efb4503ca8 (GPL-3.0-or-later): https://github.com/FFmpeg/FFmpeg/tree/n7.1.1
+- x264 r3106 commit eaa68fad9e5d201d42fde51665f2d137ae96baf0 (GPL-2.0-or-later): https://github.com/mirror/x264/tree/eaa68fad9e5d201d42fde51665f2d137ae96baf0
+- srt 1.5.2 commit 9448e26fcd7602098b4bf9cd7fe535136e89e10b (MPL-2.0): https://github.com/Haivision/srt/tree/v1.5.2
+- librist 0.2.7 commit 809390b3b75a259a704079d0fb4d8f1b5f7fa956 (BSD-2-Clause, and Apache-2.0 for Mbed TLS 2.26.0 built into it / BSD-2-Clauseと、中に入ったMbed TLS 2.26.0のApache-2.0): https://code.videolan.org/rist/librist
+- mbedtls 3.6.4 commit c765c831e5c2a0971410692f92f7a81d6ec65ec2 (Apache-2.0; statically linked inside srt / srtの中に静的に入っている): https://github.com/Mbed-TLS/mbedtls/tree/v3.6.4
+- zlib 1.3.1 commit 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf (Zlib): https://github.com/madler/zlib
+- aom 3.12.0 commit 3b624af45b86646a20b11a9ff803aeae588cdee6 (BSD-2-Clause and the AOM patent license / BSD-2-ClauseとAOMの特許のライセンス): https://aomedia.googlesource.com/aom
+- svt-av1 2.3.0 commit 6e69def4ec283fe0b71195671245c3b768bebdef (BSD-3-Clause-Clear and the AOM patent license / BSD-3-Clause-ClearとAOMの特許のライセンス): https://gitlab.com/AOMediaCodec/SVT-AV1
+- theora 1.1.1 (BSD-3-Clause): https://ftp.osuosl.org/pub/xiph/releases/theora/libtheora-1.1.1.zip
+- mp3lame 3.100 (LGPL-2.0-or-later): https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+- opus 1.5.2 commit ddbe48383984d56acd9e1ab6a090c54ca6b735a6 (BSD-3-Clause): https://github.com/xiph/opus
+- vorbis 1.3.7 commit 2eac96b03ff67953354cb0a649c08aa3a23267ef (BSD-3-Clause): https://gitlab.xiph.org/xiph/vorbis
+- ogg 1.3.5 commit fa80aae9d50096160f2b56ada35527d7aee3f746 (BSD-3-Clause): https://github.com/xiph/ogg
+- vpx 1.14.1 commit 12f3a2ac603e8f10742105519e0cd03c3b8f71dd (BSD-3-Clause): https://github.com/webmproject/libvpx/tree/v1.14.1
+- nv-codec-headers 12.2.72.0 commit c69278340ab1d5559c7d7bf0edf615dc33ddbba7 (MIT): https://github.com/FFmpeg/nv-codec-headers
+- AMF 1.4.36 commit 16f7d73e0b45c473e903e46981ed0b91efc4c091 (MIT): https://github.com/GPUOpen-LibrariesAndSDKs/AMF
+- websocketpp 0.8.2 commit 56123c87598f8b1dd471be83ca841ceae07f95ba (BSD-3-Clause): https://github.com/zaphoyd/websocketpp
+- asio 1.32.0 commit 03ae834edbace31a96157b89bf50e5ee464e5ef9 (BSL-1.0): https://github.com/chriskohlhoff/asio
+- nlohmann/json 3.11.3 commit 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 (MIT): https://github.com/nlohmann/json

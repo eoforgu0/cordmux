@@ -1,0 +1,130 @@
+# OBS プラグイン (src-obs) をビルドし、単体テストを実行する。workflow_call で checks.yml と dist.yml から呼ぶ。
+# cordmux.dll のバージョンには、呼び出し元が渡す短いコミットを CMake の CORDMUX_BUILD_COMMIT で入れる。
+# 成果物は cmake --install のインストール先にできる cordmux/ のフォルダーと pdb で、同梱する FFmpeg の DLL と
+# ffmpeg.exe も入る (一覧は src-obs/cmake/cordmux_ffmpeg_runtime.cmake)。保持日数は呼び出し元が retention_days で渡す。
+# obs-plugintemplate の .github/ はコピーしていない。リポジトリのルートが OBS プラグインのプロジェクトのルート
+# (src-obs) ではないので、cmake を直接呼ぶワークフローにしている。
+
+name: obs-plugin
+
+on:
+  workflow_call:
+    inputs:
+      build_commit:
+        description: "cordmux.dll のバージョン <version>+<短いコミット> に入れる値 (build_info.py meta の short_commit)"
+        type: string
+        required: true
+      retention_days:
+        description: "成果物の保持日数 (checks は 1、dist は 7)"
+        type: number
+        required: true
+    outputs:
+      artifact:
+        description: "cmake --install のインストール先 (cordmux/ のフォルダーと pdb) を入れた成果物の名前"
+        value: ${{ jobs.build.outputs.artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (windows-ci-x64)
+    runs-on: windows-2022
+    outputs:
+      artifact: ${{ steps.facts.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Cache src-obs/.deps
+        uses: actions/cache@v6
+        with:
+          path: src-obs/.deps
+          key: obs-deps-${{ hashFiles('src-obs/buildspec.json') }}
+
+      - name: Configure (短いコミットを CORDMUX_BUILD_COMMIT で渡す)
+        working-directory: src-obs
+        shell: bash
+        env:
+          BUILD_COMMIT: ${{ inputs.build_commit }}
+        run: cmake --preset windows-ci-x64 "-DCORDMUX_BUILD_COMMIT=${BUILD_COMMIT}"
+
+      - name: Build
+        working-directory: src-obs
+        run: cmake --build --preset windows-ci-x64
+
+      # --prefix を必ず付ける。既定のインストール先は %ALLUSERSPROFILE%/obs-studio/plugins
+      # (src-obs/cmake/windows/defaults.cmake) で、OBS がプラグインを読み込むフォルダーである。
+      - name: Install
+        run: cmake --install src-obs/build_x64 --prefix src-obs/release --config RelWithDebInfo
+
+      - name: zip のジョブが使う値 (成果物の名前)
+        id: facts
+        shell: bash
+        run: |
+          echo "artifact=cordmux-obs-plugin" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.facts.outputs.artifact }}
+          path: src-obs/release
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+
+  unit-tests:
+    name: doctest (align + decor, real ffmpeg)
+    runs-on: windows-2022
+    # 単体テストのビルド (src-obs/tests/CMakeLists.txt) は、obs-deps の FFmpeg のヘッダーとライブラリを src-obs/.deps の
+    # 下から使う (場所は src-obs/cmake/cordmux_obs_deps.cmake が src-obs/buildspec.json から決める)。場所は src-obs から
+    # の相対パスなので、build のジョブが作った src-obs/.deps をキャッシュから復元すれば足りる。そのため build のジョブの
+    # 後に実行し、同じキャッシュを復元する (保存はしない)。
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Restore src-obs/.deps (build のジョブが作ったもの。無ければ失敗させる)
+        uses: actions/cache/restore@v6
+        with:
+          path: src-obs/.deps
+          key: obs-deps-${{ hashFiles('src-obs/buildspec.json') }}
+          fail-on-cache-miss: true
+
+      - name: Configure
+        working-directory: src-obs/tests
+        run: cmake --preset tests-x64
+
+      - name: Build
+        working-directory: src-obs/tests
+        run: cmake --build --preset tests-x64
+
+      # obs-deps の bin のパスは YAML に書かず、buildspec.json から求める (build_info.py obs-deps-bin)。
+      # ffmpeg.exe と ffprobe.exe がなければ、ここで失敗させる。環境変数を渡さないと、実際の ffmpeg を使うテストは
+      # スキップされるためである。
+      - name: 実際の ffmpeg を使うテストに obs-deps の ffmpeg.exe と ffprobe.exe を渡す
+        shell: bash
+        run: |
+          bin="$(python test/tools/dist-zip/build_info.py obs-deps-bin)"
+          test -f "$bin/ffmpeg.exe"
+          test -f "$bin/ffprobe.exe"
+          echo "CORDMUX_FFMPEG_EXE=$bin/ffmpeg.exe" >> "$GITHUB_ENV"
+          echo "CORDMUX_FFPROBE_EXE=$bin/ffprobe.exe" >> "$GITHUB_ENV"
+
+      # スキップしたテストが 1 件でもあれば失敗させる。doctest はスキップを失敗に数えないので、要約の行を確認する。
+      - name: align_tests
+        shell: bash
+        run: |
+          build_x64/align-tests/Release/align_tests.exe | tee align_tests.txt
+          grep -E '^\[doctest\] test cases:.*\| +0 skipped' align_tests.txt
+
+      - name: decor_tests
+        shell: bash
+        run: |
+          build_x64/align-tests/Release/decor_tests.exe | tee decor_tests.txt
+          grep -E '^\[doctest\] test cases:.*\| +0 skipped' decor_tests.txt

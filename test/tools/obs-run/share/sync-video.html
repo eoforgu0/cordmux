@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>テスト動画 (音と映像の同期確認用)</title>
+<!--
+  実際の通話で共有する「音つきのテスト動画」を流すページ。同じフォルダの sync-video.mp4
+  (make_sync_video.py が作る。5 秒ごとに全面が白くなる 3 フレームと、同じ時刻から 60 ms だけ
+  2 kHz になる音) を繰り返し再生する。外部のリソースは読まない (回線の状態に左右されないため)。
+  ブラウザは音つきの自動再生を止めるので、大きな再生ボタンを押してもらう。
+
+  再生を始めたら、動画をタブの表示域いっぱいに引き伸ばし (object-fit: fill)、ボタンと説明の行は隠す。
+  動画を 1280x720 px の固定の大きさで置くと、Chrome のタブで共有したとき、表示域 (約 1920x905) の中で
+  動画は共有の約 53% (共有の上で x 213-1067、y 10-583) にしか写らない。OBS の枠 (640x360) では
+  白のマーカーのフレームでも区画の平均が 139 になり、平均 200 超えを白とする判定に届かない。
+  引き伸ばせば、共有が動画そのもの (端から端まで) になる。sync.py の白の見つけ方も、白が区画の
+  一部にしか写らなくても拾える形になっている (sync.py の冒頭)。
+  fill を選んだ理由: Discord は表示域を 1280x720 に縦横別の倍率で引き伸ばして送る (円が縦長に
+  写る) ので、fill なら表示域の大きさ (人のウィンドウの大きさ) によらず、動画から枠までの倍率が縦横とも
+  0.5 倍になる (1280x720 の動画 -> 表示域 -> 1280x720 の共有)。
+  contain (縦横の比を保つ) は採らない。表示域が 16:9 より横長だと左右に黒い帯が入り、その幅は人のウィンドウの
+  大きさで変わり、帯の位置も一緒に動く。再生と同時に全画面にする方法も採らない。人が戻し方に迷い、
+  fill なら全画面にしなくても共有が動画だけになる。動画を 1280x720 のままで余白と説明の行だけ消す方法も
+  採らない。表示域より小さいので、53% のまま変わらない。
+  再生中は標準の操作の帯も消す (動画の下に重なって共有に写る)。止めたいときは C キーで出し入れする
+  (e.code で見る。日本語入力が有効でも e.key は "Process" になるため)。操作の帯を出している間だけマウスの
+  矢印を出す。
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #202020; color: #eee; font-family: sans-serif; }
+  #wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px; }
+  video { width: 1280px; max-width: 100%; height: auto; background: #000; }
+  #play { font-size: 40px; padding: 18px 56px; cursor: pointer; }
+  #hint { font-size: 18px; color: #bbb; text-align: center; line-height: 1.6; }
+  /* 再生した後: 動画を表示域いっぱいに引き伸ばし、ほかは隠す (スクロールの帯も出さない) */
+  html.playing, html.playing body { background: #000; overflow: hidden; }
+  html.playing #play, html.playing #hint { display: none; }
+  html.playing video {
+    position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; max-width: none;
+    object-fit: fill; cursor: none;
+  }
+  html.playing video.show-controls { cursor: auto; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <button id="play">再生する (音が出ます)</button>
+  <video id="video" src="sync-video.mp4" loop playsinline preload="auto"></video>
+  <div id="hint">
+    音が鳴る動画です。再生は繰り返します。<br>
+    再生すると、動画がこのタブいっぱいに広がります (このボタンと説明は消えます)。<br>
+    止めたいときは C キーを押すと、再生・停止のボタンが出ます (もう一度押すと消えます)。
+  </div>
+</div>
+<script>
+  const video = document.getElementById("video");
+  const play = document.getElementById("play");
+  const hint = document.getElementById("hint");
+
+  play.addEventListener("click", () => {
+    video.muted = false;
+    video.volume = 1.0;
+    video.play().then(() => {
+      document.documentElement.classList.add("playing");
+    }).catch((e) => {
+      hint.textContent = "再生できませんでした: " + e.message;
+    });
+  });
+
+  // C キーで標準の操作の帯を出し入れする (再生中だけ)。
+  document.addEventListener("keydown", (e) => {
+    if (e.code !== "KeyC" || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (!document.documentElement.classList.contains("playing")) return;
+    video.controls = !video.controls;
+    video.classList.toggle("show-controls", video.controls);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# 日本語の画面の文字列の 2 つの表記の設定 (英数字の前後の空白と、疑問符) と、その例外のキー。書き方は
+# docs/ui_guidelines.md の「表記」にある。
+# 読むもの:
+#   - test/lint/forbidden_ui_words.py: forbidden_ui_words.txt の行のうち、先頭に spacing=... か question=... の指定が
+#     ある行を、ここの値と合うときだけ使う (spacing のセットの空白の行と、symbols のセットの疑問符の行)
+#   - test/lint/install_guide.py と test/tools/dist-zip/make_release_notes.py: 同じ選び方で、spacing のセットの行を
+#     手順書とリリースノートのチェックに使う
+#   - test/tools/wording/apply_ja_style.py: 書き方を切り替えるツール。--spacing と --question で ja の文字列を書き換え、
+#     最後にこのファイルの値も書き換える (lint と文字列の書き方が食い違わないようにするため)。値だけを手で書き換えない。
+#
+# 書き方: 1 行に 1 つの「名前=値」。空行と # で始まる行は読み飛ばす。
+#   spacing     A (半角の英数字と全角の文字の間に空白を入れる) か B (入れない)
+#   question    halfwidth (半角の ?) か fullwidth (全角の疑問符)
+#   name_keys   OBS の一覧に表示する名前 (ソースの名前) と、録画のボタンの経過時間のキーのパターン (fnmatch のパターンを
+#               空白で区切る)。spacing=B でも、末尾の番号の前の空白は残す。not_names: の指定がある行は、このキーには使わない
+#   suffix_keys 入力欄の数の後ろに付く単位のキーのパターン (書き方は name_keys と同じ)。値の先頭の空白を、spacing=A で
+#               入れ、spacing=B で外す (数と全角の単位の間の空白。半角の単位の前の空白は、どちらでも残す)
+
+spacing=B
+question=fullwidth
+name_keys=cordmux.source.*.label cordmux.dock.record_stop_elapsed.button
+suffix_keys=cordmux.settings.unit_*.label

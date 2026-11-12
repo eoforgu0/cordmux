@@ -1,0 +1,68 @@
+name: 不具合の報告 / Bug report
+description: cordmux の不具合を報告します。 / Report a bug in cordmux.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        使い方で困ったときは、先に手順書の「[困ったとき](https://github.com/eoforgu0/cordmux/blob/main/guide/ja.md#困ったとき)」を見てください。
+
+        [診断情報をエクスポート] で作る zip は添付しないでください。スクリーンショットを添付するときは、ほかの人の名前が写っていないかを確認してください。
+
+        If you need help with using cordmux, see "[Troubleshooting](https://github.com/eoforgu0/cordmux/blob/main/guide/en.md#troubleshooting)" in the guide first.
+
+        Don't attach the zip file you create with [Export Diagnostics]. If you attach a screenshot, check that it doesn't show other people's names.
+  - type: textarea
+    id: versions
+    attributes:
+      label: バージョン / Versions
+      description: |
+        OBS の [ツール] メニューから [cordmuxの設定] を開き、[バージョン情報] ページの「バージョン」の [コピー] を押して、ここに貼り付けてください。
+        In OBS, open [cordmux Settings] from the [Tools] menu, select [Copy] under "Versions" on the [About] page, and paste the result here.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: 構成 / Setup
+      description: |
+        Vesktop にログインしているアカウントに合わせて選んでください。
+        Choose based on which account is logged in to Vesktop.
+      options:
+        - サブアカウントを使う構成 (Vesktop にサブアカウントでログインしている) / Second account logged in to Vesktop
+        - メインアカウントだけの構成 (Vesktop にメインアカウントでログインしている) / Main account logged in to Vesktop
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 起きたこと / What happened
+      description: |
+        ドックにメッセージが表示されたときは、その文も書いてください。
+        If the dock showed a notice, include its text.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現する手順 / Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した動作 / Expected behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 確認 / Confirmation
+      options:
+        - label: 診断情報の zip を添付していません。 / I haven't attached the diagnostics zip file.
+          required: true
