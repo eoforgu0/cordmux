@@ -1321,6 +1321,9 @@ void Pipeline::Impl::handle_facts(const ws::FactsMessage &msg)
 		if (parsed.sharing_valid)
 			router.forget_stopped_sharing(parsed.sharing.user_ids);
 		facts = std::move(parsed);
+		// Vesktop のアカウントの画面は届かないので、枠に載せない (stream_router.h の AssignPolicy の receiver_user_id)。facts
+		// が替わるたびに入れ直す (下の admit_sharers_from_facts_locked と、この後の configure が見る)。
+		assign_policy.receiver_user_id = facts.self_user_id.value_or(std::string());
 		// 画面共有を始めた人の画面の音をミュートにする (configure より先に facts が届いたときの始まり。
 		// 受け取る範囲が「枠に載せた人だけ」のときは、視聴を始めるまで configure に画面のストリームが載らない)。
 		note_screen_shares_locked(last_configure ? &*last_configure : nullptr);
@@ -1537,6 +1540,7 @@ void Pipeline::Impl::handle_disconnected()
 		// 状態を画面に表示し続けると、事実と違う表示になる。ログのリングバッファー (js_log) は捨てない。
 		// 接続していない間に何があったかを、診断情報に残すためである。
 		facts = FactsSnapshot{};
+		assign_policy.receiver_user_id.clear(); // facts と一緒に捨てる (次の接続の facts で入れ直す)
 		last_frames.clear();
 		// 表示名とアバター、ストリームごとの映像の形も、同じ理由で捨てる。送信側は再接続の直後に、
 		// 変わっていなくても必ず送り直すので、持ち越す必要がない (docs/wire_format.md の「profiles」と「avatar」)。

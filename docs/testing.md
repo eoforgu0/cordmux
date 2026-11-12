@@ -492,6 +492,7 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 | 名前を変更すると配信に表示される名前が変わり、変更していることが参加者の一覧で分かる | 単体テスト (`test_dock_build_observation.cpp`、表示の規則)、目視 (プレビューツール) |
 | 使う声を別の人の声に置き換えると、声だけがその人から届き、映像と画面共有の音声は元の人のまま。使う声が画面に表示される | 単体テスト (`test_ledger_actions.cpp`、`test_ledger_rules.cpp`、`test_pipeline_stream_router.cpp`、`test_config_allocation.cpp`)、実際の通話 (`call-1`。`--extra-checks` で、テスト用の音が声の枠の間を移るかを `tone_scan.py` で数える) |
 | 枠に載せる人の選び方を自動にすると、画面共有を始めた人が枠の数まで載り、手動に戻すと利用者の選択が残る | 単体テスト (`test_pipeline_stream_router.cpp`) |
+| Vesktop のアカウントの画面共有は、選び方が「自動」でも、[自動で枠に載せる] でも、手動でも枠に載らず、ほかの人が上限まで載る (メインアカウントだけの構成と、サブアカウントの構成の両方) | 単体テスト (`test_pipeline_stream_router.cpp` の `receiver_user_id`) |
 | 画面共有をやめた人と通話から抜けた人の枠が空く。Vesktop のアカウントが通話を抜けたときは全員の枠が空き、戻っても手動の人は自動では載らない。声のストリームが生きている間は、roster から一瞬消えても声の枠と経路が残る | 単体テスト (`test_pipeline_slot_release.cpp`) |
 | 自分の枠に OBS の既存のソースかシーンを選ぶと、4 つの枠の 1 つに入り、その映像の画質のまま表示される。選んでいる間は、Discord での自分の画面共有を枠に載せない。cordmux を含むシーンは候補にしない (`test_sources_self_frame_plan.cpp`) | 単体テスト (`test_sources_composite_layout.cpp`、`test_pipeline_stream_router.cpp`)、実際の通話 |
 | 自分の枠は、ドックの自分の行のチェックが付いている間に出る。チェックは、ドックで付けたとき、またはほかの人と同じ規則 (枠に載せる人の選び方が自動、[自動で枠に載せる]) で自分の共有を始めたときに付く。共有の終わりでは外れず、ドックで外した後は始め直すまで付かない。共有の状態が分からない間は変わらない。Discord の人で枠が埋まっていれば、自分の枠を出さない (付けた直後に、同じ瞬間に自動で 4 人目が載っていたときも、チェックを外す) | 単体テスト (`test_sources_self_frame_plan.cpp` の `plan_self_frame`、`test_pipeline_stream_router.cpp` の `accepted_self_frame_in_use`、`test_ledger_actions.cpp`、`test_ledger_dock_rules.cpp`)、ドックを操作するテスト (`selfframe`) |

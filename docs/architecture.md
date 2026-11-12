@@ -123,7 +123,7 @@ cordmux は 2 つのプログラムからなる。
 io_thread が WebSocket のメッセージを `Pipeline` のコールバック (`handle_video_frame` など) に渡す。映像は次の順に進む。
 
 1. 録画。cordmux の録画が ON なら、経路の有無にかかわらず、アクセスユニットを `Recorder` にコピーして渡す。録画専用のフラグが付いた WebSocket のメッセージ (黒埋め用のフレーム) は、録画だけに渡し、表示の処理に入れない。
-2. 経路。`StreamRouter` (`pipeline/stream_router.h`) が、configure の `streams` を割り当て表の枠に結び付け、`stream_id` から枠と人を引く。枠に載せない人には経路を作らず、デコードもしない。
+2. 経路。`StreamRouter` (`pipeline/stream_router.h`) が、configure の `streams` を割り当て表の枠に結び付け、`stream_id` から枠と人を引く。枠に載せない人には経路を作らず、デコードもしない。Vesktop のアカウント (facts の `self_user_id`。`AssignPolicy::receiver_user_id`) の画面は、送信側が視聴しないので届かず、facts の `sharing` にだけ入る。そのため、`apply_configure`、`admit_sharers` (受け取る範囲が「枠に載せた人だけ」のときに facts から載せる経路)、手動の `assign_slot` のどれでも画面の枠に載せない (載せると、描けない枠が載せられる人数を 1 つ使う)。
 3. デコードのキュー。ストリームごとのキューが 8 個か 512 MiB を超えたら、積んだ分も含めて全部捨て、次のキーフレームまで P フレームを捨てて `keyframe_request` を送る (`pipeline/queue_admission.h`)。デコードが追い付くのを待つより、次のキーフレームから出し直すほうが早い。
 4. デコード。ストリームごとのスレッドが `H264Decoder` で I420 か NV12 のフレームにする。設定の `decoder` が `D3D11VA` ならハードウェアデコードを試し、使えなければソフトウェアに切り替える。切り替えは画面に出さず、ログと診断情報に残す。
 5. 整列。`TimestampAligner` で OBS に渡すタイムスタンプを求め、映像のオフセットを `AvOffsetTranscriber` に保存する。

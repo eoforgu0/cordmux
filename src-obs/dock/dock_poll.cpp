@@ -1255,8 +1255,8 @@ bool DockPoll::self_frame_selected() const
 void DockPoll::carry_self_frame_check(bool now_selected)
 {
 	// 自分の枠に映す映像を替えたときに、メインアカウントのチェックを引き継ぐ。起動の途中の結び付きでは呼ばない。
-	// サブアカウントがない構成 (自分の枠の人が Vesktop のアカウント) には、Discord の画面共有を枠に載せる経路がないので、
-	// 引き継ぐものがない。
+	// サブアカウントがない構成 (自分の枠の人が Vesktop のアカウント) では、その人の Discord の画面共有は受信側に届かず、
+	// Pipeline も画面の枠に載せない (pipeline/stream_router.h の AssignPolicy::receiver_user_id) ので、引き継ぐものがない。
 	const pipeline::PipelineSnapshot snapshot = pipeline_.snapshot();
 	const std::string owner = self_frame_user_id(settings_, snapshot);
 	const bool has_sub_account =

@@ -115,6 +115,14 @@ struct RouteChange {
 // メインアカウントの画面のストリームは画面の枠に入れず、経路も作らない (reason は "self_frame_selected")。自動でも手動でも同じで、
 // 自分の枠を外している間と、選んだ映像が見つからない間も同じである (設定の値で決める)。メインアカウントがすでに持っている画面の枠は空ける。偽に戻ったら
 // ほかの人と同じに扱う (手動なら、利用者が載せ直すまで載らない。自動なら画面共有していれば載る)。声と録画は変わらない。
+//
+// receiver_user_id (Vesktop のアカウント。受け取りに使うアカウントで、facts の self_user_id) の画面は、どの構成でも、どの
+// 決め方でも画面の枠に入れず、経路も作らない (reason は "receiver")。送信側は自分の画面共有を視聴しない (WebRTC は自分が
+// 送った映像を返さない) ので、受信側に映像が届かず、枠に載せても描けないまま、載せられる人数を 1 つ使ってしまう。facts の
+// sharing にはこの人も入る (自分の枠を自動で付けるかの判断と、ドックの「画面共有中」の組分けが使う) ので、admit_sharers でも
+// 除く。この人がすでに持っている画面の枠は空ける。手動で載せる操作 (pipeline.h の assign_slot_in) も断る (ドックはこの人の
+// 行のチェックを押せなくしている。ledger/rules_dock.cpp の PersonRow::checkable)。メインアカウントだけの構成では自分の枠の人と
+// 同じ人で、サブアカウントの構成ではサブアカウントである。
 struct AssignPolicy {
 	bool automatic = false;          // 既定は手動
 	std::set<std::string> always_on; // 「自動で載せる」を付けた人。手動のときだけ見る
@@ -128,6 +136,9 @@ struct AssignPolicy {
 	bool route_main_account_voice = false;
 	// 自分の枠に映す映像として OBS のソースかシーンを選んでいるか (上の説明)。呼び出し元 (ドック) が渡す。
 	bool self_frame_selected = false;
+	// Vesktop のアカウントの userId (上の説明。空 = まだ分からない)。呼び出し元 (pipeline.cpp) が、facts の self_user_id から
+	// 入れる。
+	std::string receiver_user_id;
 	// 自分の枠を使っているか (上の説明。config::self_frame_in_use)。真の間は、画面の枠に新しく載せられる人数が 1 つ減る
 	// (screen_slot_room)。呼び出し元 (ドック) が、自分の行のチェックと self_frame_selected から決めて渡す。
 	bool self_frame_in_use = false;
@@ -216,7 +227,8 @@ public:
 	// - 手動: 「自動で載せる」の人が画面共有を始めたときだけ、載せられる人数に達していなければ載せる。「始めた」は、前に呼ばれたときの
 	//   sharing_user_ids と、前の configure の画面のストリームの両方にいないことで見る (最初の呼び出しは、全員が
 	//   「始めた」になる)。
-	// - 外した人 (exclude_user) と、自分の枠で出す人 (policy.self_frame_selected のメインアカウント) は載せない。
+	// - 外した人 (exclude_user) と、自分の枠で出す人 (policy.self_frame_selected のメインアカウント) と、Vesktop のアカウント
+	//   (policy.receiver_user_id。sharing_user_ids に入るが、映像が届かない) は載せない。
 	// - すでに枠を持つ人は何もしない。
 	// 戻り値は、新しく載せた人。
 	std::vector<std::string> admit_sharers(const std::vector<std::string> &sharing_user_ids,
@@ -330,6 +342,12 @@ inline std::vector<RouteChange> StreamRouter::apply_configure(const ws::Configur
 		if (main_slot != 0)
 			table.release(config::SlotKind::Screen, main_slot);
 	}
+	// Vesktop のアカウントの画面は描けないので、持っている画面の枠を空ける (AssignPolicy の receiver_user_id)。
+	if (!policy.receiver_user_id.empty()) {
+		const int receiver_slot = table.slot_of_owner(config::SlotKind::Screen, policy.receiver_user_id);
+		if (receiver_slot != 0)
+			table.release(config::SlotKind::Screen, receiver_slot);
+	}
 
 	std::map<uint32_t, Route> new_routes;
 	// この呼び出しの中で、経路が消えたともう返した stream_id。最後の「configure から消えた」の確認で、同じ
@@ -403,6 +421,16 @@ inline std::vector<RouteChange> StreamRouter::apply_configure(const ws::Configur
 		// 画面の枠に入れてよい人かを先に見る (AssignPolicy)。声の枠はここを通らない。
 		if (kind == config::SlotKind::Screen) {
 			bool admit = true;
+			if (!policy.receiver_user_id.empty() && stream.user_id == policy.receiver_user_id) {
+				// Vesktop のアカウントの画面。送信側は視聴しないので普通は届かないが、届いても画面の枠に入れず、全画面だけで
+				// 映す経路も作らない。前の経路があれば消す。
+				const auto prev = routes_.find(stream.stream_id);
+				if (prev != routes_.end()) {
+					changes.push_back(RouteChange{stream.stream_id, prev->second, std::nullopt, "receiver"});
+					dropped_ids.insert(stream.stream_id);
+				}
+				continue;
+			}
 			if (skip_main_screen && stream.user_id == policy.main_account_user_id) {
 				// 自分の枠で出す人の画面は、画面の枠に入れない。経路を作らず、前の経路があれば消す。
 				const auto prev = routes_.find(stream.stream_id);
@@ -594,6 +622,9 @@ inline std::vector<std::string> StreamRouter::admit_sharers(const std::vector<st
 	const bool skip_main = policy.self_frame_selected && !policy.main_account_user_id.empty();
 	for (const std::string &user_id : sharing_user_ids) {
 		if (user_id.empty() || (skip_main && user_id == policy.main_account_user_id))
+			continue;
+		// Vesktop のアカウントの画面共有は届かないので載せない (AssignPolicy の receiver_user_id)。
+		if (!policy.receiver_user_id.empty() && user_id == policy.receiver_user_id)
 			continue;
 		if (table.slot_of_owner(kind, user_id) != 0 || excluded_.count(user_id) != 0)
 			continue;

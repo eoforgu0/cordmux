@@ -965,6 +965,8 @@ public:
 	// 押せなくしている (ledger/observation.h の self_frame_limit_reached) が、その判断は最大 1 周期前の Observation で行うので、
 	// 同じ周期に自動で載せる経路 (選び方が「自動」のときの apply_configure と admit_sharers、[自動で枠に載せる] の人) が
 	// 載せた人は、ここで割り当て表と同じロックの中で数える。選び方が「自動」のときも、手動のチェックは押せる。
+	// Vesktop のアカウント (stream_router.h の AssignPolicy::receiver_user_id) は、画面が届かないので画面の枠に載せず、
+	// Insufficient を返す (ドックはこの人の行のチェックを押せなくしている)。
 	SlotChange assign_slot(config::SlotKind kind, const std::string &user_id);
 	SlotChange release_slot(config::SlotKind kind, const std::string &user_id);
 
@@ -1340,6 +1342,12 @@ inline Pipeline::SlotChange assign_slot_in(config::AllocationTable &table, Strea
 	Pipeline::SlotChange out;
 	if (user_id.empty())
 		return out;
+	// Vesktop のアカウントの画面は届かないので、画面の枠に載せない (自動で載せる経路と同じ規則。stream_router.h の
+	// AssignPolicy の receiver_user_id)。ドックはこの人の行のチェックを押せなくしているので、普通はここに来ない。
+	if (kind == config::SlotKind::Screen && !policy.receiver_user_id.empty() && user_id == policy.receiver_user_id) {
+		out.outcome = Outcome::Insufficient;
+		return out;
+	}
 	const bool over_capacity = kind == config::SlotKind::Screen && table.slot_of_owner(kind, user_id) == 0 &&
 				   !screen_slot_room(table, policy);
 	const config::AssignResult result = over_capacity ? config::AssignResult{} : table.try_assign(kind, user_id);

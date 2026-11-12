@@ -1564,6 +1564,128 @@ TEST_CASE("admit_sharers: 自分の枠で出す人 (メインアカウント) �
 	CHECK(router.admit_sharers({"9", "1"}, table, policy) == std::vector<std::string>{"9"});
 }
 
+// Vesktop のアカウント (AssignPolicy::receiver_user_id。facts の self_user_id) の画面共有。facts の sharing には入るが、送信側が
+// 視聴しないので映像は届かない。どの構成でも、どの決め方でも画面の枠に載せない。
+
+namespace {
+
+// Vesktop のアカウントを "v" にした決め方。
+AssignPolicy with_receiver(AssignPolicy policy)
+{
+	policy.receiver_user_id = "v";
+	return policy;
+}
+
+} // namespace
+
+TEST_CASE("admit_sharers: Vesktop のアカウントは、どの構成でも、どの決め方でも載せず、ほかの人が上限まで載る")
+{
+	// メインアカウントだけの構成 (メインアカウントの欄が空) で、選び方が「自動」。
+	{
+		AllocationTable table;
+		StreamRouter router;
+		CHECK(router.admit_sharers({"v", "1", "2", "3", "4"}, table, with_receiver(kAuto)) ==
+		      std::vector<std::string>{"1", "2", "3", "4"});
+		CHECK(table.slot_of_owner(SlotKind::Screen, "v") == 0);
+		CHECK(table.assigned_count(SlotKind::Screen) == 4);
+	}
+	// メインアカウントだけの構成で、Vesktop のアカウントの行に [自動で枠に載せる] が付いている。
+	{
+		AllocationTable table;
+		StreamRouter router;
+		CHECK(router.admit_sharers({"v", "1"}, table, with_receiver(manual_with({"v", "1"}))) ==
+		      std::vector<std::string>{"1"});
+		CHECK(table.slot_of_owner(SlotKind::Screen, "v") == 0);
+	}
+	// メインアカウントの欄に Vesktop のアカウントが入っていて、自分の枠に映す映像が「Discordの画面共有」。
+	{
+		AllocationTable table;
+		StreamRouter router;
+		AssignPolicy policy = with_receiver(kAuto);
+		policy.main_account_user_id = "v";
+		policy.self_frame_selected = false;
+		CHECK(router.admit_sharers({"v", "1", "2", "3", "4"}, table, policy) ==
+		      std::vector<std::string>{"1", "2", "3", "4"});
+		CHECK(table.slot_of_owner(SlotKind::Screen, "v") == 0);
+	}
+	// サブアカウントの構成で、サブアカウント (Vesktop のアカウント) が画面共有した。メインアカウントは載る。
+	{
+		AllocationTable table;
+		StreamRouter router;
+		AssignPolicy policy = with_receiver(kAuto);
+		policy.main_account_user_id = "9";
+		CHECK(router.admit_sharers({"v", "9", "1", "2", "3"}, table, policy) ==
+		      std::vector<std::string>{"9", "1", "2", "3"});
+		CHECK(table.slot_of_owner(SlotKind::Screen, "v") == 0);
+	}
+	// 自分の枠を使っている間は、Vesktop のアカウントを数えずに、Discord の人が 3 人まで載る。
+	{
+		AllocationTable table;
+		StreamRouter router;
+		AssignPolicy policy = with_receiver(kAuto);
+		policy.self_frame_selected = true;
+		policy.self_frame_in_use = true;
+		CHECK(router.admit_sharers({"v", "1", "2", "3", "4"}, table, policy) ==
+		      std::vector<std::string>{"1", "2", "3"});
+		CHECK(table.slot_of_owner(SlotKind::Screen, "v") == 0);
+		CHECK(table.assigned_count(SlotKind::Screen) == 3); // 自分の枠と合わせて 4 つ
+	}
+}
+
+TEST_CASE("Vesktop のアカウントの画面のストリームが届いても、画面の枠に入れず、持っていた画面の枠は空ける")
+{
+	ConfigureMessage msg;
+	msg.streams.push_back(make_stream(1, "v", StreamKind::Screen));
+	for (uint32_t id = 2; id <= 6; ++id)
+		msg.streams.push_back(make_stream(id, std::to_string(id), StreamKind::Screen));
+	for (const bool automatic : {true, false}) {
+		CAPTURE(automatic);
+		AllocationTable table;
+		StreamRouter router;
+		const AssignPolicy policy = with_receiver(automatic ? kAuto : manual_with({"v", "2", "3", "4", "5"}));
+		router.apply_configure(msg, table, policy);
+		CHECK_FALSE(router.route(1).has_value());
+		CHECK(table.slot_of_owner(SlotKind::Screen, "v") == 0);
+		CHECK(table.assigned_count(SlotKind::Screen) == 4); // ほかの人が上限まで載る
+	}
+
+	// Vesktop のアカウントが分かる前に載っていた (経路もある) 枠は、分かった後の configure で空き、経路も消える。
+	AllocationTable table;
+	StreamRouter router;
+	router.apply_configure(msg, table, kAuto);
+	REQUIRE(table.slot_of_owner(SlotKind::Screen, "v") != 0);
+	REQUIRE(router.route(1).has_value());
+	const auto changes = router.apply_configure(msg, table, with_receiver(kAuto));
+	const RouteChange *dropped = change_of(changes, 1);
+	REQUIRE(dropped != nullptr);
+	CHECK(std::string(dropped->reason) == "receiver");
+	CHECK_FALSE(router.route(1).has_value());
+	CHECK(table.slot_of_owner(SlotKind::Screen, "v") == 0);
+	CHECK(table.assigned_count(SlotKind::Screen) == 4); // 空いた枠に待っていた人が載る
+
+	// 全画面で映す人にしても、全画面だけで映す子への経路を作らない。
+	AssignPolicy focus = with_receiver(kAuto);
+	focus.focus_user_id = "v";
+	router.apply_configure(msg, table, focus);
+	CHECK_FALSE(router.route(1).has_value());
+}
+
+TEST_CASE("assign_slot_in: Vesktop のアカウントは、手動でも画面の枠に載せない")
+{
+	using cordmux::pipeline::assign_slot_in;
+	using SlotOutcome = cordmux::pipeline::Pipeline::SlotChange::Outcome;
+	AllocationTable table;
+	StreamRouter router;
+	const AssignPolicy policy = with_receiver(manual_with());
+	const cordmux::pipeline::Pipeline::SlotChange refused = assign_slot_in(table, router, policy, SlotKind::Screen, "v");
+	CHECK(refused.outcome == SlotOutcome::Insufficient);
+	CHECK(refused.slot == 0);
+	CHECK(table.assigned_count(SlotKind::Screen) == 0);
+	// ほかの人は載せられる。Vesktop のアカウントが分からない間 (receiver_user_id が空) は、ほかの人と同じに扱う。
+	CHECK(assign_slot_in(table, router, policy, SlotKind::Screen, "1").outcome == SlotOutcome::Assigned);
+	CHECK(assign_slot_in(table, router, manual_with(), SlotKind::Screen, "v").outcome == SlotOutcome::Assigned);
+}
+
 TEST_CASE("admit_sharers: 枠が埋まっていれば載せず、空けた枠には載せる (ほかの人の枠は取り上げない)")
 {
 	AllocationTable table;
