@@ -1,0 +1,3 @@
+# この NG 例で出力される問題の文の一部 (install_guide.py が出力する問題の文は、全部この文字列を含む)
+# NG 例: a paragraph wrapped by hand
+空行を挟まずに続く地の文の行

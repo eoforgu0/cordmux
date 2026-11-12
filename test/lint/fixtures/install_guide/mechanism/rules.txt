@@ -1,0 +1,81 @@
+# 仕組みの例の rules (テストデータ)。install_guide.py の、rules のキーで入れる仕組み (procedure の 2 つ目の範囲、[ ] の
+# 「...」と UI 要素の種類の語、quote_check、role の update、手順書の空白のチェック) を、実際の rules (install_guide_rules.txt) と
+# 別に確かめる。実際の rules と違う組み合わせ (空白の書き方が spacing=A のときなど) も確かめるため。
+# install_guide.py --selftest だけが読む (MECHANISM_RULES_FILE)。形は install_guide_rules.txt と同じで、見出しは例に必要なものだけ。
+
+target: test/lint/fixtures/install_guide/mechanism/ja/good/ja.md
+ini: test/lint/fixtures/install_guide/mechanism/ja/good/ja-JP.ini
+zip_name: mechanism-ja.txt
+fixture: test/lint/fixtures/install_guide/mechanism/ja/good
+title: cordmux の説明書
+
+heading: 概要
+heading: 必要なもの
+heading: インストール
+heading: 配信のたびにすること
+heading: 更新
+heading: 困ったとき
+heading: 互換性
+heading: ソースコードとライセンス
+
+procedure: 【インストール】 【困ったとき】
+procedure: 【必要なもの】 【必要なもの】
+
+role: 【互換性】 maintenance
+role: 【更新】 update
+
+placeholder: (確認してから書きます)
+
+forbidden: コマンドプロンプト
+forbidden: \bpowershell\b
+forbidden: \bnode\b
+forbidden: \bgit\b
+forbidden: (?m)^[ \t　]*[>$＞＄]
+forbidden_all: てもら[いうえおっ]
+
+contains: 【概要】 画面共有をする人は、いつもどおり画面共有をするだけです。
+
+quote_check: 「」
+outside_text: すべて展開
+component_word: ページ page
+component_word: 欄 label
+component_word: チェックボックス check
+outside_button: ユーザーIDをコピー
+
+target: test/lint/fixtures/install_guide/mechanism/en/good/en.md
+ini: test/lint/fixtures/install_guide/mechanism/en/good/en-US.ini
+zip_name: mechanism-en.txt
+fixture: test/lint/fixtures/install_guide/mechanism/en/good
+title: cordmux Guide
+
+heading: Overview
+heading: Requirements
+heading: Installation
+heading: Updating
+heading: Troubleshooting
+heading: Compatibility
+heading: Source Code and Licenses
+
+procedure: 【Installation】 【Troubleshooting】
+procedure: 【Requirements】 【Requirements】
+
+role: 【Compatibility】 maintenance
+role: 【Updating】 update
+
+placeholder: (to be written after testing)
+
+forbidden: \bpowershell\b
+forbidden: \bnode\b
+forbidden: \bgit\b
+forbidden: \bclick
+forbidden: (?m)^[ \t　]*[>$＞＄]
+forbidden_all: \bask\s+(them|the|someone|your)\b
+
+contains: 【Overview】 There is nothing for them to install or set up.
+
+quote_check: ""
+outside_text: Extract All
+component_word: page page
+component_word: box label
+component_word: check box check
+outside_button: Copy User ID

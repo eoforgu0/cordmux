@@ -1,0 +1,142 @@
+# Vencord を固定のコミットで取得し、src-vencord をユーザープラグインとして組み込んでビルドする。続けて、Vencord の
+# test:ts、dist/ の 5 つのファイルと先頭の見出しのチェック、リポジトリのルートの vitest と型チェックを実行する。
+# workflow_call で checks.yml と dist.yml から呼ぶ。成果物は Vencord のビルドの dist で、配布用の zip に入れる
+# ファイル (5 つのファイルと .LEGAL.txt) は test/tools/dist-zip/make_dist_zip.py が選ぶ。
+# Vencord にコピーした version.ts だけを build_id に書き換えてからビルドし、リポジトリの src-vencord/version.ts は
+# 開発用の既定値のままにする。version.test.ts が、その既定値と src-obs/buildspec.json の version の一致を
+# 確認するためである。
+name: vencord-plugin
+
+on:
+  workflow_call:
+    inputs:
+      build_id:
+        description: "ビルドの識別子 <version>+<短いコミット> (build_info.py meta の build_id)"
+        type: string
+        required: true
+      retention_days:
+        description: "成果物の保持日数 (checks は 1、dist は 7)"
+        type: number
+        required: true
+    outputs:
+      artifact:
+        description: "Vencord のビルドの dist を入れた成果物の名前"
+        value: ${{ jobs.vencord-userplugin.outputs.artifact }}
+      vencord_commit:
+        description: "実際にビルドした Vencord のコミット (40 桁)"
+        value: ${{ jobs.vencord-userplugin.outputs.vencord_commit }}
+
+permissions:
+  contents: read
+
+env:
+  # corepack が初回に確認を求めて止まらないようにする。
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  vencord-userplugin:
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact: ${{ steps.facts.outputs.artifact }}
+      vencord_commit: ${{ steps.facts.outputs.vencord_commit }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+
+      - name: setup-node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: corepack で pnpm@12.15.0 を用意する (Vencord が使うバージョン)
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.15.0 --activate
+
+      - name: Vencord を固定のコミットで取得する
+        # コミットは src-vencord/vencord.lock.json にだけ書く。
+        run: |
+          commit=$(python3 -c "import json; print(json.load(open('src-vencord/vencord.lock.json', encoding='utf-8'))['commit'])")
+          git init vencord
+          git -C vencord fetch --depth 1 https://github.com/Vendicated/Vencord.git "$commit"
+          git -C vencord checkout FETCH_HEAD
+
+      - name: src-vencord をユーザープラグインとしてコピーする
+        # vencord.lock.json (Vencord のビルドには使わない) と tests/ (Vencord なしで実行する vitest のテスト) は
+        # コピーしない。
+        run: |
+          dest=vencord/src/userplugins/cordmux
+          mkdir -p "$dest"
+          cp -r src-vencord/. "$dest/"
+          rm -rf "$dest/vencord.lock.json" "$dest/tests"
+
+      - name: コピーした version.ts を build_id に書き換える
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+        run: python3 test/tools/dist-zip/build_info.py version-ts --build-id "$BUILD_ID" --file vencord/src/userplugins/cordmux/version.ts
+
+      - name: pnpm install --frozen-lockfile (Vencord)
+        working-directory: vencord
+        run: pnpm install --frozen-lockfile
+
+      - name: SOURCE_DATE_EPOCH を固定のコミットの時刻にする
+        # 時刻の値を別に持たず、固定のコミットの時刻を使う。SOURCE_DATE_EPOCH は秒だが、Vencord のビルド
+        # (scripts/build/common.mjs の BUILD_TIMESTAMP) はミリ秒として扱うので、Vencord の設定画面のビルド日時は
+        # 1970 年ごろと表示される。表示だけで、動作には影響しない。
+        id: source_date_epoch
+        working-directory: vencord
+        run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+
+      - name: pnpm build --standalone --disable-updater
+        working-directory: vencord
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source_date_epoch.outputs.epoch }}
+          # 上のステップの git init、fetch、checkout FETCH_HEAD では origin ができない。固定のコミットの
+          # scripts/build/common.mjs の gitRemotePlugin は "git remote get-url origin" を try/catch なしで呼ぶので、
+          # origin がないとビルドが例外で失敗する。VENCORD_REMOTE を渡すと、gitRemotePlugin はこの呼び出しをせずに、
+          # 渡した値を使う。
+          VENCORD_REMOTE: Vendicated/Vencord
+        run: pnpm build --standalone --disable-updater
+
+      - name: dist/package.json を用意する (4 つのファイルと package.json のチェックに必要)
+        # pnpm build は dist/ に package.json を書かないので、ないときだけ {} を置く。置く理由は
+        # test/tools/vencord/check_dist.py の REQUIRED_FILES のコメントにある。
+        working-directory: vencord
+        run: |
+          if [ ! -f dist/package.json ]; then
+            echo '{}' > dist/package.json
+          fi
+
+      - name: pnpm test:ts (ユーザープラグインを含む型チェック)
+        working-directory: vencord
+        run: pnpm test:ts
+
+      - name: check_dist.py (dist/ の 5 つのファイルと先頭の見出し)
+        run: python3 test/tools/vencord/check_dist.py vencord/dist
+
+      - name: check_dist.py --selftest
+        run: python3 test/tools/vencord/check_dist.py --selftest
+
+      - name: vencordDesktopRenderer.js に build_id が入っている (送信側のバージョンを cordmux.dll と同じにする)
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+        run: grep -F -q "${BUILD_ID}" vencord/dist/vencordDesktopRenderer.js
+
+      - name: zip のジョブが使う値 (成果物の名前、Vencord のコミット)
+        id: facts
+        run: |
+          echo "artifact=cordmux-vencord-dist" >> "$GITHUB_OUTPUT"
+          echo "vencord_commit=$(git -C vencord rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.facts.outputs.artifact }}
+          path: vencord/dist
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+
+      - name: リポジトリのルートの npm ci、npm test、npm run typecheck
+        run: |
+          npm ci
+          npm test
+          npm run typecheck

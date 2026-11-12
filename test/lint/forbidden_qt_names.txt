@@ -1,0 +1,25 @@
+# forbidden_qt_usage.py が読む、cordmux が使わない Qt と Windows の使い方の一覧。理由は docs/ui_guidelines.md の
+# 「ダイアログ」と「色とフォント」にある。forbidden_libobs_names.txt とは混ぜない (あちらは libobs の使い方の一覧である)。
+#
+# 各行は Python の正規表現 (re.search、大文字と小文字を区別する)。空行と # で始まる行は読み飛ばす。先頭に何も付けない
+# 行は、コメントと文字列を除いたコードに使う。先頭が「string:」の行は、文字列リテラルの中に使う。
+
+# Windows の音が鳴る使い方。QMessageBox は表示するときに QAccessible::Alert のイベントを出し、Qt の Windows 向けの実装が、
+# アイコンの種類に応じた Windows の音を鳴らす。cordmux のダイアログは、同じ形の QDialog で作る。
+\bQMessageBox\b
+\bQAccessible::Alert\b
+# 音を鳴らす関数。今は使っていないが、使ったときに気付けるように一覧に入れる。
+\bQApplication::beep\b
+\bQSound\b
+\bQSoundEffect\b
+\bMessageBeep\b
+\bPlaySound[AW]?\b
+\bMessageBox[AW]?\s*\(
+
+# cordmux のスタイルシートに書かない値。OBS のテーマの var() と calc() は、OBS がテーマの QSS を作るときに値に置き換える
+# ので、cordmux が setStyleSheet に渡す文字列の中では置き換わらない。Qt の QSS の em は、フォントの大きさではなく、フォントの
+# 行の高さを単位にした長さで、docs/ui_guidelines.md で使う em (OBS の本文のフォントサイズ) とは別の量である。文字列の中を
+# チェックするので、一致した文字列が QSS でなければ、正規表現かコードの書き方を見直す。
+string:\bvar\(--
+string:\bcalc\(
+string:[:\s][0-9]+(?:\.[0-9]+)?em\b

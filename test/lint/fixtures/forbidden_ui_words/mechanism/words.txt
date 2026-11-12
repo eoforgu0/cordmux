@@ -1,0 +1,23 @@
+# テスト用の一覧。セットと行の先頭の指定 (言語、ja_style.txt の書き方、not_names) の読み方を、実際の一覧の中身に
+# よらずに確かめる。forbidden_ui_words.py --selftest は、4 通りの書き方 (spacing の A と B、question の halfwidth と
+# fullwidth の組み合わせ) のすべてで、同じフォルダーの ini の expect の行のとおりに一致するかを確かめる。spacing の
+# セットの行と疑問符の行は、test/lint/forbidden_ui_words.txt の同じ働きの行と同じパターンである。
+# install_guide.py --selftest も、この一覧の spacing のセットを使う。
+
+# set: language-marks 言語の指定
+ja:だめ
+en:\bbad\b
+# set: internal-words 内部の語
+\binternal\b
+# set: spacing 空白
+spacing=A:[ぁ-ヿ一-鿿][A-Za-z0-9%]
+spacing=A:[A-Za-z0-9%][ぁ-ヿ一-鿿]
+spacing=B:not_names:[ぁ-ヿ一-鿿] [A-Za-z0-9%]
+spacing=B:not_names:[A-Za-z0-9%] [ぁ-ヿ一-鿿]
+question=halfwidth: \?
+ja:question=fullwidth: ？
+# set: symbols 記号
+question=halfwidth:[？！]
+ja:question=fullwidth:！
+ja:question=fullwidth:\?
+en:question=fullwidth:[？！]

@@ -1,0 +1,19 @@
+{
+  "name": "cordmux-harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "NVENC (H.264 1080p60) の同時ストリーム数と失敗の形を Vesktop と同じ Electron/Chromium で測るハーネス",
+  "type": "commonjs",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "esbuild sender.ts --bundle --format=iife --platform=browser --target=chrome150 --outfile=dist/sender.js"
+  },
+  "dependencies": {
+    "electron": "43.2.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

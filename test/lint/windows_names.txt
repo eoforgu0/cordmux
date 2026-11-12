@@ -1,0 +1,100 @@
+# windows_api_confinement.py が読む、Windows に固有の名前の一覧。この名前を src-obs/platform と src-vencord/paths.ts の
+# 外に書くとエラーになる。今使っている名前の一覧ではなく、platform/ の外に書いてはいけない名前の一覧である
+# (CopyFile と SHFileOperation は platform/ でも使っていないが、外で使ったときに検出するために入れてある)。
+# 単語境界 (\b) を付けない行では、関数の名前を、末尾の A と W を除いた形で書く (CreateProcess は CreateProcessA にも
+# CreateProcessW にも一致する)。
+#
+# 各行は Python の正規表現 (re.search、大文字と小文字を区別する)。空行と # で始まる行は読み飛ばす。
+<windows\.h>
+<winsock2\.h>
+<shlobj\.h>
+<knownfolders\.h>
+<tlhelp32\.h>
+LoadLibrary
+GetProcAddress
+CreateFile
+WSA[A-Za-z]+
+MAKEWORD
+WIN32_LEAN_AND_MEAN
+SHGetKnownFolderPath
+FOLDERID_
+CreateToolhelp32Snapshot
+PROCESSENTRY32
+Process32[A-Za-z]+
+TH32CS_
+OpenProcess
+GetProcessTimes
+GetEnvironmentVariable
+MultiByteToWideChar
+WideCharToMultiByte
+HKEY_
+CreateProcess
+TerminateProcess
+WaitForSingleObject
+GetExitCodeProcess
+STARTUPINFO
+PROCESS_INFORMATION
+PROC_THREAD_ATTRIBUTE
+CREATE_NO_WINDOW
+STARTF_USESTDHANDLES
+GetDiskFreeSpaceEx
+CreateDirectory
+CloseHandle
+WriteFile
+GetFileAttributes
+GetModuleHandle
+GetModuleFileName
+# 次の DeleteFile から FindClose までの関数の行は、単語境界と、なくてもよい末尾 (A、W、Ex) を付けて書く。コピーする
+# 関数の型を CopyFileFn と名付けるような、Windows と関係のない識別子を検出しないためである。上の CreateFile などの行は
+# 単語境界を付けていないので、名前を一部に含む識別子にも一致する。
+\bDeleteFile[AW]?\b
+\bRemoveDirectory[AW]?\b
+\bMoveFile(Ex|WithProgress)?[AW]?\b
+MOVEFILE_
+\bReplaceFile[AW]?\b
+\bCopyFile(2|Ex)?[AW]?\b
+\bSHFileOperation[AW]?\b
+\bFindFirstFile(Ex)?[AW]?\b
+\bFindNextFile[AW]?\b
+\bFindClose\b
+WIN32_FIND_DATA
+FindExInfo
+IO_REPARSE_TAG_
+FILE_ATTRIBUTE_
+FlushFileBuffers
+GetLastError
+SetFileAttributes
+RtlGetVersion
+OSVERSIONINFO
+RegGetValue
+RegOpenKey
+RegQueryValue
+ntdll
+%APPDATA%
+%LOCALAPPDATA%
+%ProgramData%
+d3d11
+process\.platform
+"win32"
+['`]win32['`]
+navigator\.platform
+userAgentData
+USERPROFILE
+# util/windows (OBS の Windows 向けの API のヘッダー) の行は、まだ有効にしていない。有効にするときは、次の行の
+# 先頭の # を外し、python test/lint/windows_api_confinement.py が成功することを確認する。
+# util/windows
+APPDATA
+LOCALAPPDATA
+# 実行ファイルの名前。末尾に単語境界を付けて、Qt の exec() の「.exe」の部分 (loop.exec() など) に一致しないようにする。
+\.exe\b
+# ファイルの場所をエクスプローラーで開く関数 (src-obs/platform/platform_win.cpp の open_file_location) が使う名前。
+# 単語境界と、なくてもよい末尾 (A、W、Ex) を付けて書く。
+\bSHOpenFolderAndSelectItems\b
+\bILCreateFromPath[AW]?\b
+\bILFree\b
+\bShellExecute(Ex)?[AW]?\b
+\bCoInitialize(Ex)?\b
+\bCoUninitialize\b
+\bGetFullPathName[AW]?\b
+<shellapi\.h>
+<objbase\.h>

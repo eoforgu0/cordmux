@@ -1,0 +1,326 @@
+# lint と、テストに使うツールのセルフテストを実行する。ジョブは次のとおり。
+#   lints: test/lint の lint とセルフテスト、実機テストのツールが使う ini のキーのチェック、コミットメッセージのチェック
+#   judges-selfcheck と dist-tools-selftest: 判定スクリプトと、配布用の zip を作るツールのセルフテスト
+#   cleanup-selftest と windows-tools-selftest: Windows で実行する test/tools/obs-run のツールのセルフテスト
+#   harness-bundle: テスト用の送信側 (test/tools/harness) のバンドルと型チェック
+# プルリクエストと main へのプッシュで実行する。タグのプッシュでは、dist.yml が workflow_call で呼び、`release` の
+# ジョブの needs に入れる。
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  lints:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # プルリクエストのときだけ base ブランチを取得し、origin/<base>..HEAD の範囲を使えるようにする。
+      - name: base ブランチを取得する (pull_request のときだけ)
+        if: github.event_name == 'pull_request'
+        run: git fetch origin "${{ github.event.pull_request.base.ref }}"
+
+      - name: identifiers_english.py (リポジトリ全体)
+        run: python3 test/lint/identifiers_english.py
+      - name: identifiers_english.py --selftest
+        run: python3 test/lint/identifiers_english.py --selftest
+
+      - name: comments_japanese.py (リポジトリ全体)
+        run: python3 test/lint/comments_japanese.py
+      - name: comments_japanese.py --selftest
+        run: python3 test/lint/comments_japanese.py --selftest
+
+      - name: windows_api_confinement.py (src-obs, src-vencord)
+        run: python3 test/lint/windows_api_confinement.py
+      - name: windows_api_confinement.py --selftest
+        run: python3 test/lint/windows_api_confinement.py --selftest
+
+      - name: forbidden_libobs_usage.py (src-obs)
+        run: python3 test/lint/forbidden_libobs_usage.py
+      - name: forbidden_libobs_usage.py --selftest
+        run: python3 test/lint/forbidden_libobs_usage.py --selftest
+
+      - name: locale_ids.py (リポジトリ全体)
+        run: python3 test/lint/locale_ids.py
+      - name: locale_ids.py --selftest
+        run: python3 test/lint/locale_ids.py --selftest
+
+      - name: forbidden_ui_words.py (src-obs/data/locale)
+        run: python3 test/lint/forbidden_ui_words.py
+      - name: forbidden_ui_words.py --selftest
+        run: python3 test/lint/forbidden_ui_words.py --selftest
+
+      - name: install_guide.py (guide/ja.md と guide/en.md)
+        run: python3 test/lint/install_guide.py
+      - name: install_guide.py --selftest
+        run: python3 test/lint/install_guide.py --selftest
+
+      # ini のキーの種類ごとの値の形、OBS のログに書く行の形、音の出るダイアログとスタイルシートの書き方の lint。
+      # どれもオプションを付けずに実行する。既定で、検出があれば失敗する。
+      - name: locale_shapes.py (キーの種類ごとに値の形をチェックする)
+        run: python3 test/lint/locale_shapes.py
+      - name: locale_shapes.py --selftest
+        run: python3 test/lint/locale_shapes.py --selftest
+      - name: log_lines.py (OBS のログに書く行の形)
+        run: python3 test/lint/log_lines.py
+      - name: log_lines.py --selftest
+        run: python3 test/lint/log_lines.py --selftest
+      - name: forbidden_qt_usage.py (音の出るダイアログとスタイルシートの文字列)
+        run: python3 test/lint/forbidden_qt_usage.py
+      - name: forbidden_qt_usage.py --selftest
+        run: python3 test/lint/forbidden_qt_usage.py --selftest
+      # ja の文字列の、英数字の前後の空白と疑問符の書き方を切り替えるツール。往復で元に戻ることと、書き換えない例外を
+      # 確認する。
+      - name: apply_ja_style.py --selftest
+        run: python3 test/tools/wording/apply_ja_style.py --selftest
+
+      # 実機テストのツール (test/tools/obs-run) が使う画面の文字列のキーが ini にあることを確認する。locale_ids.py は
+      # C と C++ しか読まないので、ツールが削除されたキーを使っていても検出できない。
+      - name: tool_text_ids.py (実機テストのツールが使うキー)
+        run: python3 test/tools/obs-run/tool_text_ids.py
+      - name: tool_text_ids.py --selftest
+        run: python3 test/tools/obs-run/tool_text_ids.py --selftest
+
+      - name: removal_table.py (src-obs/install/removal_table.h の表を Python で読めること)
+        run: python3 test/lint/removal_table.py
+      - name: removal_table.py --selftest
+        run: python3 test/lint/removal_table.py --selftest
+
+      # dist.yml から呼ばれたときの github のコンテキストは、呼び出し元のタグのプッシュのものになる。タグのプッシュと、
+      # 新しいブランチの最初のプッシュでは event.before がすべて 0 なので、範囲は HEAD~10..HEAD になる。コミットが 10 個に
+      # 満たないときは HEAD~10 がないので、範囲を付けずに全部のコミットを見る。
+      - name: commit_messages_japanese.py (コミットの範囲を決めてチェックする)
+        shell: bash
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="origin/${{ github.event.pull_request.base.ref }}..HEAD"
+          else
+            BEFORE="${{ github.event.before }}"
+            if [ -z "$BEFORE" ] || echo "$BEFORE" | grep -qE '^0+$'; then
+              if git rev-parse -q --verify "HEAD~10" > /dev/null; then
+                RANGE="HEAD~10..HEAD"
+              else
+                RANGE=""
+              fi
+            else
+              RANGE="$BEFORE..${{ github.sha }}"
+            fi
+          fi
+          echo "range: ${RANGE:-(すべてのコミット)}"
+          if [ -n "$RANGE" ]; then
+            python3 test/lint/commit_messages_japanese.py "$RANGE"
+          else
+            python3 test/lint/commit_messages_japanese.py
+          fi
+      - name: commit_messages_japanese.py --selftest
+        run: python3 test/lint/commit_messages_japanese.py --selftest
+
+  judges-selfcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: ffmpeg をインストールする (Ubuntu の 6.1 系)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+
+      # Pillow は plate_measure.py のセルフテストが使う (PNG を読む関数 load_rgb を、numpy で作った画像を PNG にして確かめる)。
+      - name: numpy と Pillow をインストールする
+        run: python3 -m pip install numpy pillow
+
+      - name: 4 種類の判定スクリプトのセルフテスト (GPU は使わない)
+        run: python3 test/tools/obs-run/selfcheck.py
+      # 画面共有の映像に描く、番号を表すビットパターンの描き方、探し方、読み方 (frames.py が使う)。numpy だけで
+      # 画像を作り、ffmpeg は使わない。selfcheck.py が使う 4 通りの画面共有の形より、細かい倍率とぼかしで確認する。
+      - name: bit_strip.py --selftest (画面共有の映像に描く番号のビットパターン)
+        run: python3 test/tools/obs-run/bit_strip.py --selftest
+
+      # 録画の 3 つの判定スクリプト。どれも ffmpeg だけでテストデータを作れるので、GPU のないこのジョブで実行する。
+      # ffmpeg の場所を渡さないときは PATH の ffmpeg (上でインストールした 6.1 系) を使う。実機テストでは、同梱の
+      # obs-deps の ffmpeg (n7.1.1) を --ffmpeg で渡す。
+      - name: ledger_check.py --selftest (録画ログと ffprobe の結果の照合)
+        run: python3 test/tools/obs-run/ledger_check.py --selftest
+      - name: black_span.py --selftest (黒と無音が続く範囲)
+        run: python3 test/tools/obs-run/black_span.py --selftest
+      - name: au_hash.py --selftest (範囲ごとの framemd5)
+        run: python3 test/tools/obs-run/au_hash.py --selftest
+
+      # 実機テストの録画から値を測るツール。セルフテストでは、tone_scan は標準ライブラリだけで作った音のサンプルを、
+      # plate_measure は numpy で作った画像を使う。border_timing は、上でインストールした ffmpeg で 4 秒の動画を TEMP
+      # (ubuntu では /tmp) の下に作って測り、削除する。
+      - name: tone_scan.py --selftest (同期用のマーカーの音を数える)
+        run: python3 test/tools/obs-run/tone_scan.py --selftest
+      - name: plate_measure.py --selftest (名前ラベルの背景の位置と重ね方)
+        run: python3 test/tools/obs-run/plate_measure.py --selftest
+      - name: border_timing.py --selftest (話している人の光のタイミング)
+        run: python3 test/tools/obs-run/border_timing.py --selftest
+      - name: latency.py --selftest (cordmux が加える遅延。録画の 2 か所に映ったビットパターンの番号の差)
+        run: python3 test/tools/obs-run/latency.py --selftest
+
+  # 配布用の zip を作るツールとチェックのセルフテスト。ffmpeg.exe を起動するチェックは、dist.yml の zip のジョブが
+  # 実際の zip で実行するので、ここではテストデータだけを使う。
+  dist-tools-selftest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: build_info.py --selftest (ビルドの識別子、タグの確認、version.ts の書き換え)
+        run: python3 test/tools/dist-zip/build_info.py --selftest
+      - name: guide_to_text.py --selftest (手順書の Markdown を zip のテキストにする規則と、実際の手順書の変換)
+        run: python3 test/tools/dist-zip/guide_to_text.py --selftest
+      - name: make_dist_zip.py --selftest (ファイルの並び、時刻、名前順、cordmux-build.txt、手順書の変換)
+        run: python3 test/tools/dist-zip/make_dist_zip.py --selftest
+      - name: check_dist_zip.py --selftest (ファイルを 1 つ抜いた zip で失敗する)
+        run: python3 test/tools/dist-zip/check_dist_zip.py --selftest
+      # git と curl は、テスト用のリポジトリと tarball (file://) にだけアクセスし、ネットワークには接続しない。
+      - name: fetch_sources.py --selftest (同梱するソフトウェアのソースコードの取得と照合)
+        run: python3 test/tools/dist-zip/fetch_sources.py --selftest
+      - name: make_release_notes.py --selftest (リリースノートの作成と、正式なバージョンのチェック)
+        run: python3 test/tools/dist-zip/make_release_notes.py --selftest
+      # ドックのメッセージの表示と消去をログから数えるツール。セルフテストは、製品のソースにあるログの行の形も確認するので、
+      # 製品が書く行の形が変わると失敗する。
+      - name: notice_count.py --selftest (ドックのメッセージの表示と消去、映像や接続にかかる時間の集計)
+        run: python3 test/tools/notice-count/notice_count.py --selftest
+
+  cleanup-selftest:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: cleanup.ps1 のセルフテスト (fixtures だけを使い、実際の環境には触れない)
+        shell: powershell
+        run: test/tools/obs-run/cleanup.selftest.ps1
+
+  # test/tools/obs-run のツールのうち、Windows で動かすもの (ポータブル版の OBS、PowerShell 5.1、Win32 のウィンドウ、
+  # UI Automation を扱うツール) のセルフテスト。Python の 4 つも Windows でしか確認していないので、同じジョブで
+  # 実行する。
+  # どのセルフテストも、失敗すると終了コード 1 を返す。作業用のファイルは呼び出し元の TEMP の下に作り、自分で削除する。
+  # 実行しないもの: a11y-record.ps1 -SelfTest。子プロセスの非表示のウィンドウから UI Automation のイベントが届くまで待ち、
+  # 届かなければ約 45 秒で失敗する。GitHub のホスト型ランナーの画面のセッションでイベントが届くかを確認しておらず、
+  # 失敗すると dist.yml のリリースが止まるので、CI では実行しない (test/tools/obs-run/ci-selftests.test.ts の除外の表)。
+  windows-tools-selftest:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: seed-config.py --selftest (テスト用の OBS の初期設定の書き込み。書き込み先のガードと書き込みの規則)
+        run: python test/tools/obs-run/seed-config.py --selftest
+      - name: install_snapshot.py --selftest (インストールの前後のスナップショットの取得と比較、zip の展開)
+        run: python test/tools/obs-run/install_snapshot.py --selftest
+      - name: newer_ver_dll.py --selftest (テスト用の DLL のバージョン番号の書き換え。手で作った PE だけを使う)
+        run: python test/tools/obs-run/newer_ver_dll.py --selftest
+      - name: summarize-window.py --selftest (実機テストの結果の要約)
+        run: python test/tools/obs-run/summarize-window.py --selftest
+
+      # テスト用のプロセスのセットで、判定と止め方を確認する。実際の ffmpeg (-listen) を使う部分は、src-obs/.deps に
+      # ffmpeg がないとスキップする。CI のチェックアウトにはないので、real.ran は false になる。
+      - name: stream-sink-stale.ps1 -SelfTest (親プロセスが終了した、配信を受信する ffmpeg の見つけ方)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File test/tools/obs-run/stream-sink-stale.ps1 -SelfTest
+      # ウィンドウを開かず、Shell.Application も作らない (テスト用のウィンドウのセットだけを使う)。
+      - name: explorer-windows.ps1 -SelfTest (_work の下のウィンドウの読み取りと閉じるウィンドウの判定)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File test/tools/obs-run/explorer-windows.ps1 -SelfTest
+      # 自分で起動した、ウィンドウのない子の powershell だけを一時停止して再開する。
+      - name: harness-suspend.ps1 -SelfTest (テスト用の送信側の一時停止と再開)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File test/tools/obs-run/harness-suspend.ps1 -SelfTest
+      # 表示しない WinForms のウィンドウだけを作る (キーは送らない)。
+      - name: send-keys.ps1 -SelfTest (キーの書き方と送り先のウィンドウの判定)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File test/tools/obs-run/send-keys.ps1 -SelfTest
+      - name: window-size.ps1 -SelfTest (ウィンドウの縮め方と最小のサイズ)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File test/tools/obs-run/window-size.ps1 -SelfTest
+      # ウィンドウを開かない。置き方、切り方、縮め方、ドッキングと幅合わせで押す位置の計算と、メモリーの上で作った画像を縮める処理だけを確認する。
+      - name: readme-shot.ps1 -SelfTest (ドッキングした OBS を撮るときの置き方と押す位置と縮め方)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File test/tools/obs-run/readme-shot.ps1 -SelfTest
+
+      - name: obs-run の ps1 の構文チェック (PowerShell 5.1 のパーサー)
+        shell: powershell
+        run: |
+          $bad = 0
+          $files = @(Get-ChildItem -Path test/tools/obs-run -Filter *.ps1 | Sort-Object Name)
+          foreach ($f in $files) {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs)
+            if ($errs.Count) { foreach ($e in $errs) { Write-Output ($f.Name + ': ' + $e.Message) }; $bad++ }
+          }
+          Write-Output ('parsed ' + $files.Count + ' files, ' + $bad + ' with errors')
+          if ($bad -gt 0 -or $files.Count -eq 0) { exit 1 }
+
+  harness-bundle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: リポジトリのルートの devDependencies (typescript)
+        run: npm ci
+
+      # electron の postinstall は実行ファイル (約 100 MB) をダウンロードする。このジョブはバンドルと型チェックだけで
+      # Electron を起動しないので、ELECTRON_SKIP_BINARY_DOWNLOAD で省く。
+      - name: テスト用の送信側の依存関係 (esbuild と ws。Electron の本体はダウンロードしない)
+        working-directory: test/tools/harness
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: 製品の送信側を 1 つのファイルにバンドルする (esbuild)
+        working-directory: test/tools/harness
+        run: npm run build
+
+      - name: テスト用の送信側の型チェック (tsconfig.json があるときだけ)
+        shell: bash
+        run: |
+          if [ -f test/tools/harness/tsconfig.json ]; then
+            npx tsc --noEmit -p test/tools/harness
+          else
+            echo "test/tools/harness/tsconfig.json がないので、型チェックをスキップする"
+          fi
+
+      - name: 実機テストの実行スクリプトと Electron のメインプロセスの構文チェック
+        run: |
+          node --check test/tools/harness/main.js
+          node --check test/tools/harness/preload.js
+          node --check test/tools/harness/frame_pause_file.js
+          node --check test/tools/harness/screen_image_file.js
+          node --check test/tools/obs-run/run-window.mjs
+          node --check test/tools/obs-run/run-window-plan.mjs
+          node --check test/tools/obs-run/stream-sink.mjs
+          node --check test/tools/webcodecs-check/run.mjs
+          node --check test/tools/webcodecs-check/main.js
+          node --check test/tools/webcodecs-check/preload.js
+          node --check test/tools/webcodecs-check/renderer.js
+          node --check test/tools/webcodecs-check/nal_pure.js

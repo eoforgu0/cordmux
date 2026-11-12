@@ -1,0 +1,8 @@
+{
+  "name": "webcodecs-check",
+  "version": "0.0.0",
+  "private": true,
+  "description": "WebCodecs のエンコーダの遅延と、SPS と PPS の一致を、テスト用の送信側と同じ Electron (test/tools/harness/node_modules/electron) で測るツール",
+  "type": "commonjs",
+  "main": "main.js"
+}

@@ -1,0 +1,4 @@
+# 無視するファイルの一覧の行には、リポジトリにないものを書くので、パスをチェックしない (コメントの行の app/main.cpp はある)。
+/_work/
+app/generated_table.h
+tools/cache/

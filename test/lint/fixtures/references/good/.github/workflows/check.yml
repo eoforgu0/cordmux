@@ -1,0 +1,14 @@
+# 架空の CI。ステップの名前は、何をするかで書く。
+name: check
+
+on:
+  push:
+
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: まとめを書く
+        run: python tools/report.py

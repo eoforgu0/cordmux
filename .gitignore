@@ -1,0 +1,51 @@
+# リポジトリの直下に置くファイルとフォルダーの一覧。ここにないものは無視する。
+# 直下にファイルやフォルダーを追加するときは、この一覧にも追加する (追加しないと git add の対象にならない)。
+/*
+!/.editorconfig
+!/.gitattributes
+!/.github/
+!/.gitignore
+!/CHANGELOG.md
+!/CODESTYLE.md
+!/CONTRIBUTING.md
+!/LICENSE
+!/README.en.md
+!/README.md
+!/SECURITY.md
+!/SUPPORT.md
+!/dist/
+!/docs/
+!/guide/
+!/package-lock.json
+!/package.json
+!/packaging/
+!/src-obs/
+!/src-vencord/
+!/test/
+!/tools/
+!/tsconfig.json
+!/vitest.config.ts
+
+# ビルドの出力、ダウンロードした依存関係、キャッシュ、ログ
+build/
+build_x64/
+release/
+.deps/
+node_modules/
+coverage/
+__pycache__/
+*.log
+
+# ローカルの環境に合わせたビルドの設定。CMake のドキュメントでも、バージョン管理に入れないファイルとされている。
+# 書き方は CONTRIBUTING.md にある。
+CMakeUserPresets.json
+
+# エディターと OS が作るファイル
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# obs-plugintemplate の CMake スクリプトが書き出すビルド番号
+src-obs/cmake/.CMakeBuildNumber

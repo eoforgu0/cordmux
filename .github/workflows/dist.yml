@@ -1,0 +1,232 @@
+# 配布用の zip を作る。obs-plugin.yml と vencord-plugin.yml を呼び、zip のジョブがその成果物を並べて zip にし、
+# 中身をチェックしてから成果物としてアップロードする。pdb は別の成果物にする。zip を作るツールは
+# test/tools/dist-zip/ にあり、ローカルでも同じ引数で実行できる (test/tools/dist-zip/README.md)。
+#
+# main へのプッシュ、workflow_dispatch、v で始まるタグのプッシュで実行する。プルリクエストでは実行しない。
+# タグのプッシュのときだけ、lint.yml を呼び、`release` のジョブが GitHub のリリースを作って公開する。
+# workflow_dispatch でタグを選んでも、リリースは作らない。成果物の保持は 7 日にする (リリースの添付は消えない)。
+
+name: dist
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  # タグのときは、タグの数字の部分が src-obs/buildspec.json の version と同じかを確認し、違えば失敗する。
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      build_id: ${{ steps.meta.outputs.build_id }}
+      short_commit: ${{ steps.meta.outputs.short_commit }}
+      zip_name: ${{ steps.meta.outputs.zip_name }}
+      source_date_epoch: ${{ steps.meta.outputs.source_date_epoch }}
+      is_tag: ${{ steps.meta.outputs.is_tag }}
+      label: ${{ steps.meta.outputs.label }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: ビルドの識別子と zip の名前を決める (タグのときは version との一致も確認する)
+        id: meta
+        run: python3 test/tools/dist-zip/build_info.py meta --sha "$GITHUB_SHA" --ref "$GITHUB_REF" >> "$GITHUB_OUTPUT"
+
+  obs-plugin:
+    needs: meta
+    uses: ./.github/workflows/obs-plugin.yml
+    with:
+      build_commit: ${{ needs.meta.outputs.short_commit }}
+      retention_days: 7
+
+  vencord-plugin:
+    needs: meta
+    uses: ./.github/workflows/vencord-plugin.yml
+    with:
+      build_id: ${{ needs.meta.outputs.build_id }}
+      retention_days: 7
+
+  zip:
+    name: zip (windows-2022)
+    needs: [meta, obs-plugin, vencord-plugin]
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD_ID: ${{ needs.meta.outputs.build_id }}
+      ZIP_NAME: ${{ needs.meta.outputs.zip_name }}
+      SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.source_date_epoch }}
+      VENCORD_COMMIT: ${{ needs.vencord-plugin.outputs.vencord_commit }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: OBS プラグインの成果物 (cordmux/ のフォルダーと pdb) をダウンロードする
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.obs-plugin.outputs.artifact }}
+          path: _dist/obs
+
+      - name: Vencord のビルドの dist をダウンロードする
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.vencord-plugin.outputs.artifact }}
+          path: _dist/vencord-dist
+
+      - name: zip を作る (ファイルの時刻はコミットの時刻、並びは名前順)
+        run: >
+          python test/tools/dist-zip/make_dist_zip.py
+          --plugin-dir _dist/obs/cordmux
+          --vencord-dist _dist/vencord-dist
+          --build-id "$BUILD_ID"
+          --vencord-commit "$VENCORD_COMMIT"
+          --cordmux-commit "$GITHUB_SHA"
+          --source-date-epoch "$SOURCE_DATE_EPOCH"
+          --out "_dist/out/$ZIP_NAME.zip"
+
+      - name: zip の中身をチェックする (ビルドの識別子の一致も確認する)
+        run: python test/tools/dist-zip/check_dist_zip.py "_dist/out/$ZIP_NAME.zip" --expect-build-id "$BUILD_ID"
+
+      - name: チェックのセルフテスト (作った zip からファイルを 1 つずつ抜くと失敗する)
+        run: python test/tools/dist-zip/check_dist_zip.py --selftest --material "_dist/out/$ZIP_NAME.zip"
+
+      - name: zip をアップロードする
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.meta.outputs.zip_name }}
+          path: _dist/out/${{ needs.meta.outputs.zip_name }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: pdb を別の成果物としてアップロードする (タグのときは `release` のジョブがリリースに添付する)
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.meta.outputs.zip_name }}-pdb
+          path: _dist/obs/cordmux/cordmux.pdb
+          if-no-files-found: error
+          retention-days: 7
+
+  # lint.yml はタグのプッシュでは実行されない (プッシュで実行するのは main だけ) ので、タグのときはここから呼ぶ。
+  lint:
+    needs: meta
+    if: needs.meta.outputs.is_tag == 'true' && github.event_name == 'push'
+    uses: ./.github/workflows/lint.yml
+
+  # タグのプッシュのときだけ、GitHub のリリースを作って公開する。-rc などの接尾辞が付いたタグは prerelease にする。
+  # 書き込みの権限 (contents: write) はこのジョブだけに付け、最上位は contents: read のままにする。ジョブに
+  # permissions を書くと、書かなかった権限は none になる。公開する前に次の 5 つを確認する。
+  #   (a) リモートのタグが指すコミットが GITHUB_SHA と同じ
+  #   (b) そのコミットが main にある
+  #   (c) lint.yml が成功した (needs)
+  #   (d) 正式なバージョン (接尾辞のないタグ) では、手順書に仮の文字列 (rules の placeholder) が残っていない
+  #       (make_release_notes.py が確認する)
+  #   (e) 同じタグのリリースがまだ公開されていない。途中で失敗した実行が残した下書きは削除して作り直す
+  # ubuntu-24.04 で実行する。gh、git、curl、jq、python3 がランナーにあり、zip は windows のジョブが作り終えている。
+  # shell に bash を明示するのは、pipefail が付き、tee の前のコマンドの失敗がステップの失敗になるためである。
+  # 同梱するソフトウェアのソースコードの取得にかかる時間は測っていない。GitHub の既定の 360 分より早く止めるため、
+  # timeout-minutes を 90 にしておく。
+  release:
+    name: release (tag push only)
+    needs: [meta, zip, lint]
+    if: needs.meta.outputs.is_tag == 'true' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.ref_name }}
+      LABEL: ${{ needs.meta.outputs.label }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # (b) のために全部の履歴を取得する。(a) と (b) は origin に問い合わせるので、checkout の既定に頼らず、
+      # ジョブのトークンを git の設定に残すことを明示する。リポジトリが非公開のときは、トークンがないと
+      # 問い合わせが失敗する。
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # ランナーの中のタグではなく、リモートのタグをたどって比べる。checkout はタグを取得し直すので、ローカルのタグと
+      # GITHUB_SHA を比べると必ず同じになる。
+      - name: (a) リモートのタグが指すコミットが GITHUB_SHA と同じ
+        run: |
+          refs="$(git ls-remote --tags origin)"
+          peeled="$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$TAG^{}" '$2 == ref { print $1 }')"
+          plain="$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$TAG" '$2 == ref { print $1 }')"
+          remote="${peeled:-$plain}"
+          echo "remote tag $TAG -> ${remote:-none}, GITHUB_SHA $GITHUB_SHA"
+          test -n "$remote"
+          test "$remote" = "$GITHUB_SHA"
+
+      - name: (b) タグのコミットが main にある
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      # タグでリリースを取得する REST API は公開済みのリリースしか返さないので、gh api でリリースの一覧を読み、
+      # 下書きも含めてタグの名前で探す。
+      - name: (e) 同じタグのリリースが公開済みなら失敗し、途中で失敗した実行の下書きは削除する
+        run: |
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" > "$RUNNER_TEMP/existing.tsv"
+          if awk -F '\t' '$2 != "true"' "$RUNNER_TEMP/existing.tsv" | grep -q .; then
+            echo "::error::a published Release for $TAG already exists (its attachments are not replaced)"
+            exit 1
+          fi
+          while IFS=$'\t' read -r id draft; do
+            echo "deleting the draft Release $id (draft=$draft) left by an earlier run"
+            gh api -X DELETE "repos/$GH_REPO/releases/$id"
+          done < "$RUNNER_TEMP/existing.tsv"
+
+      - name: 配布用の zip をダウンロードする (添付するファイルの名前は cordmux-<label>.zip のまま)
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.meta.outputs.zip_name }}
+          path: _release/assets
+
+      - name: pdb をダウンロードする
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.meta.outputs.zip_name }}-pdb
+          path: _release/pdb
+
+      - name: 同梱するソフトウェアのソースコードを取得する (ソースコードの入手先.txt の一覧と照合する)
+        run: python3 test/tools/dist-zip/fetch_sources.py --fetch --label "$LABEL" --out _release/assets | tee _release/fetch.json
+
+      - name: リリースノートを作り、pdb を zip にする (正式なバージョンの (d) のチェックもここで行う)
+        id: notes
+        run: |
+          python3 test/tools/dist-zip/make_release_notes.py --label "$LABEL" --assets-dir _release/assets \
+            --pdb _release/pdb/cordmux.pdb --expect-commit "$GITHUB_SHA" --out _release/notes.md | tee _release/notes.json
+          echo "title=$(jq -r .title _release/notes.json)" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$(jq -r .prerelease _release/notes.json)" >> "$GITHUB_OUTPUT"
+
+      - name: リリースを作る (gh が下書き、添付、公開の順に進める。prerelease は最新のリリースにしない)
+        env:
+          TITLE: ${{ steps.notes.outputs.title }}
+          PRERELEASE: ${{ steps.notes.outputs.prerelease }}
+        run: |
+          args=(--verify-tag --title "$TITLE" --notes-file _release/notes.md)
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease --latest=false)
+          fi
+          ls -l _release/assets
+          gh release create "$TAG" "${args[@]}" _release/assets/*

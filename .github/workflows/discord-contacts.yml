@@ -1,0 +1,42 @@
+# 最新の Discord のバンドルを取得し、依存箇所の一覧 (src-vencord/ledger.ts) の各行が、そのバンドルの中で
+# モジュールを 1 つに特定できるかを確認する。Discord の内部が変わったことを早く知るためのワークフローである。
+#
+# lint.yml、checks.yml、dist.yml には入れない。このワークフローが失敗するのは Discord の内部が変わったときで、
+# cordmux のビルドが壊れたときではないためである。
+
+name: discord-contacts
+
+on:
+  schedule:
+    # 週に 1 回 (月曜 03:00 UTC)。曜日と時刻に特別な理由はない。
+    - cron: "0 3 * * 1"
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - src-vencord/ledger.ts
+      - src-vencord/adapter/**
+      - test/tools/discord-bundle/**
+      - src-vencord/tests/discord_contacts*.test.ts
+
+permissions:
+  contents: read
+
+jobs:
+  scan-bundles:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: npm ci (リポジトリのルート)
+        run: npm ci
+
+      - name: 最新の Discord のバンドルを取得する (stable と canary)
+        run: node test/tools/discord-bundle/fetch.mjs
+
+      - name: vitest (取得したバンドルで CONTACT_LEDGER を確認するテストと、CONTACT_LEDGER 自体のテスト)
+        # ledger.test.ts も実行し、依存箇所の一覧そのものの形 (行の数、id、述語) も同じジョブで確認する。
+        run: npx vitest run src-vencord/tests/discord_contacts.test.ts src-vencord/tests/ledger.test.ts

@@ -1,0 +1,2 @@
+# forbidden_all の規則ごとのサンプルの行。guide.md には置けない語なので、セルフテストがここから取って、全部の節に挿入する。
+A sample line for the self-test: you do not need to ask them to change anything.

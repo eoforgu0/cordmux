@@ -1,0 +1,11 @@
+# forbidden_all の規則ごとのサンプルの行。guide.md には置けない語なので、セルフテストがここから取って、全部の節に挿入する。
+You do not need to ask them to do anything.
+You could ask a friend to read this.
+You do not have them change anything.
+Nobody needs to get them to install anything.
+You never have the server owner change settings.
+You never ask anyone to restart their screen share.
+Please tell them early. Do not delve into seamless, robust, leveraged or
+crucial details.
+A wave dash 〜 and marks like ？ and ! and a full-width space　are samples.
+Issues and an issue tracker are not mentioned, nor do we say contact us.

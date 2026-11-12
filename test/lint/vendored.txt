@@ -1,0 +1,20 @@
+# 外部からコピーしたファイルの一覧。identifiers_english.py、comments_japanese.py、windows_api_confinement.py、
+# forbidden_libobs_usage.py (と、同じファイルの選び方を使う forbidden_qt_usage.py と log_lines.py) は、一致するファイルを
+# チェックしない。外部からコピーして変更したファイルと、自前のファイル (名前が cordmux_ で始まる .cmake など) は入れない
+# (CODESTYLE.md の「SPDX の行」)。
+#
+# 各行は fnmatch のパターンで、リポジトリのルートからの相対パス (区切りは /) と比べる。* は / にも一致する。空行と # で
+# 始まる行は読み飛ばす。
+#
+# src-obs/cmake (cordmux_*.cmake と windows/resources/resource.rc.in を除く)、src-obs/build-aux、src-obs/.clang-format、
+# src-obs/.gersemirc は、obs-plugintemplate からコピーして変更していないファイルである。src-obs/tests/doctest.h は doctest の
+# ヘッダーである。test/tools/harness (テスト用の送信側) は外部からのコピーではないが、この一覧に入れて、チェックしていない。
+src-obs/cmake/common/**
+src-obs/cmake/linux/**
+src-obs/cmake/macos/**
+src-obs/cmake/windows/*.cmake
+src-obs/build-aux/**
+src-obs/.clang-format
+src-obs/.gersemirc
+src-obs/tests/doctest.h
+test/tools/harness/**

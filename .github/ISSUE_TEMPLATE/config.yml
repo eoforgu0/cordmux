@@ -1,0 +1,11 @@
+# テンプレートを使わない空の Issue を作れないようにして、Issue は「不具合の報告」か「機能の要望」のフォームから
+# 作るようにする。どちらのフォームでも、診断情報の zip を添付しないように
+# 案内する。不具合の報告のフォームでは、調べるのに必要なバージョンと再現する手順も書いてもらう。
+blank_issues_enabled: false
+contact_links:
+  - name: サポート / Support
+    url: https://github.com/eoforgu0/cordmux/blob/main/SUPPORT.md
+    about: 使い方で困ったとき / Help with using cordmux
+  - name: 脆弱性の報告 / Security vulnerabilities
+    url: https://github.com/eoforgu0/cordmux/blob/main/SECURITY.md
+    about: 脆弱性は Issue に書かずに、この方法で報告できます / You can report vulnerabilities this way instead of in an issue
