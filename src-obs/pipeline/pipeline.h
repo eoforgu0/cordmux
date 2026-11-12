@@ -964,6 +964,10 @@ public:
 	// (place_added_order_after)。自分の枠から「Discordの画面共有」に替えて、メインアカウントを載せ直すときに、自分の枠の
 	// 載せた順の位置を引き継ぐ (dock/dock_poll.cpp の carry_self_frame_check)。もう載っていた人 (AlreadyOwned) の番号は
 	// 変えない。
+	// 自分の枠を使っている間の人数の上限 (config::screen_slot_capacity) は、ここでは見ない。手動で載せる操作は、ドックが同じ
+	// 上限で押せなくしている (ledger/observation.h の self_frame_limit_reached)。ここで見ると、自分の枠から「Discordの画面
+	// 共有」に替えたときに、自分の枠を使っていたことがまだ伝わっていない間に、メインアカウントを自分の枠の位置へ載せ直せない
+	// (carry_self_frame_check は、載せ直してから自分の枠を使っていないことを渡す)。
 	SlotChange assign_slot(config::SlotKind kind, const std::string &user_id,
 			       std::optional<std::int64_t> after_order = std::nullopt);
 	SlotChange release_slot(config::SlotKind kind, const std::string &user_id);
@@ -1002,10 +1006,16 @@ public:
 	// self_frame_selected (自分の枠に映す映像として OBS のソースかシーンを選んでいるか) が真の間は、メインアカウントの画面を
 	// 画面の枠に入れない (stream_router.h の AssignPolicy)。この値が変わったときも、直前の configure を適用し直す。
 	//
+	// self_frame_in_use (自分の枠を使っているか。config::self_frame_in_use) が真の間は、画面の枠に新しく載せられる人数が
+	// 1 つ減る (stream_router.h の AssignPolicy)。偽に変わったときは、直前の configure を適用し直し、画面共有している人を
+	// 載せ直すので、自動では待っていた人が空いた枠に載る。ドックは、自分の行のチェックが変わるたびに渡し直す。起動のときの
+	// 値は、main_account_user_id と同じく、コンストラクターが settings からコピーする (シーンの読み込みが終わる前に届く facts で
+	// 枠に載せる人を決めるときに、もう分かっている)。
+	//
 	// どのスレッドから呼んでもよい (ドックの UI のスレッドから呼ぶ)。
 	void set_assign_policy(config::AssignMode mode, std::set<std::string> always_on,
 			       std::map<std::string, std::string> voice_links, std::string main_account_user_id,
-			       bool self_frame_selected = false);
+			       bool self_frame_selected = false, bool self_frame_in_use = false);
 
 	// 全画面で映す人 (空 = 全画面でない。stream_router.h の AssignPolicy::focus_user_id)。画面の枠を持たない人なら、
 	// 受け取る範囲が Slots でも視聴の範囲に入れて受信を始め、その人の画面のストリームを config::kFocusOnlySlot の子へ渡す。

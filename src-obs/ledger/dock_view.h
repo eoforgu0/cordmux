@@ -536,7 +536,7 @@ struct PeopleListView {
 	std::optional<PersonRow> pinned;
 	std::vector<PersonRow> sharing;
 	std::vector<PersonRow> in_call; // 通話にいて、画面共有していない人
-	int slots_used = 0;             // 枠の数 N/4 の N。自分の枠を出していれば数える
+	int slots_used = 0;             // 枠の数 N/4 の N。自分の枠を使っていれば数える (observation.h の self_frame_in_use)
 	int slots_total = config::kScreenSlotCount;
 	TextRef slots_label;     // 「枠3/4」
 	TextRef sharing_heading; // 「画面共有中 (3)」

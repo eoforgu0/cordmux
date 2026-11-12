@@ -1014,9 +1014,12 @@ inline int free_screen_slot(const Observation &obs)
 	return 0;
 }
 
-// 自分の枠を表示している間に、Discord から枠に載せられる人数。押せる条件 (actions.cpp の SetSlot) と、一覧の
-// 上の 1 行 (rules_dock.cpp の list_reason) が同じ値を見る。
-inline constexpr int kSelfFrameSlotLimit = 3;
+// 自分の枠を使っているか (config::self_frame_in_use。自分の枠に映す映像を OBS から選んでいて、自分の行のチェックが付いて
+// いる間)。映像が結び付いていない間も含む。自動で載せる経路 (pipeline/stream_router.h) にも、同じ条件の値をドックが渡す。
+inline bool self_frame_in_use(const Observation &obs)
+{
+	return config::self_frame_in_use(obs.choices.self_frame_selected, obs.choices.self_frame_on);
+}
 
 // 今、画面共有の枠に載っている人の数を返す。
 inline int screen_slotted_count(const Observation &obs)
@@ -1052,10 +1055,12 @@ inline int discord_slotted_count(const Observation &obs)
 	return count;
 }
 
-// 自分の枠を表示していて、枠に載っている人数が上限 (kSelfFrameSlotLimit) に達しているか。
+// 自分の枠を使っていて、枠に載っている人数が、自分の枠を使っている間の上限 (config::screen_slot_capacity。3 人) に
+// 達しているか。押せる条件 (actions.cpp の SetSlot) と、一覧の上の 1 行 (rules_dock.cpp の list_reason) がこの関数を見る。
+// 自動で載せる経路 (pipeline/stream_router.h の screen_slot_room) も、同じ上限で新しい人を載せない。
 inline bool self_frame_limit_reached(const Observation &obs)
 {
-	return obs.choices.self_frame_shown && screen_slotted_count(obs) >= kSelfFrameSlotLimit;
+	return self_frame_in_use(obs) && screen_slotted_count(obs) >= config::screen_slot_capacity(true);
 }
 
 // この人が今載っている画面共有の枠の番号を返す。載っていなければ 0。

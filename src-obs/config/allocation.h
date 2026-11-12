@@ -33,6 +33,29 @@ constexpr int kFocusOnlySlot = kScreenSlotCount + 1;
 // 合成のソースが持つ画面の子の数 (画面の枠の数と、kFocusOnlySlot の 1 つ)。
 constexpr int kScreenTileCount = kScreenSlotCount + 1;
 
+// 自分の枠を使っているか。自分の枠に映す映像として OBS のソースかシーンを選んでいて (video_selected)、自分の行の
+// チェックが付いている (check_on) 間である。映像がまだ結び付いていない間 (OBS の起動の途中、シーンコレクションの切り替えの
+// 途中、選んだソースが見つからない間) も、チェックが付いていれば使っているとする。結び付いた瞬間に自分の枠が描かれ始めるので、
+// その前に枠の数を空けておかないと、Discord の人で 4 つ埋まった所に自分の枠が足されて 5 つになる (OBS を起動したときは、
+// シーンの読み込みが終わる前に Vesktop から画面共有している人が届き、枠に載る)。
+// 手動の操作が押せるか (ledger/observation.h の self_frame_limit_reached) と、自動で載せる経路 (pipeline/stream_router.h の
+// AssignPolicy::self_frame_in_use。値はドックの DockPoll::push_assign_policy が渡す) が、同じこの関数で決める。
+constexpr bool self_frame_in_use(bool video_selected, bool check_on)
+{
+	return video_selected && check_on;
+}
+
+// 画面共有の枠に載せられる人数。合成のソースはキャンバスを 4 等分して描くので、自分の枠を使っている間は、自分の枠が
+// 1 つを使い、画面共有の枠に載せられるのは 1 人少ない。手動で載せる操作 (ledger/actions.cpp の SetSlot) も、[枠に載せる人の
+// 選び方] の「自動」と [自動で枠に載せる] で載せる経路 (pipeline/stream_router.h) も、この値を超えて新しい人を載せない。
+// 載せられない人は、手動で載せられない人と同じく、名前ラベルが画面共有していない参加者の並びに出る。すでに載っている人は、
+// 自分の枠を後から使い始めても外さない (Discord の人で 4 つ埋まっている間は、自分の枠のチェックを付けられない。
+// ledger/actions.cpp の SetSelfFrame)。
+constexpr int screen_slot_capacity(bool self_frame_in_use)
+{
+	return self_frame_in_use ? kScreenSlotCount - 1 : kScreenSlotCount;
+}
+
 // 枠に載っている人を配信のどの位置に置くかの決め方 (設定の slot_order)。
 //   Name   表示名の順に左上から詰める。人が抜けると後ろが詰まる
 //   Added  載せた順 (SlotAssignment::added_order) に左上から詰める。人が抜けると後ろが詰まる
@@ -112,9 +135,13 @@ public:
 	int slot_extent(SlotKind kind) const;
 
 	// いちばん小さい空き枠の番号 (画面共有の枠で、なければ 0。声の枠は、空きがなければ末尾の次の番号)。空き枠が
-	// あるかだけを知りたい呼び出し元のための関数である (載せる人の選び方が「手動」のとき、「自動で載せる」にした人を
-	// 入れてよいのは空き枠があるときだけ。pipeline/stream_router.h)。
+	// あるかだけを知りたい呼び出し元のための関数である。画面共有の枠に新しく人を載せてよいかは、空き枠の有無ではなく
+	// assigned_count と screen_slot_capacity で決める (自分の枠を使っている間は、4 つ目の枠が空いていても載せない)。
 	int first_free_slot(SlotKind kind) const;
+
+	// 割り当てのある枠の数。画面共有の枠に新しく人を載せてよいかを、screen_slot_capacity と比べて決めるのに使う
+	// (pipeline/stream_router.h の screen_slot_room)。
+	int assigned_count(SlotKind kind) const;
 
 	// 載せた順の番号を設定する (SlotAssignment::added_order)。枠の入れ替え (pipeline の replace_slot_in) が、
 	// 出る人の番号を入る人に引き継ぐために呼ぶ。これから付ける番号は、設定した値より大きくする。割り当てのない枠には
@@ -284,6 +311,17 @@ inline int AllocationTable::first_free_slot(SlotKind kind) const
 			return slot;
 	}
 	return kind == SlotKind::Voice ? extent + 1 : 0;
+}
+
+inline int AllocationTable::assigned_count(SlotKind kind) const
+{
+	int count = 0;
+	for (int slot = 1; slot <= slot_extent(kind); ++slot) {
+		const SlotEntry *e = entry(kind, slot);
+		if (e != nullptr && e->assigned)
+			++count;
+	}
+	return count;
 }
 
 inline void AllocationTable::set_added_order(SlotKind kind, int slot, std::int64_t order)

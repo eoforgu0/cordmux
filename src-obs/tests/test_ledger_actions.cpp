@@ -578,6 +578,46 @@ TEST_CASE("SetSlot: 映像を OBS から選んでいる間、自分の枠の人�
 	CHECK(apply(obs, ActionId::SetSlot, other).can_run());
 }
 
+TEST_CASE("SetSlot: 自分の枠を使っている間は 3 人までしか載せられない。映像がまだ結び付いていない間も同じ")
+{
+	Observation obs = healthy();
+	for (int slot = 1; slot <= 3; ++slot) {
+		PersonFact person;
+		person.user_id = "p" + std::to_string(slot);
+		person.slot = slot;
+		obs.people.push_back(person);
+	}
+	PersonFact fourth;
+	fourth.user_id = "p4";
+	obs.people.push_back(fourth);
+	ActionArgs put;
+	put.user_id = "p4";
+	put.kind = cordmux::config::SlotKind::Screen;
+	put.slot = 4;
+
+	// 自分の枠を使っていなければ、4 人目も載せられる。
+	CHECK(apply(obs, ActionId::SetSlot, put).can_run());
+
+	// 映像を OBS から選び、自分の行のチェックが付いている。映像はまだ結び付いていない (OBS の起動の途中など)。
+	obs.choices.self_frame_selected = true;
+	obs.choices.self_frame_on = true;
+	REQUIRE_FALSE(obs.choices.self_frame_shown);
+	const Intent limited = apply(obs, ActionId::SetSlot, put);
+	REQUIRE(limited.disabled.has_value());
+	CHECK(std::string(limited.disabled->reason_text_id) == text::keys::kDockSelfSlotLimitText);
+	CHECK(self_frame_limit_reached(obs));
+	// 上限は、自動で載せる経路 (pipeline/stream_router.h) と同じ値である。
+	CHECK(screen_slotted_count(obs) == cordmux::config::screen_slot_capacity(true));
+
+	// チェックが外れていれば、載せられる。
+	obs.choices.self_frame_on = false;
+	CHECK(apply(obs, ActionId::SetSlot, put).can_run());
+	// 「Discordの画面共有」に替えたときに残したチェック (映像を OBS から選んでいない) は、自分の枠を使っていない。
+	obs.choices.self_frame_selected = false;
+	obs.choices.self_frame_on = true;
+	CHECK(apply(obs, ActionId::SetSlot, put).can_run());
+}
+
 namespace {
 
 // 過去の参加者の一覧の 1 行に、使う声の設定を付ける (この設定は seen_people.json にだけある)。

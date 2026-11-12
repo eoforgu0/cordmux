@@ -220,6 +220,14 @@ private:
 	// 自分の枠が配置に数えられるか (自分の枠を出す状態で、映すソースが結び付いている)。ポーリングの外で並べ直すときに使う。
 	bool self_frame_shown_now() const;
 
+	// 自分の枠を使っているか (config::self_frame_in_use。映像を OBS から選んでいて、自分の行のチェックが付いている。映像が
+	// 結び付いているかは見ない)。Pipeline に渡し、画面の枠に新しく載せられる人数を 1 つ減らす (push_assign_policy)。
+	bool self_frame_in_use_now() const;
+
+	// 自分の枠を使っているかが、最後に Pipeline に渡した値から変わっていれば、渡し直す (push_assign_policy)。自分の行の
+	// チェックが変わる所 (layout_step、set_self_frame) から呼ぶ。設定を替えたときは、設定の後処理が push_assign_policy を呼ぶ。
+	void push_self_frame_in_use_if_changed();
+
 	// ダミーの表示をオンかオフにする。ダミーを表示していた時間帯は Pipeline が記録する。
 	void set_dummy_mode(bool on);
 
@@ -326,6 +334,8 @@ private:
 	sources::SelfFrameState self_frame_state_;
 	// 枠が埋まっていて自分の枠を付けられない間に、そのログを書いたか。
 	bool self_frame_deferred_logged_ = false;
+	// 最後に Pipeline に渡した、自分の枠を使っているか (push_assign_policy が書く)。
+	bool pushed_self_frame_in_use_ = false;
 	// 自分の枠を載せた順の印 (ledger/observation.h の Choices::self_frame_added_mark)。チェックが付いている間に、自分の枠が
 	// 初めて実際に映った時 (self_frame_shown_now が真になった時) に、その時の割り当て表の画面共有の枠の載せた順の番号の最大を
 	// 入れて決める (sources/self_frame_plan.h の next_self_order_mark)。チェックが外れたら決め直す。映像を

@@ -1354,6 +1354,10 @@ TEST_CASE("枠がすべて使用中のときは、枠に載せていない人の
 TEST_CASE("自分の枠を使っている間は枠に載せられるのが 3 人までで、一覧の上の 1 行と押せないチェックになる")
 {
 	Observation obs = healthy();
+	// 自分の枠を使っている (映像を OBS から選び、自分の行のチェックが付いている)。
+	obs.choices.self_frame_selected = true;
+	obs.choices.self_frame_bound = true;
+	obs.choices.self_frame_on = true;
 	obs.choices.self_frame_shown = true;
 	obs.people.push_back(showing("300", "b", 2));
 	obs.people.push_back(showing("400", "c", 3));
@@ -1368,6 +1372,26 @@ TEST_CASE("自分の枠を使っている間は枠に載せられるのが 3 人
 	const dockview::PersonRow *hanako = row_of(v, "200");
 	REQUIRE(hanako->check_action.disabled_reason.has_value());
 	CHECK(hanako->check_action.disabled_reason->id == keys::kDockSelfSlotLimitText);
+
+	// 選んだ映像がまだ結び付いていない間 (OBS の起動の途中、見つからない間) も、チェックが付いていれば同じ。結び付いた
+	// 瞬間に自分の枠が描かれるので、その前に 4 人目を載せると 5 つになる。枠の数も、自分の枠を 1 つと数える。
+	Observation unbound = obs;
+	unbound.choices.self_frame_bound = false;
+	unbound.choices.self_frame_shown = false;
+	const dockview::DockViewV2 u = decide_dock(unbound);
+	REQUIRE(u.list_reason.has_value());
+	CHECK(u.list_reason->text.id == keys::kDockSelfSlotLimitText);
+	REQUIRE(row_of(u, "200")->check_action.disabled_reason.has_value());
+	CHECK(row_of(u, "200")->check_action.disabled_reason->id == keys::kDockSelfSlotLimitText);
+	CHECK(u.people_list.slots_used == 4);
+
+	// チェックを外せば、4 人目を載せられる。
+	Observation off = unbound;
+	off.choices.self_frame_on = false;
+	const dockview::DockViewV2 o = decide_dock(off);
+	CHECK_FALSE(o.list_reason.has_value());
+	CHECK(row_of(o, "200")->check_enabled);
+	CHECK(o.people_list.slots_used == 3);
 }
 
 TEST_CASE("メインアカウントだけの構成の自分の行は、2 行目に「サブアカウント」を表示しない")

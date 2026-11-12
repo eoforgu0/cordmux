@@ -161,7 +161,8 @@ const ActionRule kActionRules[] = {
 		 // 空きがあるかより先に見る。押せない理由が、空きの有無と別だからである。
 		 if (person_known_not_sharing(obs, args.user_id))
 			 return text::keys::kDockRowCheckNotSharingTip;
-		 // 自分の枠を表示している間に、Discord の人を載せられるのは 3 人まで。テキストは一覧の上の 1 行と同じ。
+		 // 自分の枠を使っている間 (映像がまだ結び付いていない間も含む) に、Discord の人を載せられるのは 3 人まで
+		 // (observation.h の self_frame_limit_reached。自動で載せる経路も同じ上限)。テキストは一覧の上の 1 行と同じ。
 		 // 空いている枠があるかより先に見る。4 つ目の枠が空いていても載せられないためである。
 		 if (self_frame_limit_reached(obs))
 			 return text::keys::kDockSelfSlotLimitText;

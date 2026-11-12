@@ -86,6 +86,33 @@ TEST_CASE("声の枠は、空けた枠から順に埋まり、末尾の空きは
 	CHECK(table.first_free_slot(SlotKind::Voice) == 4);
 }
 
+TEST_CASE("assigned_count は割り当てのある枠を種類ごとに数え、途中の空きは数えない")
+{
+	AllocationTable table;
+	CHECK(table.assigned_count(SlotKind::Screen) == 0);
+	CHECK(table.assigned_count(SlotKind::Voice) == 0);
+	table.try_assign(SlotKind::Screen, "a");
+	table.try_assign(SlotKind::Screen, "b");
+	table.try_assign(SlotKind::Screen, "c");
+	table.try_assign(SlotKind::Voice, "a");
+	table.release(SlotKind::Screen, 2);
+	CHECK(table.assigned_count(SlotKind::Screen) == 2);
+	CHECK(table.assigned_count(SlotKind::Voice) == 1);
+}
+
+TEST_CASE("画面共有の枠に載せられる人数は、自分の枠を使っている間 (映像を OBS から選び、チェックが付いている) だけ 1 つ少ない")
+{
+	using cordmux::config::kScreenSlotCount;
+	using cordmux::config::screen_slot_capacity;
+	using cordmux::config::self_frame_in_use;
+	CHECK(screen_slot_capacity(false) == kScreenSlotCount);
+	CHECK(screen_slot_capacity(true) == kScreenSlotCount - 1);
+	CHECK(self_frame_in_use(true, true));
+	CHECK_FALSE(self_frame_in_use(true, false));
+	CHECK_FALSE(self_frame_in_use(false, true)); // 「Discordの画面共有」か「(なし)」の間に残したチェックは数えない
+	CHECK_FALSE(self_frame_in_use(false, false));
+}
+
 // 画面共有の枠 (4 つ) をすべて埋めて Insufficient を作る (声の枠には上限がなく、Insufficient にならない)。
 TEST_CASE("空き枠がなければ Insufficient を返し、割り当てを変えない (ほかの人の枠を取り上げない)")
 {

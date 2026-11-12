@@ -3,12 +3,13 @@
 // pipeline/stream_router.h の単体テスト。stream_id から枠への経路の作り方、
 // 音声と映像を出してよいかの判定を確認する。誰を枠に入れるかの決め方 (手動、自動、「自動で載せる」) と、
 // 使う声の置き換えのテストはファイルの後半に、OBS を起動し直した後 (割り当て表は空から始まる) のテストは
-// 末尾にある。
+// 後ろのほうにある。自分の枠を使っている間の人数の上限と、描く物が 4 つを超えないことのテストは末尾にある。
 
 #include "doctest.h"
 
 #include "pipeline/pipeline.h"
 #include "pipeline/stream_router.h"
+#include "sources/composite_input.h"
 
 #include <algorithm>
 #include <map>
@@ -1806,4 +1807,328 @@ TEST_CASE("place_added_order_after は、枠の人の載せた順を指定の番
 	REQUIRE(table.try_assign(SlotKind::Screen, "d").slot == 3);
 	CHECK(order_of(3) > order_of(2));
 	CHECK(order_of(3) > order_of(4));
+}
+
+// ---------------------------------------------------------------------------
+// 自分の枠を使っている間の人数の上限 (config::screen_slot_capacity)。手動で載せる操作 (ledger/actions.cpp の SetSlot) と同じく、
+// 「自動」と [自動で枠に載せる] で載せる経路も、Discord の人を 3 人までにする。自分の枠と合わせて、描く物が 4 つを超えない
+// (どの人も描かれずに落ちない) ことを、配信の配置と同じ関数で確かめる。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 自分の枠を使っている間の決め方 (メインアカウントは "main"。自分の枠に映す映像を OBS から選び、チェックが付いている)。
+AssignPolicy in_use(AssignPolicy policy)
+{
+	policy.main_account_user_id = "main";
+	policy.self_frame_selected = true;
+	policy.self_frame_in_use = true;
+	return policy;
+}
+
+// users の画面のストリーム (stream_id は 1 から順に振る)。
+ConfigureMessage screens_of(const std::vector<std::string> &users)
+{
+	ConfigureMessage msg;
+	uint32_t id = 1;
+	for (const std::string &user : users)
+		msg.streams.push_back(make_stream(id++, user, StreamKind::Screen));
+	return msg;
+}
+
+// 画面の枠 (1 から 4) への経路を持つ stream_id の数。
+int routed_to_slots(const StreamRouter &router, const ConfigureMessage &msg)
+{
+	int n = 0;
+	for (const StreamConfig &stream : msg.streams) {
+		const auto route = router.route(stream.stream_id);
+		if (route && route->kind == SlotKind::Screen && route->slot >= 1 &&
+		    route->slot <= cordmux::config::kScreenSlotCount)
+			++n;
+	}
+	return n;
+}
+
+// 割り当て表の画面の枠と自分の枠を、配信の配置 (sources/composite_layout.h の plan_composite_layout) と全画面にできるタイル
+// (sources/composite_input.h の composite_focus_tiles) に通し、描く物が 4 つ以下で、誰も落ちず、自分の枠を出していれば
+// 自分の枠も全画面にできることを確かめる。並び順 2 つと、[先頭に配置] の有無の両方で見る。自分の枠の名前と載せた順の印は、
+// 先頭に置かないときに最後に並ぶ値にする (落ちるなら自分の枠が落ちる並び)。
+void check_drawn_within_four(const AllocationTable &table, bool self_shown)
+{
+	std::vector<int> visible;
+	std::vector<cordmux::sources::SlotPerson> people;
+	for (int slot = 1; slot <= cordmux::config::kScreenSlotCount; ++slot) {
+		const cordmux::config::SlotAssignment *a = table.assignment(SlotKind::Screen, slot);
+		if (a == nullptr)
+			continue;
+		visible.push_back(slot);
+		cordmux::sources::SlotPerson person;
+		person.slot = slot;
+		person.name = a->owner_user_id;
+		person.user_id = a->owner_user_id;
+		person.added_order = a->added_order;
+		people.push_back(person);
+	}
+	for (const bool first : {true, false}) {
+		for (const cordmux::config::SlotOrder order : {cordmux::config::SlotOrder::Name, cordmux::config::SlotOrder::Added}) {
+			CAPTURE(first);
+			CAPTURE(static_cast<int>(order));
+			cordmux::sources::CompositeInput input =
+				cordmux::sources::make_composite_input(visible, people, self_shown, true, 0);
+			input.slot_order = order;
+			input.self_first = first;
+			input.self_user_id = "main";
+			input.self_name = "zzz";
+			input.self_added_mark = 1000;
+			const cordmux::sources::CompositeLayout layout =
+				cordmux::sources::plan_composite_layout(cordmux::sources::make_layout_request(input, 1920, 1080));
+			const std::size_t expected = visible.size() + (self_shown ? 1u : 0u);
+			CHECK(expected <= 4u);
+			CHECK(layout.tiles.size() == expected);
+			CHECK(layout.dropped.empty());
+			const std::vector<cordmux::sources::CompositeFocusTile> focus = cordmux::sources::composite_focus_tiles(input);
+			CHECK(focus.size() == expected);
+			const bool self_focusable =
+				std::any_of(focus.begin(), focus.end(),
+					    [](const cordmux::sources::CompositeFocusTile &tile) { return tile.user_id == "main"; });
+			CHECK(self_focusable == self_shown);
+		}
+	}
+}
+
+} // namespace
+
+TEST_CASE("自分の枠を使っている間は、自動で画面共有を始めた人が 3 人まで載り、4 人目は載らない")
+{
+	AllocationTable table;
+	StreamRouter router;
+	const ConfigureMessage msg = screens_of({"a", "b", "c", "d"});
+	const auto changes = router.apply_configure(msg, table, in_use(kAuto));
+
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	CHECK(routed_to_slots(router, msg) == 3);
+	CHECK_FALSE(router.route(4).has_value()); // 4 人目は経路を持たない (映像をデコードしない)
+	CHECK(table.slot_of_owner(SlotKind::Screen, "d") == 0);
+	CHECK(table.first_free_slot(SlotKind::Screen) == 4); // 4 つ目の枠は空いたまま (自分の枠の分)
+	CHECK(change_of(changes, 4) == nullptr);
+	check_drawn_within_four(table, true);
+}
+
+TEST_CASE("自分の枠を使っていなければ、自動で 4 人まで載る")
+{
+	AllocationTable table;
+	StreamRouter router;
+	AssignPolicy policy = in_use(kAuto);
+	policy.self_frame_in_use = false; // 映像は OBS から選んでいるが、自分の行のチェックが外れている
+	const ConfigureMessage msg = screens_of({"a", "b", "c", "d"});
+	router.apply_configure(msg, table, policy);
+
+	CHECK(table.assigned_count(SlotKind::Screen) == 4);
+	CHECK(routed_to_slots(router, msg) == 4);
+	check_drawn_within_four(table, false);
+}
+
+TEST_CASE("自分の枠を使っている間は、[自動で枠に載せる] の人も 3 人まで載り、4 人目は載らない")
+{
+	AllocationTable table;
+	StreamRouter router;
+	const ConfigureMessage msg = screens_of({"a", "b", "c", "d"});
+	const auto changes = router.apply_configure(msg, table, in_use(manual_with({"a", "b", "c", "d"})));
+
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	CHECK(routed_to_slots(router, msg) == 3);
+	CHECK_FALSE(router.route(4).has_value());
+	CHECK(change_of(changes, 4) == nullptr);
+	check_drawn_within_four(table, true);
+
+	// 自分の枠を使っていなければ 4 人目も載る (始めたときに枠が空いている)。
+	AllocationTable table4;
+	StreamRouter router4;
+	AssignPolicy policy = in_use(manual_with({"a", "b", "c", "d"}));
+	policy.self_frame_in_use = false;
+	router4.apply_configure(msg, table4, policy);
+	CHECK(table4.assigned_count(SlotKind::Screen) == 4);
+}
+
+TEST_CASE("自分の枠を使っている間は、手動で 3 人を載せた後に [自動で枠に載せる] の人が始めても載らない")
+{
+	AllocationTable table;
+	StreamRouter router;
+	for (const char *id : {"a", "b", "c"})
+		REQUIRE(table.try_assign(SlotKind::Screen, id).outcome == cordmux::config::AssignOutcome::Assigned);
+	const AssignPolicy policy = in_use(manual_with({"d"}));
+	const ConfigureMessage before = screens_of({"a", "b", "c"});
+	router.apply_configure(before, table, policy);
+	// d が画面共有を始めた。4 つ目の枠は空いているが、自分の枠の分なので載せない。
+	const ConfigureMessage after = screens_of({"a", "b", "c", "d"});
+	router.apply_configure(after, table, policy);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "d") == 0);
+	CHECK_FALSE(router.route(4).has_value());
+	check_drawn_within_four(table, true);
+}
+
+TEST_CASE("admit_sharers: 自分の枠を使っている間は、自動でも [自動で枠に載せる] でも 3 人まで載せる")
+{
+	// OBS を起動したとき、シーンの読み込みが終わる前に facts が届くと、ここで画面共有している人を載せる。自分の枠は
+	// まだ結び付いていないが、チェックが付いていれば上限を当てる。
+	{
+		AllocationTable table;
+		StreamRouter router;
+		const auto admitted = router.admit_sharers({"a", "b", "c", "d", "e"}, table, in_use(kAuto));
+		CHECK(admitted == std::vector<std::string>{"a", "b", "c"});
+		CHECK(table.assigned_count(SlotKind::Screen) == 3);
+		check_drawn_within_four(table, true);
+	}
+	{
+		AllocationTable table;
+		StreamRouter router;
+		const auto admitted =
+			router.admit_sharers({"a", "b", "c", "d"}, table, in_use(manual_with({"a", "b", "c", "d"})));
+		CHECK(admitted == std::vector<std::string>{"a", "b", "c"});
+		CHECK(table.slot_of_owner(SlotKind::Screen, "d") == 0);
+		check_drawn_within_four(table, true);
+	}
+	{
+		// 使っていなければ 4 人まで。
+		AllocationTable table;
+		StreamRouter router;
+		AssignPolicy policy = in_use(kAuto);
+		policy.self_frame_in_use = false;
+		CHECK(router.admit_sharers({"a", "b", "c", "d", "e"}, table, policy).size() == 4);
+	}
+}
+
+TEST_CASE("自分の枠を後から使い始めても、すでに枠に載っている 4 人は外さない")
+{
+	AllocationTable table;
+	StreamRouter router;
+	const ConfigureMessage msg = screens_of({"a", "b", "c", "d"});
+	AssignPolicy policy = in_use(kAuto);
+	policy.self_frame_in_use = false;
+	router.apply_configure(msg, table, policy);
+	REQUIRE(table.assigned_count(SlotKind::Screen) == 4);
+
+	policy.self_frame_in_use = true;
+	const auto changes = router.apply_configure(msg, table, policy);
+	CHECK(changes.empty());
+	CHECK(table.assigned_count(SlotKind::Screen) == 4);
+	CHECK(routed_to_slots(router, msg) == 4);
+	CHECK(router.admit_sharers({"a", "b", "c", "d"}, table, policy).empty());
+	CHECK(table.assigned_count(SlotKind::Screen) == 4);
+}
+
+TEST_CASE("自分の枠を使うのをやめると、自動では待っていた人が空いた枠に載り、[自動で枠に載せる] の人は始め直すまで載らない")
+{
+	const ConfigureMessage msg = screens_of({"a", "b", "c", "d"});
+	{
+		AllocationTable table;
+		StreamRouter router;
+		AssignPolicy policy = in_use(kAuto);
+		router.apply_configure(msg, table, policy);
+		REQUIRE_FALSE(router.route(4).has_value());
+		// 自分の行のチェックを外した (Pipeline::set_assign_policy は直前の configure を適用し直す)。
+		policy.self_frame_in_use = false;
+		router.apply_configure(msg, table, policy);
+		REQUIRE(router.route(4).has_value());
+		CHECK(router.route(4)->slot == 4);
+		check_drawn_within_four(table, false);
+	}
+	{
+		AllocationTable table;
+		StreamRouter router;
+		AssignPolicy policy = in_use(manual_with({"a", "b", "c", "d"}));
+		router.apply_configure(msg, table, policy);
+		REQUIRE_FALSE(router.route(4).has_value());
+		policy.self_frame_in_use = false;
+		router.apply_configure(msg, table, policy);
+		// d は前から画面共有している (「始めた」ではない) ので、枠が空いても載らない (空いている枠がなかったときと同じ)。
+		CHECK_FALSE(router.route(4).has_value());
+		// 画面共有をやめて始め直すと載る。
+		router.apply_configure(screens_of({"a", "b", "c"}), table, policy);
+		router.apply_configure(msg, table, policy);
+		REQUIRE(router.route(4).has_value());
+		CHECK(router.route(4)->slot == 4);
+	}
+}
+
+TEST_CASE("自分の枠を使っている間に上限で載らない人を全画面にすると、全画面だけで映す子への経路を作る")
+{
+	AllocationTable table;
+	StreamRouter router;
+	AssignPolicy policy = in_use(kAuto);
+	const ConfigureMessage msg = screens_of({"a", "b", "c", "d"});
+	router.apply_configure(msg, table, policy);
+	REQUIRE_FALSE(router.route(4).has_value());
+
+	policy.focus_user_id = "d";
+	router.apply_configure(msg, table, policy);
+	REQUIRE(router.route(4).has_value());
+	CHECK(router.route(4)->slot == cordmux::config::kFocusOnlySlot);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "d") == 0); // 割り当て表は変えない
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+}
+
+TEST_CASE("自分の枠を使っている間は、どの経路を通っても、描く物が 4 つを超えない")
+{
+	// 自分の枠を使い続けたまま、枠に人を載せる経路を順に通す。各段のあとで、自分の枠と画面の枠を配信の配置に通し、
+	// 描く物が 4 つ以下で、誰も落ちないことを確かめる。手動で載せる操作は、ドックが同じ上限で押せなくする (ledger の
+	// テスト) ので、ここでは割り当て表に直接載せる形で、上限に達していない間だけ通す。
+	using cordmux::pipeline::replace_slot_in;
+	AllocationTable table;
+	StreamRouter router;
+	const AssignPolicy auto_policy = in_use(kAuto);
+	const AssignPolicy manual_policy = in_use(manual_with({"f", "g"}));
+
+	// (1) OBS の起動。シーンの読み込みの前に facts が届き、画面共有している 5 人を載せる。
+	router.admit_sharers({"a", "b", "c", "d", "e"}, table, auto_policy);
+	check_drawn_within_four(table, true);
+
+	// (2) シーンの読み込みが終わり、保留していた configure を適用する (自動)。
+	const ConfigureMessage five = screens_of({"a", "b", "c", "d", "e"});
+	router.apply_configure(five, table, auto_policy);
+	CHECK(routed_to_slots(router, five) == 3);
+	check_drawn_within_four(table, true);
+
+	// (3) Vesktop との接続が切れて繋ぎ直した (経路を忘れ、同じ configure がまた届く)。
+	router.clear();
+	router.apply_configure(five, table, auto_policy);
+	CHECK(routed_to_slots(router, five) == 3);
+	check_drawn_within_four(table, true);
+
+	// (4) 枠の入れ替え (a を外して d を載せる)。人数は変わらない。
+	int out_n = 0;
+	int in_n = 0;
+	replace_slot_in(table, router, "a", "d", &out_n, &in_n);
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	check_drawn_within_four(table, true);
+
+	// (5) 1 人が画面共有をやめて枠が空き (pipeline/slot_release.h)、自動で待っていた人が載る。
+	table.release(SlotKind::Screen, table.slot_of_owner(SlotKind::Screen, "b"));
+	const ConfigureMessage without_b = screens_of({"a", "c", "d", "e"});
+	router.apply_configure(without_b, table, auto_policy);
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	check_drawn_within_four(table, true);
+
+	// (6) 手動に替えて、[自動で枠に載せる] の f と g が画面共有を始める (configure と facts の両方)。
+	const ConfigureMessage with_fg = screens_of({"a", "c", "d", "e", "f", "g"});
+	router.apply_configure(with_fg, table, manual_policy);
+	router.admit_sharers({"a", "c", "d", "e", "f", "g"}, table, manual_policy);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "f") == 0);
+	CHECK(table.slot_of_owner(SlotKind::Screen, "g") == 0);
+	check_drawn_within_four(table, true);
+
+	// (7) 手動で 1 人を外し、空いた枠に 1 人を載せる (ドックの SetSlot。上限に達していないので押せる)。
+	table.release(SlotKind::Screen, table.slot_of_owner(SlotKind::Screen, "c"));
+	REQUIRE(table.assigned_count(SlotKind::Screen) < cordmux::config::screen_slot_capacity(true));
+	table.try_assign(SlotKind::Screen, "f");
+	router.apply_configure(with_fg, table, manual_policy);
+	CHECK(table.assigned_count(SlotKind::Screen) == 3);
+	check_drawn_within_four(table, true);
+
+	// (8) 自分の枠を使うのをやめた後は、自動で 4 人まで載り、自分の枠は描かない。
+	AssignPolicy off = auto_policy;
+	off.self_frame_in_use = false;
+	router.apply_configure(with_fg, table, off);
+	CHECK(table.assigned_count(SlotKind::Screen) == 4);
+	check_drawn_within_four(table, false);
 }

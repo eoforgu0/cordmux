@@ -1432,9 +1432,12 @@ void add_people_fixtures(std::vector<Fixture> &out)
 		out.push_back(make("people-refused", "参加者一覧: 押した直後に空きがなくて載せられなかった行がある", obs));
 	}
 	{
-		// 自分の枠 (ミラーのソース) を表示している間は、Discord の人を載せられるのは 3 人まで。3 人を
+		// 自分の枠 (ミラーのソース) を使っている間は、Discord の人を載せられるのは 3 人まで。3 人を
 		// 載せているので、載せていない人のチェックボックスは押せず、理由が一覧の上に表示される。
 		Observation obs = connected_in_call();
+		obs.choices.self_frame_selected = true;
+		obs.choices.self_frame_bound = true;
+		obs.choices.self_frame_on = true;
 		obs.choices.self_frame_shown = true;
 		out.push_back(make("people-self-frame", "参加者一覧: 自分の枠を表示している間は、4 人目を載せられない (3 人まで)", obs));
 	}

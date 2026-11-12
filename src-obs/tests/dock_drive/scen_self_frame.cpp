@@ -13,6 +13,9 @@
 //   (g) 自分の枠に映す映像を OBS から選んでいない間は、サブアカウントがあれば行のチェックがほかの人と同じ (枠に載せる)。
 //       サブアカウントがなければ、チェックは押せず、理由が付く。
 //   (h) チェックが付いていて、選んだ映像が見つからない間は、行の状態がそれを伝える。見つかると消える。
+//   (i) 自分の枠を使っている間 (チェックが付いている間。選んだ映像が見つからない間も) は、Discord の人の 4 人目のチェックを
+//       押せない。自分の行のチェックを外すと押せる。自動で載せる経路の同じ上限は、Pipeline を組み込めないので単体テスト
+//       (test_pipeline_stream_router.cpp) で確かめる。
 
 #include "scenarios.h"
 
@@ -370,6 +373,57 @@ void run_self_frame(const ScenarioOptions &options, Results &results)
 		sim.changed();
 		pump(3500);
 		results.expect_true(group, QStringLiteral("(h) 見つかると、行の状態から消える"), !shows_missing());
+		close(sim);
+	}
+
+	// ---- (i) 自分の枠を使っている間は、Discord の人を 3 人まで (選んだ映像が見つからない間も) ----
+	{
+		SimPoll sim(ui_preview::fixture_by_id("people-self-frame-on"), options.style);
+		Input input;
+		open(sim, input);
+		// Discord の人を 3 人載せ (枠に載っていない、自分の枠でない人を枠 2 に載せる)、さらに 1 人が画面共有を始めた形にする。
+		const std::string fourth_id = "selfslot-fourth";
+		ledger::PersonFact fourth;
+		for (ledger::PersonFact &p : sim.obs().people) {
+			if (!p.slot.has_value() && !p.is_self_frame && !p.is_receiver) {
+				p.slot = 2;
+				p.sharing = true;
+				p.sharing_known = true;
+				fourth = p;
+				break;
+			}
+		}
+		fourth.user_id = fourth_id;
+		fourth.display_name = std::string("Ren");
+		fourth.discord_name = std::string("Ren");
+		fourth.slot.reset();
+		sim.obs().people.push_back(fourth);
+		sim.changed();
+		pump(1200);
+		const auto fourth_row = [&]() -> const ledger::dockview::PersonRow * {
+			for (const ledger::dockview::PersonRow &row : sim.view().people) {
+				if (row.user_id == fourth_id)
+					return &row;
+			}
+			return nullptr;
+		};
+		const auto limited = [&] {
+			const ledger::dockview::PersonRow *r = fourth_row();
+			return r != nullptr && !r->check_enabled && r->check_action.disabled_reason.has_value() &&
+			       r->check_action.disabled_reason->id == keys::kDockSelfSlotLimitText;
+		};
+		results.expect_true(group, QStringLiteral("(i) 自分の枠を出している間は、4 人目のチェックは押せず、理由が 3 人までであること"),
+				    limited());
+		sim.obs().choices.self_frame_bound = false;
+		sim.obs().choices.self_frame_shown = false;
+		sim.changed();
+		pump(1200);
+		results.expect_true(group, QStringLiteral("(i) 選んだ映像が見つからない間も、チェックが付いていれば 4 人目は押せない"),
+				    limited() && checked_of(sim, self));
+		click_check(sim, input, self);
+		const ledger::dockview::PersonRow *after = fourth_row();
+		results.expect_true(group, QStringLiteral("(i) 自分の行のチェックを外すと、4 人目のチェックが押せる"),
+				    !sim.obs().choices.self_frame_on && after != nullptr && after->check_enabled);
 		close(sim);
 	}
 }

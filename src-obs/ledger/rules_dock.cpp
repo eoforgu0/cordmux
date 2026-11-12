@@ -2302,7 +2302,9 @@ dockview::PeopleListView people_list_of(const Observation &obs, const std::map<s
 			list.in_call.push_back(std::move(row));
 	}
 
-	list.slots_used = std::min(obs.choices.self_frame_shown ? discord_slotted_count(obs) + 1 : screen_slotted_count(obs),
+	// 自分の枠を使っている間は、映像がまだ結び付いていなくても自分の枠を 1 つと数える。Discord の人を載せられる人数
+	// (self_frame_limit_reached) と同じ条件にして、「枠3/4」なのに 4 人目を載せられない、という表示にしない。
+	list.slots_used = std::min(self_frame_in_use(obs) ? discord_slotted_count(obs) + 1 : screen_slotted_count(obs),
 				   list.slots_total);
 	list.slots_label = ref(keys::kDockSlotsUsedStatus, {std::to_string(list.slots_used), std::to_string(list.slots_total)});
 	list.sharing_heading = ref(keys::kDockGroupSharingHeading, {count_text(static_cast<long long>(list.sharing.size()))});

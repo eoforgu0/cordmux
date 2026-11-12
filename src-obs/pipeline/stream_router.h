@@ -56,7 +56,7 @@ struct RouteChange {
 // 選び方に合わせると、載せていない人の声が配信から消え、利用者がまだ誰も選んでいない起動の直後には、通話の声が 1 つも
 // 出ない。
 //
-// automatic == true (自動): 画面共有をしている人を、始めた順に、枠が空いている限り try_assign に通す。ただし、利用者がドックでチェックを外した人は、その人が画面共有をやめて始め直すまで通さない。
+// automatic == true (自動): 画面共有をしている人を、始めた順に、載せられる人数 (下の self_frame_in_use) まで try_assign に通す。ただし、利用者がドックでチェックを外した人は、その人が画面共有をやめて始め直すまで通さない。
 // 通さないと、外した人が次の configure (誰かが通話に参加する、共有を始める、など) で空いた枠に戻り、誤って配信に出た
 // 人を外す操作が動作しない。外した人は StreamRouter が持つ (exclude_user、include_user、clear_excluded)。
 // 外した人の扱いは手動のときの (2) にも同じように動作する。
@@ -65,13 +65,24 @@ struct RouteChange {
 //   (1) すでに自分の枠がある人。ドックで枠に載せた人はここに入り、枠から外した人は入らないので、外した人は
 //       次の configure が来ても枠に戻らない。枠を持つのは画面共有をしている人だけで、共有をやめるか通話から抜けた人の
 //       枠は pipeline/slot_release.h が空けるので、空けた枠に戻らない人は、押し直す。
-//   (2) always_on の人 (「自動で載せる」を付けた人) が画面共有を始めたときで、空いている枠があるとき。ただし、
+//   (2) always_on の人 (「自動で載せる」を付けた人) が画面共有を始めたときで、載せられる人数 (下の self_frame_in_use) に
+//       達していないとき。ただし、
 //       利用者がドックでチェックを外した人 (StreamRouter の exclude_user) は、画面共有をやめて始め直すまで入れない
 //       (接続が切れると screen_sharers_ を忘れるので、一覧がないと、繋ぎ直した後の最初の configure で外した人が
 //       「始めた」に見えて戻る)。「始めた」は、
 //       前の configure にその人の画面のストリームがなく、今回はあることで見る。configure が来るたびに入れると、
-//       その人を枠から外しても次の configure で戻ってしまう。空いている枠がなければ入れない (ほかの人の枠を
+//       その人を枠から外しても次の configure で戻ってしまう。載せられる人数に達していれば入れない (ほかの人の枠を
 //       取り上げない)。
+//
+// self_frame_in_use (自分の枠を使っている間。config::self_frame_in_use) は、画面の枠に新しく載せられる人数を 1 つ減らす
+// (config::screen_slot_capacity。4 つが 3 つになる)。自動でも「自動で載せる」でも、admit_sharers でも同じである。合成のソースは
+// キャンバスを 4 等分して描くので、自分の枠と Discord の 4 人で 5 つになると、1 つを描けない。手動で載せる操作は、ドックが同じ
+// 上限で押せなくする (ledger/observation.h の self_frame_limit_reached) ので、2 つの経路で人数が食い違わない。上限に達して
+// 載せられない人は、手動で載せていない人と同じく経路を持たない (全画面で映す人なら focus_only の経路を作る)。すでに枠を
+// 持つ人は、上限を超えていても外さない (Discord の人で 4 つ埋まっている間は、自分の枠のチェックを付けられないので、
+// 普通は超えない)。自分の枠を使うのをやめて上限が上がったときは、呼び出し元 (Pipeline::set_assign_policy) が直前の
+// configure を適用し直すので、待っていた人が空いた枠に載る。「自動で載せる」の人は、ほかの理由で載らなかったときと同じく、
+// 画面共有を始め直すまで載らない (始めたときにだけ載せる規則のため)。
 //
 // voice_links (枠に載っている人 O -> 使う声に選んだ人 S) は声の枠だけに適用され、手動でも自動でも同じに適用する。
 //   (1) S の声は O の声の枠に入れる (try_assign(Voice, O))。その枠の voice_user_id を S にする。枠と表示名と
@@ -115,12 +126,23 @@ struct AssignPolicy {
 	bool route_main_account_voice = false;
 	// 自分の枠に映す映像として OBS のソースかシーンを選んでいるか (上の説明)。呼び出し元 (ドック) が渡す。
 	bool self_frame_selected = false;
+	// 自分の枠を使っているか (上の説明。config::self_frame_in_use)。真の間は、画面の枠に新しく載せられる人数が 1 つ減る
+	// (screen_slot_room)。呼び出し元 (ドック) が、自分の行のチェックと self_frame_selected から決めて渡す。
+	bool self_frame_in_use = false;
 	// 全画面で映す人 (ドックが渡す。空 = 全画面でない)。この人が画面の枠を持たないとき (枠に載せていない、枠が足りない) は、
 	// その人の画面のストリームに、割り当て表に触らずに config::kFocusOnlySlot への経路を作る (reason は "focus_only")。
 	// 映像はその子に渡り、画面共有の音は出さない (output_allowed が偽)。自分の枠で出す人 (self_frame_selected の
 	// メインアカウント) には作らない。
 	std::string focus_user_id;
 };
+
+// 画面の枠に、まだ枠を持たない人を新しく載せられるか。載せられる人数は config::screen_slot_capacity で決まり、自分の枠を
+// 使っている間 (policy.self_frame_in_use) は 1 つ少ない。数えるのは割り当てのある画面の枠すべてである (メインアカウントの
+// 画面共有の枠も数える。描く物の数は、自分の枠と、割り当てのある画面の枠の数で決まるため)。
+inline bool screen_slot_room(const config::AllocationTable &table, const AssignPolicy &policy)
+{
+	return table.assigned_count(config::SlotKind::Screen) < config::screen_slot_capacity(policy.self_frame_in_use);
+}
 
 // 同じ stream_id が、画面のまま別の人か別の枠に替わったか。true なら pipeline.cpp はデコードのスレッド一式
 // (H264Decoder、TimestampAligner、AvOffsetTranscriber) を作り直す。使い回すと H264Decoder がキーフレームを
@@ -149,7 +171,7 @@ public:
 	//   (枠を空けるのは、facts の sharing と roster で見る pipeline/slot_release.h である。繋ぎ直した直後の
 	//   configure には画面のストリームがなく、ここで見ると、共有を続けている人の枠まで空けてしまう)。
 	// - 画面のストリームのうち枠に入れてよい人だけを try_assign に通す (AssignPolicy。手動のときは載せた人と
-	//   「自動で載せる」の人、自動のときは外していない人)。
+	//   「自動で載せる」の人、自動のときは外していない人。新しく載せるのは、載せられる人数 (screen_slot_room) まで)。
 	//   枠に入れない人には経路を作らない。呼び出し元は経路の有無でデコードのスレッドを作るので、表示しない
 	//   映像をデコードし続けない。
 	// - policy.voice_links があれば、使う声に選んだ人の声を、枠に載っている人の声の枠に入れ、載っている人自身の
@@ -163,8 +185,8 @@ public:
 	// ストリームが載らず、apply_configure の自動の割り当てが動かない。そのため、画面共有している人を facts から見て、
 	// apply_configure と同じ規則 (AssignPolicy) で try_assign に通す。載せた人の映像は、この後に送信側が視聴を始めて
 	// からの configure で経路になる。
-	// - 自動: 外していない人を、sharing_user_ids の順に try_assign に通す。
-	// - 手動: 「自動で載せる」の人が画面共有を始めたときだけ、空いている枠があれば載せる。「始めた」は、前に呼ばれたときの
+	// - 自動: 外していない人を、sharing_user_ids の順に、載せられる人数 (screen_slot_room) まで try_assign に通す。
+	// - 手動: 「自動で載せる」の人が画面共有を始めたときだけ、載せられる人数に達していなければ載せる。「始めた」は、前に呼ばれたときの
 	//   sharing_user_ids と、前の configure の画面のストリームの両方にいないことで見る (最初の呼び出しは、全員が
 	//   「始めた」になる)。
 	// - 外した人 (exclude_user) と、自分の枠で出す人 (policy.self_frame_selected のメインアカウント) は載せない。
@@ -371,7 +393,7 @@ inline std::vector<RouteChange> StreamRouter::apply_configure(const ws::Configur
 				const bool always_on_started = policy.always_on.count(stream.user_id) != 0 &&
 							       excluded_.count(stream.user_id) == 0 &&
 							       screen_sharers_.count(stream.user_id) == 0 &&
-							       table.first_free_slot(kind) != 0;
+							       screen_slot_room(table, policy);
 				admit = owns_slot || always_on_started;
 			}
 			if (!admit && focus_only) {
@@ -401,7 +423,11 @@ inline std::vector<RouteChange> StreamRouter::apply_configure(const ws::Configur
 			if (linked != owner_of_source.end())
 				slot_owner = linked->second;
 		}
-		const auto result = table.try_assign(kind, slot_owner);
+		// 画面の枠を持たない人は、載せられる人数 (screen_slot_room。自分の枠を使っている間は 3 人) に達していれば、空いている
+		// 枠があっても載せず、枠が足りないときと同じに扱う (AssignPolicy の self_frame_in_use)。
+		const bool over_capacity = kind == config::SlotKind::Screen && table.slot_of_owner(kind, slot_owner) == 0 &&
+					   !screen_slot_room(table, policy);
+		const auto result = over_capacity ? config::AssignResult{} : table.try_assign(kind, slot_owner);
 
 		if (result.outcome == config::AssignOutcome::Insufficient && focus_only) {
 			// 枠が足りずに載らない人を全画面で映すとき。
@@ -546,9 +572,12 @@ inline std::vector<std::string> StreamRouter::admit_sharers(const std::vector<st
 			continue;
 		if (!policy.automatic) {
 			const bool started = admitted_sharing_prev_.count(user_id) == 0 && screen_sharers_.count(user_id) == 0;
-			if (policy.always_on.count(user_id) == 0 || !started || table.first_free_slot(kind) == 0)
+			if (policy.always_on.count(user_id) == 0 || !started)
 				continue;
 		}
+		// 載せられる人数 (自分の枠を使っている間は 3 人) に達していれば載せない (apply_configure と同じ規則)。
+		if (!screen_slot_room(table, policy))
+			continue;
 		const auto result = table.try_assign(kind, user_id);
 		if (result.outcome != config::AssignOutcome::Assigned)
 			continue;

@@ -372,6 +372,11 @@ struct Pipeline::Impl {
 		assign_policy.main_account_user_id = settings.broadcaster_user_id;
 		// 自分の枠に映す映像を OBS から選んでいる間は、メインアカウントの画面を枠に載せない (同じ理由でここでコピーする)。
 		assign_policy.self_frame_selected = config::self_frame_video_selected(settings);
+		// 自分の枠を使っているか (画面の枠に新しく載せられる人数が 1 つ減る) も同じ理由でここでコピーする。シーンの読み込みが
+		// 終わる前に Vesktop から facts が届くと、そこで画面共有している人を枠に載せる (admit_sharers) ので、そのときに
+		// もう分かっている必要がある。
+		assign_policy.self_frame_in_use =
+			config::self_frame_in_use(assign_policy.self_frame_selected, settings.self_frame_on);
 		mixer_levels.set_self_voice_user(settings.broadcaster_user_id);
 		mixer_levels.set_self_voice_muted(settings.self_voice_muted);
 
@@ -3672,7 +3677,7 @@ Pipeline::SlotChange Pipeline::assign_slot(config::SlotKind kind, const std::str
 
 void Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> always_on,
 				 std::map<std::string, std::string> voice_links, std::string main_account_user_id,
-				 bool self_frame_selected)
+				 bool self_frame_selected, bool self_frame_in_use)
 {
 	std::optional<ws::ConfigureMessage> replay;
 	std::uint64_t generation = 0;
@@ -3685,8 +3690,12 @@ void Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> 
 		if (impl_->assign_policy.automatic == automatic && impl_->assign_policy.always_on == always_on &&
 		    impl_->assign_policy.voice_links == voice_links &&
 		    impl_->assign_policy.main_account_user_id == main_account_user_id &&
-		    impl_->assign_policy.self_frame_selected == self_frame_selected)
+		    impl_->assign_policy.self_frame_selected == self_frame_selected &&
+		    impl_->assign_policy.self_frame_in_use == self_frame_in_use)
 			return;
+		if (impl_->assign_policy.self_frame_in_use != self_frame_in_use)
+			diag::logf(LOG_INFO, "Self frame %s: up to %d people in screen slots",
+				   self_frame_in_use ? "in use" : "not in use", config::screen_slot_capacity(self_frame_in_use));
 		// 自動から手動に戻しても、いま画面の枠に載っている人は外さない (手動の割り当ては、枠に載っている人の
 		// 経路を保つ。stream_router.h の AssignPolicy の (1))。
 		// 選び方を切り替えたら、外した人の一覧を捨てる (stream_router.h の exclude_user)。
@@ -3697,6 +3706,7 @@ void Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> 
 		impl_->assign_policy.voice_links = std::move(voice_links);
 		impl_->assign_policy.main_account_user_id = std::move(main_account_user_id);
 		impl_->assign_policy.self_frame_selected = self_frame_selected;
+		impl_->assign_policy.self_frame_in_use = self_frame_in_use;
 		impl_->refresh_main_account_locked();
 		// 決め方が変わったので、受け取る範囲が Slots のときは、すでに画面共有している人を載せ直す。
 		impl_->admit_sharers_from_facts_locked();
