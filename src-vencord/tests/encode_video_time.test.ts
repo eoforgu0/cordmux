@@ -10,6 +10,7 @@ import { createClockMap, mapMediaTime } from "../encode/clock_map";
 import { pageTimebase, qpcTimebase } from "../encode/sender_clock";
 import {
     VIDEO_EXACT_EXIT_FRAMES,
+    VIDEO_EXACT_LEAD_MAX_US,
     VIDEO_TIME_LOG_FIRST_SWITCHES,
     VIDEO_TIME_LOG_SUMMARY_MS,
     createVideoTimeLogState,
@@ -214,24 +215,33 @@ describe("videoTimeChangeText", () => {
 });
 
 describe("mapVideoTime: 受信側が待つ長さ (500 ms) より先のフレーム", () => {
-    it("先行が 500 ms を超えるフレームでは、正確な換算に入らない (too-far-ahead)", () => {
+    it("先行が 500 ms を超え 10 秒より小さいフレームも証拠にして、正確な換算に入る", () => {
         const steps = renderTimeSteps(5, 300_000_000_000n, () => 600_000n);
-        const { state, changes } = run(steps);
-        expect(changes).toEqual([{ index: 0, change: { mode: "estimated", reason: "too-far-ahead", leadUs: 600_000n } }]);
-        expect(state.mode).toBe("estimated");
+        const { state, changes, times } = run(steps);
+        expect(changes).toEqual([{ index: 0, change: { mode: "exact", reason: "render-time", leadUs: 600_000n } }]);
+        expect(state.mode).toBe("exact");
+        expect(times).toEqual(steps.map((s) => s.mediaUs));
     });
 
-    it("先行がちょうど 500 ms のフレームは証拠にする", () => {
-        const { changes } = run(renderTimeSteps(1, 300_000_000_000n, () => 500_000n));
-        expect(changes[0]?.change.mode).toBe("exact");
+    it("先行が 10 秒ちょうどより 1 us 小さいフレームは証拠にし、10 秒ちょうどはほかの時計の値とみなす", () => {
+        expect(run(renderTimeSteps(1, 300_000_000_000n, () => VIDEO_EXACT_LEAD_MAX_US - 1n)).changes[0]?.change).toEqual({
+            mode: "exact",
+            reason: "render-time",
+            leadUs: VIDEO_EXACT_LEAD_MAX_US - 1n,
+        });
+        expect(run(renderTimeSteps(1, 300_000_000_000n, () => VIDEO_EXACT_LEAD_MAX_US)).changes[0]?.change).toEqual({
+            mode: "estimated",
+            reason: "other-clock",
+            leadUs: VIDEO_EXACT_LEAD_MAX_US,
+        });
     });
 
-    it("正確な換算の間に 500 ms を超えるフレームが来ても、すぐには戻らず、証拠のないフレームとして数える", () => {
+    it("正確な換算の間に 500 ms を超えるフレームが来ても、証拠のフレームとして正確な換算のまま送る", () => {
         const steps = renderTimeSteps(20, 300_000_000_000n, () => 12_000n);
         steps.push(...renderTimeSteps(3, 300_000_000_000n + 20n * FRAME_US, () => 800_000n));
         const { state, times } = run(steps);
         expect(state.mode).toBe("exact");
-        expect(state.missFrames).toBe(3);
+        expect(state.missFrames).toBe(0);
         expect(times).toEqual(steps.map((s) => s.mediaUs));
     });
 });
