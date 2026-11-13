@@ -75,6 +75,8 @@ export interface SocketDeps {
     vesktopVersion?: string;
     /** hello と pong の clock_us を読む送信側の時計 (client.ts の ClientConfig の clockUs)。省くと clock_us を入れない。 */
     clockUs?: () => number;
+    /** hello の clock_base (client.ts の ClientConfig の clockBase)。省くと clock_base を入れない。 */
+    clockBase?: "qpc";
     /**
      * 音声も捨て始める bufferedAmount (バイト)。省略したときは backpressure.ts の DEFAULT_AUDIO_CAP_BYTES。
      * 測って決めた値ではないので、変えられるようにしてある (watchdogConfig も同じ)。
@@ -197,6 +199,7 @@ export function createSocket(deps: SocketDeps, handlers: SocketHandlers): Socket
         wireVersion: deps.wireVersion,
         vesktopVersion: deps.vesktopVersion,
         clockUs: deps.clockUs,
+        clockBase: deps.clockBase,
     };
     const audioCapBytes = deps.audioCapBytes ?? DEFAULT_AUDIO_CAP_BYTES;
     const watchdogConfig = deps.watchdogConfig ?? DEFAULT_WATCHDOG_CONFIG;

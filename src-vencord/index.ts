@@ -20,7 +20,7 @@ import type {
     TrackEvent,
     TrackKind,
 } from "./adapter/types";
-import { createAudioChunker, pushAudio, type AudioChunk } from "./audio/chunk";
+import { audioOriginUs, createAudioChunker, pushAudio, type AudioChunk } from "./audio/chunk";
 import type { AudioSource } from "./audio/audio_source";
 import { createAudioTrackSource } from "./audio/track_source";
 import {
@@ -95,7 +95,9 @@ import {
     type PlayoutDiagResult,
     type PlayoutDiagState,
 } from "./encode/playout_diag";
-import { senderClockUs } from "./encode/sender_clock";
+import { pageTimebase, qpcTimebase, timebaseNowUs, type SenderTimebase } from "./encode/sender_clock";
+import { measureTicksOrigin, ticksOriginLogLine, type TicksOriginResult } from "./encode/ticks_origin";
+import { videoTimeChangeText } from "./encode/video_time";
 import { SerialGate } from "./encode/serial";
 import { createVideoTrackSource, type VideoMediaStreamTrack } from "./encode/track_source";
 import type {
@@ -175,6 +177,13 @@ const FACTS_MIN_INTERVAL_MS = 1_000; // facts は、変わったときだけ、1
  */
 const STOP_MATERIAL_WAIT_MS = 2_000;
 
+/**
+ * ページの原点の TimeTicks を求めるのを待つ上限 (ms。encode/ticks_origin.ts)。求める間は受信側と接続しないので、
+ * Vesktop のメインのプロセスが答えないときにも接続を始められるようにする。ふつうは 48 回の呼び出しで数十 ms で終わる
+ * (テスト用の送信側で、1 回の往復の中央値は 0.2 ms)。目安の値で、測って決めたものではない。
+ */
+const TICKS_ORIGIN_TIMEOUT_MS = 2_000;
+
 /* ==========================================================================
    ストリームのまとめ方 (画面共有は pcId ごと、声は userId ごと)
    ========================================================================== */
@@ -230,6 +239,19 @@ let coreState: CoreState = initialState;
 
 let socketHandle: SocketHandle | null = null;
 let encodeDeps: EncodeSessionDeps | null = null;
+
+/**
+ * 送信側の時計の決め方 (encode/sender_clock.ts)。最初の start() で、受信側と接続を始める前にページの原点の TimeTicks を
+ * 求め (encode/ticks_origin.ts)、求められたら qpc、求められなければ page に決める。決めた後は、プラグインを起動し直しても
+ * ページが続く間は変えない。ページの原点の TimeTicks はページの間変わらず、stop() の後に続く前の世代の後片付け (黒埋め用の
+ * フレーム、閉じる途中のソケットの pong) も同じ時計で値を出すためである。受信側は hello の clock_base で接続ごとに時計を
+ * 決める。
+ */
+let timebase: SenderTimebase = pageTimebase(performance);
+/** timebase を決め終えたか。 */
+let timebaseDecided = false;
+/** 送信側の時計を決めたときのログの行。接続するたびに書く (受信側の診断情報に、接続ごとに残すため)。 */
+let timebaseLogLine: string | null = null;
 
 /**
  * 録画が ON か。受信側から届く `recording` だけで変わる (受信側は、値が変わったときと接続した直後に送る)。
@@ -539,7 +561,40 @@ function resolveUserId(
  * (encode/sender_clock.ts)。
  */
 function nowUs(): bigint {
-    return senderClockUs(performance);
+    return timebaseNowUs(timebase, performance.now());
+}
+
+/**
+ * ページの原点の TimeTicks を求め、送信側の時計の決め方と、そのログの行を返す。求められなければ page にする。reject しない。
+ */
+async function decideTimebase(): Promise<{ timebase: SenderTimebase; line: string }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<TicksOriginResult>((resolve) => {
+        timer = setTimeout(
+            () => resolve({ ok: false, reason: "call-failed", brackets: undefined, ticks: undefined, clampUs: 0, detail: "timeout" }),
+            TICKS_ORIGIN_TIMEOUT_MS,
+        );
+    });
+    let result: TicksOriginResult;
+    try {
+        result = await Promise.race([
+            measureTicksOrigin({
+                nowMs: () => performance.now(),
+                readHrtimeNs: () => Native.hrtimeNs(),
+                crossOriginIsolated: self.crossOriginIsolated === true,
+            }),
+            timeout,
+        ]);
+    } catch (e) {
+        // measureTicksOrigin は reject しないが、Native の関数がない (古いビルドの native) などで同期に投げたときも、page で続ける。
+        result = { ok: false, reason: "call-failed", brackets: undefined, ticks: undefined, clampUs: 0, detail: String(e) };
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
+    return {
+        timebase: result.ok ? qpcTimebase(result.originUs) : pageTimebase(performance),
+        line: `${ticksOriginLogLine(result)} coi=${self.crossOriginIsolated === true}`,
+    };
 }
 
 function concatHeaderPayload(header: FrameHeader, payload: Uint8Array): Uint8Array {
@@ -720,6 +775,14 @@ function videoSink(entry: ScreenEntry, choice: EncodeChoice): EncodeSessionSink 
                     `after ${secondsText(Number(info.staleForUs / 1000n))}s off skipped=${info.framesSkipped}`,
             );
         },
+        onTimeMode(change, switched): void {
+            // 描く予定の時刻から今までの換算に戻ったときは、前提 (受けた画面共有のタイムスタンプは描く予定の時刻) が
+            // ストリームの途中で崩れたので、異常に関わる行にする。最初に決めたときと、描く予定の時刻に入ったときは、
+            // 出来事の行にする。
+            const line = `video time stream ${streamId}: ${videoTimeChangeText(change)}`;
+            if (switched && change.mode === "estimated") logAlert(line);
+            else log(line);
+        },
         onStage(stage, format): void {
             log(stageLogLine(streamId, stage, format, choice));
             // facts の stages に入れる。段階の変化 (最初の段階が決まったときとフォールバック) は applyEvent()
@@ -762,7 +825,7 @@ async function pumpAudio(
     onReanchor?: (shiftUs: bigint) => void,
     clockLag?: ClockLagSamples,
 ): Promise<void> {
-    let chunker = createAudioChunker();
+    let chunker = createAudioChunker(timebase);
     for (;;) {
         const block = await source.next();
         if (block === null) return; // ソースが終わった (close() された)。
@@ -772,13 +835,18 @@ async function pumpAudio(
         const before = chunker;
         const result = pushAudio(chunker, block.samples, block.mediaTimestampUs, arrivalUs);
         chunker = result.state;
+        if (before.domain === undefined && chunker.domain !== undefined) {
+            // 時刻の基準は最初の断片で決まる (audio/chunk.ts)。page と ticks は見積もりなしの換算、estimated は今までの換算。
+            const lagMs = (Number(arrivalUs - result.timeUs) / 1000).toFixed(1);
+            log(`audio time stream ${streamId}: domain=${chunker.domain} lag=${lagMs}ms`);
+        }
         if (onReanchor !== undefined && chunker.clockMap.restarts !== before.clockMap.restarts) {
             const shiftUs = reanchorShiftUs(before, chunker);
             if (shiftUs !== undefined) onReanchor(shiftUs);
         }
         if (clockLag !== undefined) addClockLag(clockLag, Number(arrivalUs - result.timeUs));
         for (const chunk of result.chunks) sendAudioChunk(streamId, chunk);
-        audioClockOriginByStreamId.set(streamId, chunker.clockMap.offsetUs);
+        audioClockOriginByStreamId.set(streamId, audioOriginUs(chunker));
         maybeLogClockOrigin(streamId, videoClockOriginByStreamId.get(streamId));
     }
 }
@@ -915,7 +983,7 @@ function startScreenVideo(
         videoClockOriginByStreamId.delete(entry.streamId);
         videoWatchByStreamId.delete(entry.streamId);
     }
-    const source = createVideoTrackSource(track as VideoMediaStreamTrack);
+    const source = createVideoTrackSource(track as VideoMediaStreamTrack, nowUs);
     // エンコードの設定は、このセッションを作る時点の値で決める (動いているセッションには適用ない)。
     const choice = encodeChoiceFromWire(currentLimitsWire);
     const session = createEncodeSession(
@@ -1871,6 +1939,7 @@ function handleEstablished(): void {
     // 初期値 (hello_ok) は、これより先に届いている。
     mediaGate?.connected();
     resendConfigure(); // 再接続した直後の受信側には configure がない。
+    if (timebaseLogLine !== null) log(timebaseLogLine); // この接続のタイムスタンプの時計 (hello の clock_base と同じ)。
     flushLog(socketHandle); // 確立した直後に、たまったログを送る。
     if (logFlushTimer !== null) clearInterval(logFlushTimer);
     logFlushTimer = setInterval(() => flushLog(socketHandle), LOG_FLUSH_INTERVAL_MS);
@@ -2041,6 +2110,42 @@ function handleKeyframeRequest(streamId: number): void {
 
 const Native = VencordNative.pluginHelpers.cordmux as PluginNative<typeof import("./native")>;
 
+/** 受信側との接続を作って始める (start() が、送信側の時計を決めた後に呼ぶ)。 */
+function startTransport(): void {
+    socketHandle = createSocket(
+        {
+            makeWebSocket: wrapWebSocket,
+            readSession: () => Native.readSession(),
+            setTimer: (fn, ms) => setTimeout(fn, ms),
+            clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+            version: WIRE_CLIENT_VERSION,
+            wireVersion: WIRE_VERSION,
+            // Vesktop のバージョン。同期の IPC なので、起動ごとに 1 回だけ読む (再接続では読み直さない)。Vesktop の
+            // バージョンは、プロセスが動いている間は変わらない。
+            vesktopVersion: readVesktopVersion(globalThis),
+            // hello と pong に載せる送信側の時計。受信側が、送信側の時計と OBS の時計の差を決めるのに使う。
+            clockUs: () => Number(nowUs()),
+            // 送信側の時計が OBS の時計と同じ QueryPerformanceCounter の us なら、hello で伝える (受信側は差を 0 にする)。
+            clockBase: timebase.base === "qpc" ? "qpc" : undefined,
+        },
+        {
+            onEstablished: handleEstablished,
+            onClosed: handleClosed,
+            onKeyframeRequest: handleKeyframeRequest,
+            onStreamCheck: handleStreamCheck,
+            onRecording: handleRecording,
+            onMedia: handleMedia,
+            onLimits: handleLimits,
+            onMainAccount: handleMainAccount,
+            onReceiveScope: handleReceiveScope,
+            onMoveToMainCall: handleMoveToMainCall,
+            onLeaveCall: handleLeaveCall,
+            onWatchdogClose: handleWatchdogClose,
+        },
+    );
+    socketHandle.start();
+}
+
 export default definePlugin({
     name: "cordmux",
     // Vencord のプラグインの一覧に表示する説明。Vencord の description は文字列 1 つで、言語ごとに分けられないので、
@@ -2110,41 +2215,27 @@ export default definePlugin({
             isConfigSupported,
             gate: new SerialGate(), // エンコーダの確保は、すべてのストリームで 1 つずつ順に行う。
             nowUs,
+            timebase,
             monotonicUs: () => performance.now() * 1000,
             makeBlackFrame,
             scaleFrame,
         };
 
-        socketHandle = createSocket(
-            {
-                makeWebSocket: wrapWebSocket,
-                readSession: () => Native.readSession(),
-                setTimer: (fn, ms) => setTimeout(fn, ms),
-                clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-                version: WIRE_CLIENT_VERSION,
-                wireVersion: WIRE_VERSION,
-                // Vesktop のバージョン。同期の IPC なので、起動ごとに 1 回だけ読む (再接続では読み直さない)。Vesktop の
-                // バージョンは、プロセスが動いている間は変わらない。
-                vesktopVersion: readVesktopVersion(globalThis),
-                // hello と pong に載せる送信側の時計。受信側が、送信側の時計と OBS の時計の差を決めるのに使う。
-                clockUs: () => Number(nowUs()),
-            },
-            {
-                onEstablished: handleEstablished,
-                onClosed: handleClosed,
-                onKeyframeRequest: handleKeyframeRequest,
-                onStreamCheck: handleStreamCheck,
-                onRecording: handleRecording,
-                onMedia: handleMedia,
-                onLimits: handleLimits,
-                onMainAccount: handleMainAccount,
-                onReceiveScope: handleReceiveScope,
-                onMoveToMainCall: handleMoveToMainCall,
-                onLeaveCall: handleLeaveCall,
-                onWatchdogClose: handleWatchdogClose,
-            },
-        );
-        socketHandle.start();
+        // 送信側の時計を決めてから、受信側と接続する (hello の clock_base と、すべてのタイムスタンプが同じ時計の上に
+        // あるように)。映像と音声の読み出しは接続した後に始まる (core/gate.ts) ので、それまでに決まっている。
+        if (timebaseDecided) {
+            startTransport(); // ページの原点の TimeTicks は、前の start() で決めたものを使い続ける。
+            return;
+        }
+        const startedEpoch = epoch;
+        void decideTimebase().then((decided) => {
+            if (epoch !== startedEpoch) return; // 待つ間に stop() か、次の start() が呼ばれた。次の start() が求め直す。
+            timebase = decided.timebase;
+            timebaseLogLine = decided.line;
+            timebaseDecided = true;
+            if (encodeDeps !== null) encodeDeps = { ...encodeDeps, timebase };
+            startTransport();
+        });
     },
 
     stop() {

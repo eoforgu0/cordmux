@@ -14,6 +14,7 @@ import {
     parseGatewayFrame,
     parseMsid,
     TRACK_HOLD_MAX_MS,
+    videoNonSenderRtt,
     TRACK_RECHECK_MS,
     VOICE_PC_ID,
 } from "../adapter/connections";
@@ -603,7 +604,7 @@ describe("閉じた gateway の記録を捨てる前に対を決めるときは�
         h.selectProtocol(x, pcX, "uf-x-local");
         h.sessionDescription(x, pcX, "uf-x-remote");
         h.track(pcX, "video", "v-x", `${ALICE}-11`);
-        expect(h.lines).toContain(`pc paired: pc=${pcX.serial} ws=${x} route=remote-ufrag role=golive pcId=2`);
+        expect(h.lines).toContain(`pc paired: pc=${pcX.serial} ws=${x} route=remote-ufrag role=golive pcId=2 rcvr_rtt=no`);
         expect(h.delivered).toEqual([{ trackId: "v-x", pcId: 2 }]);
         expect(h.lines.some((l) => l.includes("route=op2-adjacency"))).toBe(false);
     });
@@ -870,5 +871,19 @@ describe("読み取りの補助関数", () => {
         expect(parseGatewayFrame("{")).toBeNull();
         expect(parseGatewayFrame(new Uint8Array([1, 2]))).toBeNull();
         expect(parseGatewayFrame(JSON.stringify({ op: 5 }))).toBeNull();
+    });
+});
+
+describe("videoNonSenderRtt", () => {
+    it("映像の m 行に rcvr-rtt か rrtr があれば true、なければ false、文字列でなければ null", () => {
+        const head = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
+        const audio = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtcp-xr:rcvr-rtt=all\r\n";
+        const video = "m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtcp-fb:96 nack\r\na=rtcp-fb:96 nack pli\r\n";
+        expect(videoNonSenderRtt(head + video)).toBe(false);
+        // 音声の m 行にあっても、映像の m 行になければ false。
+        expect(videoNonSenderRtt(head + audio + video)).toBe(false);
+        expect(videoNonSenderRtt(head + video + "a=rtcp-xr:rcvr-rtt=all\r\n")).toBe(true);
+        expect(videoNonSenderRtt(head + video + "a=rtcp-fb:96 rrtr\r\n")).toBe(true);
+        expect(videoNonSenderRtt(null)).toBeNull();
     });
 });

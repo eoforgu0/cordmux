@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 import { FrameType } from "../core/wire";
 import type { VideoFrameSource } from "../encode/frame_source";
 import { type SourceFormat, LadderStage, codecStringForResolution } from "../encode/ladder";
+import { qpcTimebase } from "../encode/sender_clock";
 import { SerialGate } from "../encode/serial";
+import type { VideoTimeChange } from "../encode/video_time";
 import {
     createEncodeSession,
     type ClockReanchorInfo,
@@ -438,6 +440,154 @@ describe("createEncodeSession: タイムスタンプはメディアのタイム�
         expect(records).toHaveLength(0);
         expect(stages[stages.length - 1]).toBe(LadderStage.Unavailable); // Unavailable を伝えてから止まる。
 
+        session.stop();
+    });
+});
+
+describe("createEncodeSession: 送信側の時計が qpc なら、描く予定の時刻のタイムスタンプをそのまま送る", () => {
+    const TICKS_ORIGIN_US = 269_692_077_700n;
+
+    it("描く予定の時刻 (読んだ時刻より先) のフレームは、VideoFrame.timestamp をそのまま送り、方法を 1 回だけ伝える", async () => {
+        // 読んだ時刻 (送信側の時計 = TimeTicks) は、描く予定の時刻の 12 ms 前。2 フレーム目は詰まりで 40 ms 遅れた。
+        const media = [300_000_000_000, 300_000_016_667, 300_000_033_334];
+        const arrivals = [299_999_988_000n, 300_000_056_667n, 300_000_021_334n];
+        let arrivalIndex = 0;
+        const base = createFakeDeps();
+        const deps: EncodeSessionDeps = {
+            ...base.deps,
+            nowUs: () => arrivals[Math.min(arrivalIndex++, arrivals.length - 1)] as bigint,
+            timebase: qpcTimebase(TICKS_ORIGIN_US),
+        };
+        const { source, push } = createFakeSource(SOURCE_FORMAT);
+        const recording = createRecordingSink();
+        const modes: Array<{ change: VideoTimeChange; switched: boolean }> = [];
+        const sink: EncodeSessionSink = { ...recording.sink, onTimeMode: (change, switched) => modes.push({ change, switched }) };
+        const closedLog: number[] = [];
+        const session = createEncodeSession(deps, makeParams(source, { warmup: false }), sink);
+
+        push(makeVideoFrame(media[0] as number, closedLog));
+        await session.start();
+        await flushMicrotasks();
+        for (const m of media.slice(1)) {
+            push(makeVideoFrame(m, closedLog));
+            await flushMicrotasks();
+        }
+
+        expect(recording.records.map((r) => r.header.timestampUs)).toEqual(media.map((m) => BigInt(m)));
+        expect(modes).toEqual([{ change: { mode: "exact", reason: "render-time", leadUs: 12_000n }, switched: false }]);
+        expect(session.stats().timeMode).toBe("exact");
+        expect(session.stats().timeModeSwitches).toBe(0);
+        expect(session.clockOriginUs()).toBe(0n);
+        session.stop();
+    });
+
+    it("途中で描く予定の時刻でなくなって今までの換算に戻ったら、そのフレームをキーフレームにする", async () => {
+        // 10 フレームは描く予定の時刻、その後は取り込みの時刻 (先行 -25 ms) が 1 秒より長く続く。
+        const media: number[] = [];
+        const arrivals: bigint[] = [];
+        for (let i = 0; i < 10; i++) {
+            const m = 300_000_000_000 + i * 16_667;
+            media.push(m);
+            arrivals.push(BigInt(m) - 12_000n);
+        }
+        for (let i = 0; i < 70; i++) {
+            const m = 300_000_000_000 + (10 + i) * 16_667 - 26_000;
+            media.push(m);
+            arrivals.push(BigInt(m) + 25_000n);
+        }
+        let arrivalIndex = 0;
+        const base = createFakeDeps();
+        const deps: EncodeSessionDeps = {
+            ...base.deps,
+            nowUs: () => arrivals[Math.min(arrivalIndex++, arrivals.length - 1)] as bigint,
+            timebase: qpcTimebase(TICKS_ORIGIN_US),
+        };
+        const { source, push } = createFakeSource(SOURCE_FORMAT);
+        const recording = createRecordingSink();
+        const modes: Array<{ change: VideoTimeChange; switched: boolean }> = [];
+        const sink: EncodeSessionSink = { ...recording.sink, onTimeMode: (change, switched) => modes.push({ change, switched }) };
+        const closedLog: number[] = [];
+        const session = createEncodeSession(deps, makeParams(source, { warmup: false }), sink);
+
+        push(makeVideoFrame(media[0] as number, closedLog));
+        await session.start();
+        await flushMicrotasks();
+        for (const m of media.slice(1)) {
+            push(makeVideoFrame(m, closedLog));
+            await flushMicrotasks();
+        }
+
+        expect(modes.map((m) => [m.change.mode, m.switched])).toEqual([
+            ["exact", false],
+            ["estimated", true],
+        ]);
+        expect(modes[1]?.change.reason).toBe("not-render-time");
+        const records = realFrames(recording.records);
+        const exitIndex = records.findIndex((r, i) => i > 0 && r.header.timestampUs !== BigInt(media[i] as number));
+        expect(exitIndex).toBeGreaterThan(10);
+        // 動きは 1 秒より小さい (取り込みの時刻から読んだ時刻への 25 ms 余り) ので、キーフレームにはしない。
+        expect(records[exitIndex]?.header.flags.keyframe).toBe(false);
+        // 戻った最初のフレームの時刻は、そのフレームを読んだ時刻 (作り直した clock_map の最初の差)。
+        expect(records[exitIndex]?.header.timestampUs).toBe(arrivals[exitIndex]);
+        expect(session.stats().timeModeSwitches).toBe(1);
+        session.stop();
+    });
+});
+
+describe("createEncodeSession: 元から読んだ時刻で見分け、黒埋め用のフレームは送った映像より後に置く", () => {
+    const TICKS_ORIGIN_US = 269_692_077_700n;
+
+    it("エンコードが詰まって next() が遅れても、元から読んだ時刻 (takeReadAtUs) で先行を測り、正確な換算をやめない", async () => {
+        // 描く予定の時刻の 12 ms 前に元から読んだが、エンコードの詰まりで next() は 40 ms 後に返る列 (100 フレーム、1.6 秒)。
+        const media: number[] = [];
+        for (let i = 0; i < 100; i++) media.push(300_000_000_000 + i * 16_667);
+        let index = 0;
+        const base = createFakeDeps();
+        const deps: EncodeSessionDeps = {
+            ...base.deps,
+            nowUs: () => BigInt(media[Math.min(index, media.length - 1)] as number) + 40_000n,
+            timebase: qpcTimebase(TICKS_ORIGIN_US),
+        };
+        const fake = createFakeSource(SOURCE_FORMAT);
+        const source = {
+            ...fake.source,
+            takeReadAtUs: (): bigint => BigInt(media[Math.min(index++, media.length - 1)] as number) - 12_000n,
+        };
+        const recording = createRecordingSink();
+        const modes: Array<{ change: VideoTimeChange; switched: boolean }> = [];
+        const sink: EncodeSessionSink = { ...recording.sink, onTimeMode: (change, switched) => modes.push({ change, switched }) };
+        const closedLog: number[] = [];
+        const session = createEncodeSession(deps, makeParams(source, { warmup: false }), sink);
+        fake.push(makeVideoFrame(media[0] as number, closedLog));
+        await session.start();
+        await flushMicrotasks();
+        for (const m of media.slice(1)) {
+            fake.push(makeVideoFrame(m, closedLog));
+            await flushMicrotasks();
+        }
+        expect(modes).toHaveLength(1);
+        expect(modes[0]?.change.mode).toBe("exact");
+        expect(realFrames(recording.records).map((r) => r.header.timestampUs)).toEqual(media.map((m) => BigInt(m)));
+        session.stop();
+    });
+
+    it("黒埋め用のフレームの原点は、今の時計が送った映像のタイムスタンプより前でも、その後にする", async () => {
+        // 描く予定の時刻が読んだ時刻より 150 ms 先のフレームを送った後に、録画を ON にする。
+        const base = createFakeDeps();
+        const nowRef = { us: 300_000_000_000n - 150_000n };
+        const deps: EncodeSessionDeps = { ...base.deps, nowUs: () => nowRef.us, timebase: qpcTimebase(TICKS_ORIGIN_US) };
+        const { source, push } = createFakeSource(SOURCE_FORMAT);
+        const recording = createRecordingSink();
+        const closedLog: number[] = [];
+        const session = createEncodeSession(deps, makeParams(source, { warmup: false }), recording.sink);
+        push(makeVideoFrame(300_000_000_000, closedLog));
+        await session.start();
+        await flushMicrotasks();
+        session.setRecording(true);
+        await flushMicrotasks(200);
+        const material = materialFrames(recording.records);
+        expect(material.length).toBeGreaterThan(0);
+        expect((material[0] as SinkRecord).header.timestampUs > 300_000_000_000n).toBe(true);
         session.stop();
     });
 });

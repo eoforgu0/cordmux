@@ -109,6 +109,23 @@ describe("established: ping に pong を返す", () => {
         expect(decodeSentText(pong.effects)).toEqual({ type: "pong", seq: 9, clock_us: 1_700_000_000_000_001 });
     });
 
+    it("clockBase を渡すと hello に clock_base を入れ、pong には入れない", () => {
+        const config: ClientConfig = { ...CONFIG, clockUs: () => 264_017_591_900, clockBase: "qpc" };
+        const connecting: ClientState = { phase: "connecting", failureCount: 0 };
+        const hello = transition(config, connecting, { kind: "connected", session: { secret: SECRET } });
+        expect(decodeSentText(hello.effects)).toEqual({
+            type: "hello",
+            version: CONFIG.version,
+            secret: SECRET,
+            wire: CONFIG.wireVersion,
+            clock_base: "qpc",
+            clock_us: 264_017_591_900,
+        });
+        const established: ClientState = { phase: "established", failureCount: 0 };
+        const pong = transition(config, established, { kind: "message", message: { type: "ping", seq: 2 } });
+        expect(decodeSentText(pong.effects)).toEqual({ type: "pong", seq: 2, clock_us: 264_017_591_900 });
+    });
+
     it("ping のほかの制御用の JSON (configure など) では、この状態機械は何もしない", () => {
         const established: ClientState = { phase: "established", failureCount: 0 };
         const result = transition(CONFIG, established, {

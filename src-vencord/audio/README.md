@@ -14,6 +14,6 @@ Discord の DAVE (エンドツーエンドの暗号化) が WebRTC のレシー�
 
 ## 依存
 
-- `chunk.ts` は、メディアのタイムスタンプを送信側の時計に換算するのに `encode/clock_map.ts` を使う (映像と同じ規則)。
+- `chunk.ts` は、メディアのタイムスタンプ (`AudioData.timestamp`) を送信側の時計にする。トラックの最初の断片で、タイムスタンプがページの原点からの値か TimeTicks の値かを決め、送信側の時計の決め方 (`encode/sender_clock.ts` の `SenderTimebase`) から見積もりなしに換算する。どちらでもないときと、決め方を渡さないときは、`encode/clock_map.ts` で換算する (映像の見積もりの換算と同じ規則)。
 - `track_source.ts` はブラウザーの実行時にしかない API を使うので、リポジトリのルートの tsc の対象から外している (`tsconfig.json` の `exclude`)。`tests/audio_track_source.test.ts` は、`MediaStreamTrackProcessor` を `vi.stubGlobal` でテスト用の実装に置き換えてテストする。
 - どのファイルも Vencord を import しない。

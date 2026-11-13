@@ -69,6 +69,14 @@ describe("正しい形のメッセージが往復する", () => {
         ).toEqual({ type: "hello", version: "0.1.0", secret: "s", wire: 1 });
     });
 
+    it("hello の clock_base は文字列なら往復し、文字列でなければそのキーだけを捨てる", () => {
+        const hello: ControlMessage = { type: "hello", version: "0.1.0", secret: "s", wire: 1, clock_base: "qpc" };
+        expect(roundTrip(hello)).toEqual(hello);
+        expect(
+            decodeControlMessage(JSON.stringify({ type: "hello", version: "0.1.0", secret: "s", wire: 1, clock_base: 1 })),
+        ).toEqual({ type: "hello", version: "0.1.0", secret: "s", wire: 1 });
+    });
+
     it("configure が往復する (voice のストリームにも width、height、fps を付けられる)", () => {
         const message: ControlMessage = {
             type: "configure",

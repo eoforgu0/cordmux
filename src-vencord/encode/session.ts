@@ -10,7 +10,16 @@ import type { FrameHeader } from "../core/wire";
 import { FrameType } from "../core/wire";
 import { applyParameterSetInsurance, NO_PARAMETER_SETS, type ParameterSets } from "./annexb";
 import { addClockLag, createClockLagSamples, takeClockLagSummary, type ClockLagSummary } from "./clock_lag";
-import { createClockMap, mapMediaTime, type ClockMapResult, type ClockMapState } from "./clock_map";
+import type { SenderTimebase } from "./sender_clock";
+import {
+    createVideoTime,
+    mapVideoTime,
+    videoTimeOriginUs,
+    type VideoTimeChange,
+    type VideoTimeMode,
+    type VideoTimeResult,
+    type VideoTimeState,
+} from "./video_time";
 import {
     type ActiveLadderStage,
     type EncoderTarget,
@@ -53,6 +62,12 @@ export interface EncodeSessionDeps {
     gate: SerialGate;
     /** 送信側の時計の今 (us。encode/sender_clock.ts。docs/wire_format.md の「timestamp_us」)。 */
     nowUs(): bigint;
+    /**
+     * 送信側の時計の決め方 (encode/sender_clock.ts)。nowUs と同じ時計を表す。qpc なら、受けた映像のタイムスタンプが
+     * 描く予定の時刻のときに、見積もりなしに換算する (encode/video_time.ts)。省くと、今までの換算 (encode/clock_map.ts)
+     * だけを使う。
+     */
+    timebase?: SenderTimebase;
     /**
      * 単調に進む時計 (us)。エンコーダに渡してから出力が出るまでと、出力を受け取ってから送るまでの所要時間を測る
      * (encode/latency_span.ts)。差を取るだけなので、原点は何でもよい。省くと、この 2 つの所要時間は測らない。
@@ -141,6 +156,11 @@ export interface EncodeSessionSink {
      * 決め直したときに呼ぶ (encode/clock_map.ts の CLOCK_MAP_JUMP_CONFIRM_US)。呼び出し元はログに書く。省いてよい。
      */
     onClockReanchor?(info: ClockReanchorInfo): void;
+    /**
+     * 映像のタイムスタンプの換算の方法を決めたとき (最初のフレーム) と替えたときに呼ぶ (encode/video_time.ts)。switched は
+     * 替えたとき真。呼び出し元はログに書く。省いてよい。
+     */
+    onTimeMode?(change: VideoTimeChange, switched: boolean): void;
 }
 
 /** 換算の定数を決め直したときの値 (EncodeSessionSink の onClockReanchor)。 */
@@ -168,6 +188,10 @@ export interface EncodeSessionStats {
      * いなければ undefined。
      */
     readonly clockOriginUs: bigint | undefined;
+    /** 今の映像のタイムスタンプの換算の方法 (encode/video_time.ts)。まだ 1 フレームも換算していなければ undefined。 */
+    readonly timeMode: VideoTimeMode | undefined;
+    /** 換算の方法を替えた回数 (最初に決めた分は数えない)。 */
+    readonly timeModeSwitches: number;
     /** 録画専用のフラグを付けて送った黒埋め用のフレームの数 (3 つのタイミングの合計)。 */
     readonly recordingMaterialFramesSent: number;
     /** 黒埋め用のフレームを作ろうとして失敗した回数 (失敗しても、その段階はやめない)。 */
@@ -477,9 +501,14 @@ export function createEncodeSession(
     const latencySpan: EncodeLatencySpan = createEncodeLatencySpan();
     // 読み出した時刻 - 換算したタイムスタンプ の値 (takeClockLag が取り出して空に戻す)。
     const clockLag = createClockLagSamples();
-    // メディアの時計と送信側の時計の対応。フォールバックでエンコーダが替わっても、フレームの読み出し元 (source) と
-    // メディアの時計は同じなので、作り直さない。
-    let clockMap: ClockMapState = createClockMap();
+    // メディアの時計と送信側の時計の対応 (encode/video_time.ts)。フォールバックでエンコーダが替わっても、フレームの
+    // 読み出し元 (source) とメディアの時計は同じなので、作り直さない。
+    let videoTime: VideoTimeState = createVideoTime();
+    // これまでに換算した実際のフレームのタイムスタンプの最大 (送信側の時計の us)。黒埋め用のフレームの原点をこれより
+    // 後にする (描く予定の時刻は今より先にあるので、今の時計だけでは送った映像より前に戻りうる)。
+    let lastMappedUs: bigint | undefined;
+    // 送信側の時計の決め方。省かれたら page とし、今までの換算だけを使う (page では原点の値を使わない)。
+    const timebase: SenderTimebase = deps.timebase ?? { base: "page", pageOriginUs: 0n };
     // 続けて遅すぎるとして捨てたフレームの数 (定数を決め直したときに ClockReanchorInfo に入れる)。遅すぎないフレームで 0 に戻す。
     let staleSkipped = 0;
 
@@ -491,6 +520,8 @@ export function createEncodeSession(
         warmupFramesSent: 0,
         framesSkippedStale: 0,
         clockReanchors: 0,
+        timeMode: undefined as VideoTimeMode | undefined,
+        timeModeSwitches: 0,
         recordingMaterialFramesSent: 0,
         recordingMaterialFailures: 0,
         spsPpsPrependedCount: 0,
@@ -633,7 +664,9 @@ export function createEncodeSession(
         return {
             handle,
             beginMaterial(): void {
-                materialOriginUs = deps.nowUs();
+                // 今の時計と、これまでに換算した実際のフレームより後のどちらか遅いほう。
+                const nowUs = deps.nowUs();
+                materialOriginUs = lastMappedUs !== undefined && lastMappedUs >= nowUs ? lastMappedUs + 1n : nowUs;
                 materialHeld = [];
             },
             endMaterial(deliver: boolean): void {
@@ -929,21 +962,41 @@ export function createEncodeSession(
             }
             if (frame === null) return; // フレームがもう来ない
 
-            // タイムスタンプは、取り出した時刻 (arrivalUs) ではなく、メディアのタイムスタンプ (frame.timestamp) を
-            // clock_map で送信側の時計に換算した値にする (音声と同じ規則)。fpsDivisor で捨てるフレームも換算には使う
-            // (定数を決める期間に見る到着が多いほど、定数が取り出しの遅れの少ない値に近づくため)。
+            // タイムスタンプは、取り出した時刻 (arrivalUs) ではなく、メディアのタイムスタンプ (frame.timestamp) を送信側の
+            // 時計にした値にする (音声と同じ規則)。描く予定の時刻なら見積もりなしに、そうでなければ clock_map で換算する
+            // (encode/video_time.ts)。fpsDivisor で捨てるフレームも換算には使う (方法の見分けと、定数を決める期間に見る
+            // 到着が多いほど、定数が取り出しの遅れの少ない値に近づくため)。
+            // 換算の方法の見分けと見積もりの定数には、フレームを元から読んだ時刻 (readUs) を使う。source は最新の 1 枚を
+            // 持って待たせるので、エンコードが詰まると next() が返る時刻 (arrivalUs) は遅れ、描く予定の時刻のフレームでも
+            // 先行が小さく見える。古いフレームを捨てるか (STALE_FRAME_SKIP_US) と遅れの統計には、エンコードに渡せる
+            // 時刻である arrivalUs を使う。
             const arrivalUs = deps.nowUs();
-            let mapped: ClockMapResult;
+            const readUs = params.source.takeReadAtUs?.() ?? arrivalUs;
+            let mapped: VideoTimeResult;
             try {
-                mapped = mapMediaTime(clockMap, frame.timestamp, arrivalUs);
+                mapped = mapVideoTime(videoTime, timebase, frame.timestamp, readUs);
             } catch (e) {
-                // メディアのタイムスタンプが有限でなければ、mapMediaTime は例外を投げる。そのときも VideoFrame を
+                // メディアのタイムスタンプが有限でなければ、mapVideoTime は例外を投げる。そのときも VideoFrame を
                 // 残さない (close してから投げ直す)。この例外の行き先 (start() の catch が Unavailable を伝える)
                 // は変えない。
                 frame.close();
                 throw e;
             }
-            clockMap = mapped.state;
+            const switched = mapped.change !== undefined && videoTime.mode !== undefined;
+            videoTime = mapped.state;
+            if (mapped.change !== undefined) {
+                stats.timeMode = mapped.change.mode;
+                if (switched) stats.timeModeSwitches++;
+                // 方法を替えると、タイムスタンプが前のフレームから不連続に動く。動きが 1 秒以上なら、不連続で定数を
+                // 決め直したとき (下) と同じく、次にエンコードするフレームをキーフレームにする (受信側の録画は 1 秒以上の
+                // 進みか戻りでセグメントを閉じる)。1 秒より小さい動きは、録画も整列もセグメントを閉じずに吸う。
+                if (switched && lastMappedUs !== undefined) {
+                    const jumpUs = mapped.timeUs - lastMappedUs;
+                    if (jumpUs >= 1_000_000n || jumpUs <= -1_000_000n) keyframeRequested = true;
+                }
+                sink.onTimeMode?.(mapped.change, switched);
+            }
+            if (lastMappedUs === undefined || mapped.timeUs > lastMappedUs) lastMappedUs = mapped.timeUs;
             // 読み出しの遅れ (latency_span.ts の read)。捨てるフレームも、間引くフレームも数える。
             addDuration(latencySpan.read, Number(arrivalUs - mapped.timeUs));
             // 同じ差を、負の値も残して、パーセンタイルのために足す (encode/clock_lag.ts)。
@@ -1161,7 +1214,7 @@ export function createEncodeSession(
         },
 
         stats(): EncodeSessionStats {
-            return { ...stats, clockOriginUs: clockMap.offsetUs };
+            return { ...stats, clockOriginUs: videoTimeOriginUs(videoTime) };
         },
 
         takeLatencySpan(): EncodeLatencySpan {
@@ -1180,7 +1233,7 @@ export function createEncodeSession(
         },
 
         clockOriginUs(): bigint | undefined {
-            return clockMap.offsetUs;
+            return videoTimeOriginUs(videoTime);
         },
 
         spsPpsPrependedCount(): number {

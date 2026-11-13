@@ -56,7 +56,7 @@ const FALLBACK_FORMAT: SourceFormat = { width: 1280, height: 720, fps: 30 };
  * width、height、frameRate は、作ったときに 1 回だけ getSettings() から読む (VideoFrameSource の format の約束)。
  * 画面共有の途中で解像度が変わっても、format は変わらない。
  */
-export function createVideoTrackSource(track: VideoMediaStreamTrack): VideoFrameSource {
+export function createVideoTrackSource(track: VideoMediaStreamTrack, nowUs?: () => bigint): VideoFrameSource {
     const processor = new MediaStreamTrackProcessor({ track });
     const reader = processor.readable.getReader();
 
@@ -69,17 +69,21 @@ export function createVideoTrackSource(track: VideoMediaStreamTrack): VideoFrame
 
     let closed = false;
     let held: VideoFrame | undefined; // まだ渡していない最新の 1 枚
+    let heldReadUs: bigint | undefined; // held を MediaStreamTrackProcessor から読んだ時刻
+    let lastReadUs: bigint | undefined; // 最後に next() で渡したフレームを読んだ時刻 (takeReadAtUs)
     let waiter: ((frame: VideoFrame | null) => void) | undefined; // next() が待っている間の resolve
 
-    function deliver(frame: VideoFrame | null): void {
+    function deliver(frame: VideoFrame | null, readUs: bigint | undefined): void {
         if (waiter) {
             const resolve = waiter;
             waiter = undefined;
+            lastReadUs = readUs;
             resolve(frame);
             return;
         }
         if (frame && held) held.close(); // 前の 1 枚を渡す前に次が来た。古いほうを捨てる。
         held = frame ?? undefined;
+        heldReadUs = readUs;
     }
 
     // バックグラウンドで読み続け、まだ渡していない最新の 1 枚だけを残す。
@@ -93,15 +97,17 @@ export function createVideoTrackSource(track: VideoMediaStreamTrack): VideoFrame
                 }
                 if (result.done || result.value === undefined) {
                     closed = true;
-                    deliver(null);
+                    deliver(null, undefined);
                     return;
                 }
-                deliver(result.value);
+                // 読んだ時刻は、フレームを受け取った最も早い時点で測る。エンコードが詰まって next() が遅れても、
+                // その待ちを入れない (encode/video_time.ts の先行の見分けに使う)。
+                deliver(result.value, nowUs?.());
             }
         } catch {
             // reader.read() が失敗した (トラックが異常終了した、など)。フレームの供給を終える。
             closed = true;
-            deliver(null);
+            deliver(null, undefined);
         }
     })();
 
@@ -112,11 +118,18 @@ export function createVideoTrackSource(track: VideoMediaStreamTrack): VideoFrame
             if (held !== undefined) {
                 const frame = held;
                 held = undefined;
+                lastReadUs = heldReadUs;
+                heldReadUs = undefined;
                 return Promise.resolve(frame);
             }
             return new Promise((resolve) => {
                 waiter = resolve;
             });
+        },
+        takeReadAtUs(): bigint | undefined {
+            const readUs = lastReadUs;
+            lastReadUs = undefined;
+            return readUs;
         },
         close(): void {
             if (closed) return;

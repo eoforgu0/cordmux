@@ -32,6 +32,11 @@ export interface ClientConfig {
      * 扱い」)。省いたときは clock_us を入れない。
      */
     readonly clockUs?: () => number;
+    /**
+     * 送信側の時計の種類 (encode/sender_clock.ts)。"qpc" なら hello の clock_base に入れ、受信側は送信側の時計を OBS の時計と
+     * 同じ値として扱う (docs/wire_format.md の「hello の扱い」)。省いたときは clock_base を入れない (受信側は差を決める)。
+     */
+    readonly clockBase?: "qpc";
     /** handshaking のタイムアウト (ms)。省略したときは DEFAULT_HANDSHAKE_TIMEOUT_MS。 */
     readonly handshakeTimeoutMs?: number;
 }
@@ -102,6 +107,7 @@ function buildHello(config: ClientConfig, session: Session): ClientEffect {
     // 省略できるキーは、値があるときだけ入れる (値が undefined のキーを作らない)。
     if (config.vesktopVersion !== undefined) message.vesktop = config.vesktopVersion;
     // 時計は送る直前に読む (読んでから送るまでの時間が短いほど、受信側の差の見積もりに入る遅れが小さい)。
+    if (config.clockBase !== undefined) message.clock_base = config.clockBase;
     if (config.clockUs !== undefined) message.clock_us = config.clockUs();
     return { kind: "send", text: encodeControlMessage(message) };
 }

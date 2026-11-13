@@ -81,7 +81,16 @@ export type StreamCheckOutcome = "restarted" | "superseded" | "not_receiving" | 
  * 増えても読めるように、文字列のまま受け取る。facts の中身は受信側が読む値なので、送信側では形を確認しない。
  */
 export type ControlMessage =
-    | { type: "hello"; version: string; secret: string; wire: number; vesktop?: string; clock_us?: number }
+    | {
+          type: "hello";
+          version: string;
+          secret: string;
+          wire: number;
+          vesktop?: string;
+          clock_us?: number;
+          /** 送信側の時計の種類。今の値は "qpc" だけで、知らない値は受け取った側がないものとして扱う。 */
+          clock_base?: string;
+      }
     | { type: "hello_ok"; wire: number; version: string; media?: boolean; limits?: LimitsFields }
     | { type: "hello_ng"; reason: string }
     | { type: "ping"; seq: number }
@@ -230,6 +239,9 @@ export function validateControlMessage(value: unknown): ControlMessage | undefin
                 if (typeof value.vesktop === "string") hello.vesktop = value.vesktop;
                 // clock_us も省略できる。0 以上の安全な整数でなければ、このキーだけをないものとして扱う (vesktop と同じ)。
                 if (isClockUs(value.clock_us)) hello.clock_us = value.clock_us;
+                // clock_base も省略できる。文字列でなければ、このキーだけをないものとして扱う。値の意味は受信側が決める
+                // (知らない値は、ないものとして扱う)。
+                if (typeof value.clock_base === "string") hello.clock_base = value.clock_base;
                 return hello;
             }
             return undefined;

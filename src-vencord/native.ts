@@ -62,3 +62,12 @@ export async function readSession(_: IpcMainInvokeEvent): Promise<{ port: number
 
     return { port: raw.port, secret: raw.secret };
 }
+
+/**
+ * このプロセスの process.hrtime.bigint() (ns) を 10 進の文字列で返す。Windows では QueryPerformanceCounter から作る値で、
+ * レンダラーは performance.now() でこの呼び出しをはさみ、ページの原点の TimeTicks を求める (encode/ticks_origin.ts)。
+ * 文字列にするのは、IPC とレンダラーへの受け渡しで bigint を使わないためである。
+ */
+export function hrtimeNs(_: IpcMainInvokeEvent): string {
+    return process.hrtime.bigint().toString();
+}

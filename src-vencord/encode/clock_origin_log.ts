@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// ストリームごとに、映像と音声のタイムスタンプの原点 (encode/clock_map.ts の offsetUs) とその差を、送信側の
-// ログに 1 行書くかを決める純粋関数 (clockOriginLogLine)。映像 (encode/session.ts) と音声 (audio/chunk.ts) は
-// 原点を別々に持つ。同じストリームの 2 つの原点が食い違うと映像と音声がずれるので、それをログから読めるように
-// する。状態は呼び出し元 (index.ts) がストリームごとに持つ。
+// ストリームごとに、映像と音声のタイムスタンプの原点 (送信側の時計 - メディアのタイムスタンプ。encode/video_time.ts の
+// videoTimeOriginUs と audio/chunk.ts の audioOriginUs) とその差を、送信側のログに 1 行書くかを決める純粋関数
+// (clockOriginLogLine)。映像 (encode/session.ts) と音声 (audio/chunk.ts) は原点を別々に持つ。見積もりの換算
+// (encode/clock_map.ts の offsetUs) で 2 つの原点が食い違うと映像と音声がずれるので、それをログから読めるようにする。
+// 見積もりなしの換算では、原点は送信側の時計の決め方から決まる定数 (送信側の時計が qpc なら、映像は 0、音声はページの
+// 原点の TimeTicks) で、差は 1 度だけ書かれる。状態は呼び出し元 (index.ts) がストリームごとに持つ。
 //
 // 書く行は 2 種類に分ける。原点が初めて決まったときと、差が大きく動いたときは出来事の行にする。受信側は出来事の行を
 // 通話の全体に残す (discord.log) ので、ずれたと言われた後でも原因を追える。それ以外の細かい変化は統計の行にする。

@@ -89,6 +89,22 @@ export function extractIceUfrag(sdp: unknown): string | null {
     return m?.[1] ?? null;
 }
 
+/**
+ * SDP の映像の m 行に、受けるだけの側も往復の時間を測る指定 (標準の a=rtcp-xr の rcvr-rtt と、古い a=rtcp-fb:<番号> rrtr)
+ * があるか。相手の SDP にこれがあると、WebRTC は送らない側でも往復の時間を測り、受けた映像のタイムスタンプが、描く予定の
+ * 時刻から送った人の取り込みの時刻に変わる (encode/video_time.ts)。読むだけで、SDP の中身はログに書かない。文字列でなければ
+ * null。
+ */
+export function videoNonSenderRtt(sdp: unknown): boolean | null {
+    if (typeof sdp !== "string") return null;
+    let inVideo = false;
+    for (const line of sdp.split(/\r?\n/)) {
+        if (line.startsWith("m=")) inVideo = line.startsWith("m=video");
+        else if (inVideo && (/^a=rtcp-xr:.*rcvr-rtt/.test(line) || /^a=rtcp-fb:\S+ rrtr\b/.test(line))) return true;
+    }
+    return false;
+}
+
 const MSID_RE = /^(\d{15,22})-(\d{1,10})$/;
 
 /** トラックの msid ("<userId>-<ssrc>"。確認した通話では、どのトラックもこの形だった) を読む。形が違えば null。 */
@@ -915,7 +931,13 @@ export class ConnectionTracker {
             pc.callSession = chosen.callSession;
         }
         chosen.paired = true;
-        this.#log(`pc paired: pc=${pc.serial} ws=${chosen.serial} route=${route} role=${chosen.role} pcId=${chosen.pcId}`);
+        // rcvr_rtt は、相手の SDP が受けるだけの側にも往復の時間を測らせるか (videoNonSenderRtt)。Discord の画面共有の
+        // 映像のタイムスタンプが描く予定の時刻になる前提を、実際の通話のログで確かめるために書く。
+        const rcvrRtt = videoNonSenderRtt(desc.remote);
+        this.#log(
+            `pc paired: pc=${pc.serial} ws=${chosen.serial} route=${route} role=${chosen.role} pcId=${chosen.pcId} ` +
+                `rcvr_rtt=${rcvrRtt === null ? "unknown" : rcvrRtt ? "yes" : "no"}`,
+        );
         return true;
     }
 

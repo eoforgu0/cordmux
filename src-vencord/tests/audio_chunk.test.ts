@@ -6,8 +6,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { AUDIO_CHANNELS, AUDIO_SAMPLES_PER_CHUNK, createAudioChunker, pushAudio } from "../audio/chunk";
+import {
+    AUDIO_CHANNELS,
+    AUDIO_SAMPLES_PER_CHUNK,
+    audioOriginUs,
+    audioTimeDomain,
+    createAudioChunker,
+    pushAudio,
+} from "../audio/chunk";
 import { createClockMap } from "../encode/clock_map";
+import { pageTimebase, qpcTimebase } from "../encode/sender_clock";
 
 const FRAME_SAMPLES = AUDIO_SAMPLES_PER_CHUNK * AUDIO_CHANNELS; // 1 チャンク分のインターリーブの長さ (960)
 const CHUNK_US = 10_000n; // 480 サンプル = 10 ms
@@ -39,7 +47,86 @@ describe("createAudioChunker", () => {
             pending: new Float32Array(0),
             pendingTimeUs: undefined,
             clockMap: createClockMap(),
+            timebase: undefined,
+            domain: undefined,
         });
+    });
+});
+
+describe("pushAudio: 時刻の基準 (送信側の時計の決め方を渡したとき)", () => {
+    /** ページの原点の TimeTicks (テスト用の送信側の試しの値) と、performance.timeOrigin (us)。 */
+    const TICKS_ORIGIN_US = 269_692_077_700n;
+    const TIME_ORIGIN_US = 1_794_285_743_088_000n + TICKS_ORIGIN_US;
+
+    it("qpc で、タイムスタンプがページの原点からの値なら、ページの原点の TimeTicks を足した値をそのまま使う (見積もりなし)", () => {
+        const timebase = qpcTimebase(TICKS_ORIGIN_US);
+        let state = createAudioChunker(timebase);
+        const stamps: bigint[] = [];
+        // 読むのが 0.1 ms から 30 ms 遅れても (試しの記録の最大 30.5 ms)、時刻は取り出した時刻のまま。
+        const lags = [100n, 30_000n, 200n, 0n, 5_000n];
+        lags.forEach((lag, i) => {
+            const pageUs = 60_000_000 + i * 10_000; // AudioData.timestamp
+            const result = pushAudio(state, makeSamples(FRAME_SAMPLES), pageUs, TICKS_ORIGIN_US + BigInt(pageUs) + lag);
+            state = result.state;
+            expect(result.timeUs).toBe(TICKS_ORIGIN_US + BigInt(pageUs));
+            for (const chunk of result.chunks) stamps.push(chunk.timestampUs);
+        });
+        expect(state.domain).toBe("page");
+        expect(stamps).toEqual(lags.map((_, i) => TICKS_ORIGIN_US + 60_000_000n + BigInt(i) * CHUNK_US));
+        expect(state.clockMap).toEqual(createClockMap()); // 見積もりの換算は使わない
+        expect(audioOriginUs(state)).toBe(TICKS_ORIGIN_US);
+    });
+
+    it("page で、タイムスタンプがページの原点からの値なら、performance.timeOrigin を足す", () => {
+        const timebase = pageTimebase({ timeOrigin: Number(TIME_ORIGIN_US) / 1000 });
+        const pageUs = 12_345_000;
+        const result = pushAudio(
+            createAudioChunker(timebase),
+            makeSamples(FRAME_SAMPLES),
+            pageUs,
+            TIME_ORIGIN_US + BigInt(pageUs) + 300n,
+        );
+        expect(result.state.domain).toBe("page");
+        expect(result.timeUs).toBe(TIME_ORIGIN_US + BigInt(pageUs));
+        expect(audioOriginUs(result.state)).toBe(TIME_ORIGIN_US);
+    });
+
+    it("qpc で、タイムスタンプが TimeTicks の値なら、そのまま使う", () => {
+        const timebase = qpcTimebase(TICKS_ORIGIN_US);
+        const ticksUs = TICKS_ORIGIN_US + 60_000_000n;
+        const result = pushAudio(createAudioChunker(timebase), makeSamples(FRAME_SAMPLES), Number(ticksUs), ticksUs + 400n);
+        expect(result.state.domain).toBe("ticks");
+        expect(result.timeUs).toBe(ticksUs);
+        expect(audioOriginUs(result.state)).toBe(0n);
+    });
+
+    it("どちらの基準でもなければ、今までの換算を使う (テスト用の送信側の作り物のタイムスタンプなど)", () => {
+        const timebase = qpcTimebase(TICKS_ORIGIN_US);
+        let state = createAudioChunker(timebase);
+        for (let i = 0; i < 5; i++) {
+            const arrival = TICKS_ORIGIN_US + 90_000_000n + BigInt(i) * CHUNK_US + 700n;
+            const result = pushAudio(state, makeSamples(FRAME_SAMPLES), mediaUsForChunk(i), arrival);
+            state = result.state;
+        }
+        expect(state.domain).toBe("estimated");
+        expect(state.clockMap.offsetUs).toBe(TICKS_ORIGIN_US + 90_000_000n + 700n - BigInt(MEDIA_EPOCH_US));
+        expect(audioOriginUs(state)).toBe(state.clockMap.offsetUs);
+    });
+
+    it("基準は最初の断片で決め、トラックの間は変えない", () => {
+        const timebase = qpcTimebase(TICKS_ORIGIN_US);
+        const first = pushAudio(createAudioChunker(timebase), makeSamples(FRAME_SAMPLES), 60_000_000, TICKS_ORIGIN_US + 60_000_100n);
+        // 2 つ目の断片が 10 秒遅れて読まれても (基準の幅の外)、page のまま。
+        const second = pushAudio(first.state, makeSamples(FRAME_SAMPLES), 60_010_000, TICKS_ORIGIN_US + 70_010_000n);
+        expect(second.state.domain).toBe("page");
+        expect(second.timeUs).toBe(TICKS_ORIGIN_US + 60_010_000n);
+    });
+
+    it("audioTimeDomain: 両方の基準が幅の内にあれば、読んだ時刻に近いほう (起動して間もない PC でページを開いたとき)", () => {
+        const timebase = qpcTimebase(3_000_000n); // 起動から 3 秒でページを開いた
+        expect(audioTimeDomain(timebase, 1_000_000n, 4_000_200n)).toBe("page");
+        expect(audioTimeDomain(timebase, 4_000_000n, 4_000_200n)).toBe("ticks");
+        expect(audioTimeDomain(undefined, 1_000_000n, 4_000_200n)).toBe("estimated");
     });
 });
 

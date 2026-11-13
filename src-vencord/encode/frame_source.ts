@@ -23,6 +23,13 @@ export interface VideoFrameSource {
     next(): Promise<VideoFrame | null>;
 
     /**
+     * 直前に next() が返したフレームを、元 (MediaStreamTrackProcessor) から読んだときの送信側の時計 (us)。1 回読むと
+     * undefined に戻る。実装がこの時刻を持たないときは省く (呼び出し元は、next() が返ったときの時刻を使う)。
+     * エンコードが詰まって next() が遅れても、その待ちを含まない時刻で、encode/video_time.ts の先行の見分けに使う。
+     */
+    takeReadAtUs?(): bigint | undefined;
+
+    /**
      * 閉じる。next() を待っている Promise があれば、null で解決する (encode/session.ts の stop() が
      * close() を呼んだときに、読み出しのループが next() で待ち続けないようにするため)。
      * 2 回以上呼んでも、2 回目からは何もしない。
