@@ -39,7 +39,9 @@ import {
     LOG_PATTERN_SELF_OFF,
     LOG_PATTERN_SELF_OFF_ANY,
     LOG_PATTERN_SELF_ON,
-    LOG_PATTERN_SELF_ON_ANY,
+    LOG_PATTERN_SELF_ON_SHARE,
+    REHEARSAL_NOT_JUDGED,
+    SELF_FRAME_READ_LABELS,
     SELF_FRAME_SOURCE_NAME,
     TEXT_ID_ROW_CHECK,
     TEXT_ID_DOCK_ACCOUNT_CHANGE,
@@ -128,24 +130,45 @@ describe("--av-check (--recheck にテスト動画の A/V の測定を足す)", 
         expect(parseArgs([...REAL, ...RECHECK, "--av-check"]).errors).toEqual([]);
     });
 
-    it("遅れの測定の後に、cordmux の録画を始め -> av1 の録画と sync.py -> 合否の基準 -> cordmux の録画を終える -> 作成を待つ -> 録画の中の A/V を読む", () => {
+    it("cordmux の録画を始め -> 遅れの録画 -> av1 の録画と sync.py -> cordmux の録画を終える -> 作成を待つ -> av1 の判定 (テスト動画の人の枠だけ) -> 録画の中の A/V を読む", () => {
         const { steps } = plan([...REAL, ...RECHECK, "--av-check"]);
-        const latencyStop = at(steps, (s) => s.kind === "record-stop" && s.label === LATENCY_RECORDING_LABEL);
-        const recStart = at(steps, (s) => s.kind === "dock-click" && s.textId === "cordmux.dock.record_start.button", latencyStop);
-        const avStart = at(steps, (s) => s.kind === "record-start" && s.label === "av1", recStart);
+        // cordmux の録画は遅れと A/V の両方の OBS の録画を覆う (録画ログから枠の人を引くため。personScreenStreams)。
+        const recStart = at(steps, (s) => s.kind === "dock-click" && s.textId === "cordmux.dock.record_start.button");
+        const latencyStart = at(steps, (s) => s.kind === "record-start" && s.label === LATENCY_RECORDING_LABEL, recStart);
+        const latencyStop = at(steps, (s) => s.kind === "record-stop" && s.label === LATENCY_RECORDING_LABEL, latencyStart);
+        const avStart = at(steps, (s) => s.kind === "record-start" && s.label === "av1", latencyStop);
         const avStop = at(steps, (s) => s.kind === "record-stop" && s.label === "av1", avStart);
-        const avJudge = at(steps, (s) => s.kind === "judge-av-sync" && s.recording === "av1", avStop);
-        const recStop = at(steps, (s) => s.kind === "dock-click" && s.textId === "cordmux.dock.record_stop.button", avJudge);
+        const recStop = at(steps, (s) => s.kind === "dock-click" && s.textId === "cordmux.dock.record_stop.button", avStop);
         const finalize = at(steps, (s) => s.kind === "wait-finalize", recStop);
-        at(steps, (s) => s.kind === "judge-record-sync" && s.person === "sub2", finalize);
-        // 人の操作はテスト動画の共有の 1 つだけ増える。
-        expect(steps.filter((s) => s.kind === "human")).toHaveLength(17);
+        const avJudge = at(steps, (s) => s.kind === "judge-av-sync" && s.recording === "av1", finalize);
+        expect(steps[avJudge]).toMatchObject({ person: "sub2" });
+        at(steps, (s) => s.kind === "judge-record-sync" && s.person === "sub2", avJudge);
+        // テスト動画の共有は参加の文で頼んだので、A/V の録画の前にもう一度は頼まない (人の操作は増えない)。
+        expect(steps.slice(latencyStop, avStart).some((s) => s.kind === "human")).toBe(false);
+        expect(steps.filter((s) => s.kind === "human")).toHaveLength(16);
+        // 録画の間は、テスト動画の人のほかの共有の音をミュートにする (合成のソースの音は全員の音を混ぜた 1 本)。出ていないボタンは失敗にしない。
+        const mutes = steps.slice(latencyStop, avStart).filter((s) => s.kind === "dock-click" && s.textId === "cordmux.dock.row_screen_mute.a11y" && s.desired === "on");
+        expect(mutes.map((s) => s.textArgs[0])).toEqual(["main", "sub3"]);
+        expect(mutes.every((s) => s.absentOk === true)).toBe(true);
+        const unmute = at(steps, (s) => s.kind === "dock-click" && s.textId === "cordmux.dock.row_screen_mute.a11y" && s.desired === "off", latencyStop);
+        expect(steps[unmute]).toMatchObject({ textArgs: ["sub2"] });
+        expect(steps[unmute].absentOk).toBeUndefined();
+        // 行のミュートを押す前に [参加者] タブを開く。
+        expect(steps.slice(latencyStop, unmute).some((s) => s.kind === "dialog-click" && s.controlType === "TabItem" && s.buttonTextId === "cordmux.dock.tab_people.label" && s.readOnlyOp === true)).toBe(true);
     });
 
-    it("渡さなければ、A/V の手順は入らない (--recheck の既定は前と同じ)", () => {
+    it("渡さなければ A/V の手順は入らない。遅れを測るときは、遅れの録画を cordmux の録画で覆う (枠の人を録画ログから引くため)", () => {
         const { steps } = plan([...REAL, ...RECHECK]);
-        for (const kind of ["judge-av-sync", "judge-record-sync", "wait-finalize"]) expect(kinds(steps)).not.toContain(kind);
+        for (const kind of ["judge-av-sync", "judge-record-sync"]) expect(kinds(steps)).not.toContain(kind);
         expect(steps.filter((s) => s.label === "av1")).toEqual([]);
+        const recStart = at(steps, (s) => s.kind === "dock-click" && s.textId === "cordmux.dock.record_start.button");
+        const latencyStart = at(steps, (s) => s.kind === "record-start" && s.label === LATENCY_RECORDING_LABEL, recStart);
+        const latencyStop = at(steps, (s) => s.kind === "record-stop" && s.label === LATENCY_RECORDING_LABEL, latencyStart);
+        const recStop = at(steps, (s) => s.kind === "dock-click" && s.textId === "cordmux.dock.record_stop.button", latencyStop);
+        at(steps, (s) => s.kind === "wait-finalize", recStop);
+        // 遅れも A/V も測らない --recheck は、cordmux の録画をしない。
+        const none = plan([...REAL, "--n-screen", "3", "--n-voice", "3", "--broadcaster-id", "1", "--start-with-add", "--recheck"]).steps;
+        expect(none.some((s) => s.kind === "dock-click" && s.textId === "cordmux.dock.record_start.button")).toBe(false);
     });
 });
 
@@ -165,6 +188,13 @@ describe("--recheck の手順の並び (実際の通話)", () => {
         // 連絡が途絶えたときの案内が付く。
         const join = steps[wait + 2];
         expect(join).toMatchObject({ kind: "human", message: callJoinMessage({ vesktopShare: false, voiceChannel: "lobby", recheck: true }) });
+        // 返事を待たず、全員 (4 つのアカウント) が入って 3 人が共有を始めたことを OBS の記録で見て進む。
+        expect(join).toMatchObject({ until: "call-ready", roster: 4, sharing: 3 });
+        expect(join.message).toContain("返事は必要ありません");
+        // Vesktop のアカウントにも入ることを頼む (入らないと何も受け取らない)。マイクは 4 つともミュート (テスト用のマイクの音は使わない)。
+        expect(join.message).toContain("Vesktop (sub1) の4つで、ボイスチャンネル「lobby」に入ってください");
+        expect(join.message).toContain("マイクは4つともミュートにしてください");
+        expect(join.message).not.toContain("ミュートを解除");
         expect(join.message).toContain("では画面共有を始めないでください");
         expect(join.message).toContain("タブの音声も共有する");
         expect(join.message.endsWith(CALL_CONTACT_LOST_GUIDANCE)).toBe(true);
@@ -210,7 +240,7 @@ describe("--recheck の手順の並び (実際の通話)", () => {
         const count = at(steps, (s) => s.kind === "count-roster-labels");
         const order = [slot, about, meter, place, remove, shrink, restore, encoder, accountChange, selfCombo, mute, back, count];
         expect(order).toEqual([...order].sort((a, b) => a - b));
-        // 録画は 2 本 (遅れ・解像度の変化)。どちらも配信なし。
+        // OBS の録画は 2 本 (遅れ・解像度の変化)。どちらも配信なし。
         const records = steps.filter((s) => s.kind === "record-start");
         expect(records.map((s) => s.label)).toEqual([LATENCY_RECORDING_LABEL, RESCHANGE_RECORDING_LABEL]);
         expect(records.every((s) => s.stream === false)).toBe(true);
@@ -225,7 +255,8 @@ describe("--recheck の手順の並び (実際の通話)", () => {
         // 並びの確認は通常の --extra-checks の (g) と同じ並び (バックアップ -> 共有を止める -> 待ち -> 画像 2 つ -> 判定 -> 通話を切って Vesktop を終了)。
         expect(steps[count]).toMatchObject({ label: ROSTER_BASELINE_LABEL });
         expect(steps[count + 1]).toMatchObject({ kind: "human", message: VESKTOP_STOP_SHARING_MESSAGE });
-        expect(steps[count + 5]).toMatchObject({ kind: "judge-roster-labels", expectedPeople: 2 });
+        // 並ぶのは、通話の 4 つのアカウントから別アカウント方式のサブアカウント (Vesktop) を引いた 3 人 (メインアカウントも並ぶ)。
+        expect(steps[count + 5]).toMatchObject({ kind: "judge-roster-labels", expectedPeople: 3 });
         expect(steps[count + 6]).toMatchObject({ kind: "human", message: VESKTOP_LEAVE_AND_QUIT_MESSAGE, quitVesktop: true });
         expect(rosterCheckPlanned(args)).toBe(true);
     });
@@ -407,7 +438,14 @@ describe("--recheck の足した手順 (実際の通話)", () => {
         const voiceMute = (s: Step, desired: string) => s.kind === "dock-click" && s.muteOp === true && s.textId === "cordmux.dock.row_voice_mute.a11y" && s.desired === desired;
         const isolated = steps.slice(0, before).filter((s) => voiceMute(s, "on")).slice(-2);
         expect(isolated.map((s) => s.textArgs[0])).toEqual(["sub2", "sub3"]);
-        expect(steps.slice(before - 2, before).every((s) => voiceMute(s, "on"))).toBe(true);
+        // ほかの人の画面共有の音もミュートにする (メーターは合成のソースの全部の音)。出ていないボタンは失敗にしない。
+        const others = steps.slice(before - 2, before);
+        expect(others.map((s) => [s.textId, s.textArgs[0], s.desired, s.absentOk])).toEqual([
+            ["cordmux.dock.row_screen_mute.a11y", "main", "on", true],
+            ["cordmux.dock.row_screen_mute.a11y", "sub3", "on", true],
+        ]);
+        expect(steps.slice(before - 4, before - 2).every((s) => voiceMute(s, "on"))).toBe(true);
+        expect(steps[before - 5]).toMatchObject({ kind: "dialog-click", controlType: "TabItem", buttonTextId: "cordmux.dock.tab_people.label", readOnlyOp: true });
         const off = at(steps, (s) => s.kind === "dock-click" && s.muteOp === true && s.desired === "off", before);
         expect(steps[off]).toMatchObject({ textArgs: ["sub2"], textId: "cordmux.dock.row_screen_mute.a11y" });
         const meter = at(steps, (s) => s.kind === "measure-input-level", off);
@@ -469,7 +507,7 @@ describe("--recheck の足した手順 (実際の通話)", () => {
         expect(new RegExp(LOG_PATTERN_SENDER_CHOICE).test("12:00:01.000: [cordmux/js] 12:00:01 video stream 3: stage=1 format=1280x720@30 preference=prefer-software latencyMode=quality")).toBe(true);
     });
 
-    it("自分の枠 (ほかの人の行と同じ動き): 選ぶ -> 共有の前の読み -> 人が共有を始める (出ない) -> チェックを付ける (出る) -> 人が共有を止める (残る) -> チェックを外す (消える)", () => {
+    it("自分の枠 (自動の決まり): 選ぶ -> [参加者] タブ -> 共有の前の読み -> 人が共有を始める (付く) -> 人が共有を止める (残る) -> チェックを外す (消える) -> 付ける (出る) -> 外す (消える)", () => {
         const scene = at(steps, (s) => s.kind === "obsws-request" && s.request === "CreateScene");
         expect(steps[scene].requestData.sceneName).not.toBe("Main");
         const input = at(steps, (s) => s.kind === "obsws-request" && s.request === "CreateInput", scene);
@@ -477,45 +515,55 @@ describe("--recheck の足した手順 (実際の通話)", () => {
         const general = at(steps, (s) => s.kind === "dialog-click" && s.controlType === "TabItem" && s.buttonTextId === TEXT_ID_DOCK_TAB_DISPLAY, input);
         const combo = at(steps, (s) => s.kind === "dialog-click" && s.controlType === "ComboBox" && s.buttonTextId === TEXT_ID_LOOK_SELF_FRAME_SOURCE, general);
         expect(steps[combo]).toMatchObject({ selectText: SELF_FRAME_SOURCE_NAME });
+        // [表示] タブで映像を選んだ後は [参加者] タブへ戻す (11-13 は [表示] タブのまま行を押そうとして、行が見つからなかった)。
+        const people = (s: Step) => s.kind === "dialog-click" && s.controlType === "TabItem" && s.buttonTextId === "cordmux.dock.tab_people.label" && s.readOnlyOp === true;
+        expect(people(steps[combo + 1])).toBe(true);
         const before = at(steps, (s) => s.kind === "judge-log-lines" && s.label === "self-before", combo);
         const start = at(steps, (s) => s.kind === "human" && s.message === selfFrameShareStartMessage("lobby"), before);
         const share = at(steps, (s) => s.kind === "judge-log-lines" && s.label === "self-share", start);
-        const on = at(steps, (s) => s.kind === "dock-click" && s.name === DEFAULT_CALL_ACCOUNTS.main && s.desired === "on", share);
-        const during = at(steps, (s) => s.kind === "judge-log-lines" && s.label === "self-during", on);
-        const stop = at(steps, (s) => s.kind === "human" && s.message === selfFrameShareStopMessage("lobby"), during);
+        const stop = at(steps, (s) => s.kind === "human" && s.message === selfFrameShareStopMessage("lobby"), share);
         const stopped = at(steps, (s) => s.kind === "judge-log-lines" && s.label === "self-stopped", stop);
-        const off = at(steps, (s) => s.kind === "dock-click" && s.name === DEFAULT_CALL_ACCOUNTS.main && s.desired === "off", stopped);
-        const after = at(steps, (s) => s.kind === "judge-log-lines" && s.label === "self-after", off);
-        expect(after).toBeGreaterThan(off);
+        const row = (desired: string, from: number) => at(steps, (s) => s.kind === "dock-click" && s.name === DEFAULT_CALL_ACCOUNTS.main && s.desired === desired, from);
+        const off1 = row("off", stopped);
+        const offRead = at(steps, (s) => s.kind === "judge-log-lines" && s.label === "self-off", off1);
+        const on = row("on", offRead);
+        const during = at(steps, (s) => s.kind === "judge-log-lines" && s.label === "self-during", on);
+        const off2 = row("off", during);
+        const after = at(steps, (s) => s.kind === "judge-log-lines" && s.label === "self-after", off2);
+        // 行を押す直前に、いつも [参加者] タブを開く。
+        for (const click of [off1, on, off2]) expect(people(steps[click - 1])).toBe(true);
         const ids = (s: Step) => s.checks.map((c: Step) => c.id);
-        // 手動のときは、共有を始めても自分の枠は出ない: 付いたログの行が増えず、配置の行も増えない (配置の行は変わったときだけ出る)。
+        // call-1 の枠の選び方は自動なので、メインアカウントが共有を始めるとチェックが付き、自分の枠が出る (docs/spec.md の「自分の枠」)。
         expect(steps[share]).toMatchObject({ since: "self-before" });
-        expect(ids(steps[share])).toEqual(["self-not-on", "layout-unchanged"]);
-        expect(steps[share].checks[0]).toMatchObject({ pattern: LOG_PATTERN_SELF_ON_ANY, min: 0, max: 0 });
-        expect(steps[share].checks[1]).toMatchObject({ pattern: LOG_PATTERN_CANVAS_COUNT, min: 0, max: 0 });
-        // チェックを付けると出る: 枠が 1 つ増え、self= が入る。
-        expect(steps[during]).toMatchObject({ since: "self-share" });
+        expect(ids(steps[share])).toEqual(["self-on-share", "canvas-count", "canvas-self"]);
+        expect(steps[share].checks[0].pattern).toBe(LOG_PATTERN_SELF_ON_SHARE);
+        expect(steps[share].checks[1].delta).toEqual({ from: "self-before", equals: 1 });
+        // 共有を止めても、チェックは外れず自分の枠は出たまま。
+        expect(steps[stopped]).toMatchObject({ since: "self-share" });
+        expect(ids(steps[stopped])).toEqual(["self-not-off", "layout-unchanged"]);
+        expect(steps[stopped].checks[0]).toMatchObject({ pattern: LOG_PATTERN_SELF_OFF_ANY, min: 0, max: 0 });
+        expect(steps[stopped].checks[1]).toMatchObject({ pattern: LOG_PATTERN_CANVAS_COUNT, min: 0, max: 0 });
+        // ドックで外すと消え、元の数。付けると出て 1 つ増え、外すと元の数。
+        expect(steps[offRead]).toMatchObject({ since: "self-stopped" });
+        expect(ids(steps[offRead])).toEqual(["self-off", "canvas-count"]);
+        expect(steps[offRead].checks[1].delta).toEqual({ from: "self-before", equals: 0 });
+        expect(steps[during]).toMatchObject({ since: "self-off" });
         expect(ids(steps[during])).toEqual(["self-on", "canvas-count", "canvas-self"]);
         expect(steps[during].checks[0].pattern).toBe(LOG_PATTERN_SELF_ON);
         expect(steps[during].checks[1].delta).toEqual({ from: "self-before", equals: 1 });
-        // 共有を止めても、チェックは外れず自分の枠は出たまま。
-        expect(steps[stopped]).toMatchObject({ since: "self-during" });
-        expect(ids(steps[stopped])).toEqual(["self-not-off", "layout-unchanged"]);
-        expect(steps[stopped].checks[0]).toMatchObject({ pattern: LOG_PATTERN_SELF_OFF_ANY, min: 0, max: 0 });
-        // チェックを外すと消え、枠の数が元に戻る。
-        expect(steps[after]).toMatchObject({ since: "self-stopped" });
+        expect(steps[after]).toMatchObject({ since: "self-during" });
         expect(ids(steps[after])).toEqual(["self-off", "canvas-count"]);
         expect(steps[after].checks[0].pattern).toBe(LOG_PATTERN_SELF_OFF);
         expect(steps[after].checks[1].delta).toEqual({ from: "self-before", equals: 0 });
         expect(steps[before].checks).toEqual([{ id: "canvas-count", pattern: LOG_PATTERN_CANVAS_COUNT, min: 1, group: 1 }]);
-        // 付けた行と外した行は、製品のログの文字列に合う。共有の始まりと終わりの文字列 (screen share started / ended) には頼らない。
+        // 付いた行と外した行は、製品のログの文字列に合う (共有で付いた行とドックで付けた行を分ける)。
         expect(new RegExp(LOG_PATTERN_SELF_ON).test("12:00:00.000: [cordmux] Self frame turned on: dock")).toBe(true);
         expect(new RegExp(LOG_PATTERN_SELF_OFF).test("12:00:00.000: [cordmux] Self frame turned off: dock")).toBe(true);
-        expect(new RegExp(LOG_PATTERN_SELF_ON_ANY).test("12:00:00.000: [cordmux] Self frame turned on: screen share")).toBe(true);
+        expect(new RegExp(LOG_PATTERN_SELF_ON_SHARE).test("08:57:48.630: [cordmux] Self frame turned on: screen share")).toBe(true);
         expect(new RegExp(LOG_PATTERN_SELF_ON).test("12:00:00.000: [cordmux] Self frame turned on: screen share")).toBe(false);
         expect(JSON.stringify(steps)).not.toContain("screen share started");
-        // 共有の前後と、チェックを付けた後・外した後に、配置・ドックの文・ドックの PNG を読む (目で読む材料)。
-        for (const label of ["self-before", "self-share", "self-during", "self-stopped", "self-after"]) {
+        // 読みのたびに、配置・ドックの文・ドックの PNG を読む (目で読む材料)。
+        for (const label of ["self-before", ...SELF_FRAME_READ_LABELS]) {
             expect(steps.some((s) => s.kind === "composite-layout-snapshot" && s.label === label)).toBe(true);
             expect(steps.some((s) => s.kind === "dialog-click" && s.listOnly === true && s.label === label)).toBe(true);
             expect(steps.some((s) => s.kind === "screenshot-window" && s.shotLabel === label)).toBe(true);
@@ -681,23 +729,32 @@ describe("judge-lines の足した行 (結果を残すだけ)", () => {
         expect(row(summary([]), "format-change").ok).toBeNull();
     });
 
-    it("遅れの区間: 実際の通話の judge-latency は namesUnknown を持ち、テスト用の送信側の場合は持たない。人が見つからないときの行は失敗にせず手で読む理由を残す", () => {
+    it("遅れの区間: 実際の通話の judge-latency は枠の人を録画ログから引く (手で読む印を持たない)。リハーサルは比べる Vesktop のウィンドウがないので判定しない。引けなかった行は失敗にせず理由を残す", () => {
         const real = plan([...REAL, ...RECHECK]);
-        expect(real.steps.find((s) => s.kind === "judge-latency")?.namesUnknown).toBe(true);
+        const judge = real.steps.find((s) => s.kind === "judge-latency")!;
+        expect(judge.namesUnknown).toBeUndefined();
+        expect(judge).toMatchObject({ recording: LATENCY_RECORDING_LABEL, person: "somebody" });
         const reh = plan([...REHEARSAL, ...RECHECK]);
-        expect(reh.steps.find((s) => s.kind === "judge-latency")?.namesUnknown).toBeUndefined();
-        const handRead = { name: "judge-latency", ok: null, handRead: true, reason: "枠に載っている人が記録から分からないので、PNG で枠を読み、latency.py を手で実行する" };
+        expect(reh.steps.some((s) => s.kind === "judge-latency")).toBe(false);
+        expect(reh.steps.find((s) => s.kind === "skip" && s.item === "latency")).toMatchObject({ reason: REHEARSAL_NOT_JUDGED.latency });
+        const handRead = { name: "judge-latency", ok: null, handRead: true, reason: "the frame of somebody could not be found automatically (no cordmux recording covers the recording)" };
         expect(row(summary([handRead]), "latency")).toMatchObject({ ok: null, reason: handRead.reason, detail: { handRead: true } });
     });
 
-    it("自分の枠: 4 つの読み (共有を始めた後・チェックを付けた後・共有を止めた後・チェックを外した後) が全部合格なら合格", () => {
-        const all = (oks: boolean[]) => ["self-share", "self-during", "self-stopped", "self-after"].map((label, i) => logRes(label, oks[i]));
-        expect(row(summary(all([true, true, true, true])), "self-frame").ok).toBe(true);
-        expect(row(summary(all([true, true, true, false])), "self-frame").ok).toBe(false);
-        expect(row(summary(all([false, true, true, true])), "self-frame").ok).toBe(false);
+    it("自分の枠: 5 つの読み (共有を始めた後・止めた後・外した後・付けた後・また外した後) が全部合格なら合格。リハーサルで判定しない読みは外す", () => {
+        const all = (oks: boolean[]) => SELF_FRAME_READ_LABELS.map((label, i) => logRes(label, oks[i]));
+        expect(SELF_FRAME_READ_LABELS).toEqual(["self-share", "self-stopped", "self-off", "self-during", "self-after"]);
+        expect(row(summary(all([true, true, true, true, true])), "self-frame").ok).toBe(true);
+        expect(row(summary(all([true, true, true, true, false])), "self-frame").ok).toBe(false);
+        expect(row(summary(all([false, true, true, true, true])), "self-frame").ok).toBe(false);
         // 途中までしか実行されていなければ決められない。
-        expect(row(summary([logRes("self-share", true), logRes("self-during", true)]), "self-frame").ok).toBeNull();
+        expect(row(summary([logRes("self-share", true), logRes("self-stopped", true)]), "self-frame").ok).toBeNull();
         expect(row(summary([]), "self-frame").ok).toBeNull();
+        // リハーサル: 共有による付け外しの 3 つの読みは skip (part) で外し、ドックの付け外しの 2 つだけで決める。
+        const skip = (part: string) => ({ name: "skip", ok: null, item: "self-frame", part, reason: "r" });
+        const reh = [skip("self-share"), skip("self-stopped"), skip("self-off"), logRes("self-share", true), logRes("self-during", true), logRes("self-after", true)];
+        expect(row(summary(reh), "self-frame").ok).toBe(true);
+        expect(row(summary([...reh.slice(0, 4), logRes("self-during", true), logRes("self-after", false)]), "self-frame").ok).toBe(false);
     });
 
     it("受け取りの継続と抜け戻り: 映像が止まっていなければ合格。数が足りなければ決められない", () => {
@@ -714,6 +771,14 @@ describe("judge-lines の足した行 (結果を残すだけ)", () => {
 
     it("version-row の行は --recheck の表にも並ぶ (バージョンの表示を実行するため)", () => {
         expect(row(summary([{ name: "judge-rt", judge: "version-row-shown", ok: true }]), "version-row").ok).toBe(true);
+    });
+
+    it("行ごとの skip (item のみ) は、ほかの結果があっても判定しない行にし、理由を残す。判定の側が判定しないとした行 (notJudged) も同じ", () => {
+        const skipped = summary([rate("mute-minimized", false), { name: "skip", ok: null, item: "receive-continues", reason: "no speaker mute in the test sender" }]);
+        expect(row(skipped, "receive-continues")).toMatchObject({ ok: null, notJudged: "no speaker mute in the test sender" });
+        expect(skipped.red).toEqual([]);
+        const short = summary([{ name: "judge-call-log", ok: null, notJudged: "short", align: [] }]);
+        expect(row(short, "align-drift")).toMatchObject({ ok: null, notJudged: "short" });
     });
 });
 
@@ -760,12 +825,16 @@ describe("ツールの拡張 (dialog-click.ps1 の ComboBox・window-size.ps1 �
 describe("--recheck のリハーサル (テスト用の送信側で手順の並びを通す)", () => {
     const { steps } = plan([...REHEARSAL, "--n-screen", "3", "--n-voice", "3", "--broadcaster-id", "1", "--start-with-add", "--recheck", "--latency-person", "somebody"]);
 
-    it("テスト用の送信側の接続の後に自分のアカウントの待ち (バックアップの名前なし) が入り、メインの手順と AC の判定は入らない", () => {
+    it("テスト用の送信側は自分のアカウントを送らないので、接続の後の自分のアカウントの待ちは判定しない (skip)。メインの手順と AC の判定は入らない", () => {
         const conn = at(steps, (s) => s.kind === "wait-connection");
-        expect(steps[conn + 1]).toMatchObject({ kind: "wait-self-account", gate: true });
-        expect(steps[conn + 1].baseline).toBeUndefined();
+        expect(steps[conn + 1]).toMatchObject({ kind: "skip", item: "self-account", reason: REHEARSAL_NOT_JUDGED["self-account"] });
+        expect(kinds(steps)).not.toContain("wait-self-account");
         for (const kind of ["stream-sink-start", "judge-output-skipped", "judge-ac32", "count-operations", "count-roster-labels"]) expect(kinds(steps)).not.toContain(kind);
         expect(steps.filter((s) => s.kind === "record-start").map((s) => s.label)).toEqual([LATENCY_RECORDING_LABEL]);
+        // リハーサルでは gate の手順が、テスト用の送信側で起こせない物を待たない (想定の赤で終了コード 3 にならない)。
+        const reasons = steps.filter((s) => s.kind === "skip").map((s) => s.item);
+        expect(reasons).toEqual(expect.arrayContaining(["self-account", "version-row", "encode-choice", "broadcaster-left", "self-frame", "receive-continues", "rejoin", "latency"]));
+        expect(steps.find((s) => s.kind === "judge-call-log")).toMatchObject({ shortRunNotJudged: REHEARSAL_NOT_JUDGED["align-drift"] });
         expect(kinds(steps)).toContain("harness-stop");
         expect(rosterCheckPlanned(plan([...REHEARSAL, "--broadcaster-id", "1", "--start-with-add", "--recheck"]).args)).toBe(false);
         // リハーサルでは人の操作がすべて秒の待ちに替わる。
@@ -781,6 +850,20 @@ describe("--recheck のリハーサル (テスト用の送信側で手順の並�
         expect(kinds(steps)).toEqual(expect.arrayContaining(["measure-input-level", "judge-log-lines", "measure-video-rate", "judge-connections-kept"]));
         expect(steps.filter((s) => s.kind === "dialog-click" && s.controlType === "ComboBox")).toHaveLength(3);
         expect(steps.filter((s) => s.kind === "human")).toHaveLength(11);
+    });
+
+    it("別アカウント方式と自分の枠は、テスト用の送信側の声だけの人をメインアカウントにして通す。ドックの付け外しは判定し、共有と抜け戻りによる読みは判定しない", () => {
+        const main = "harness-voice-4";
+        expect(steps.find((s) => s.kind === "dialog-click" && s.controlType === "MenuItem" && s.buttonText === main)).toMatchObject({ gate: true });
+        expect(steps.filter((s) => s.kind === "dock-click" && s.name === main).map((s) => s.desired)).toEqual(["off", "on", "off"]);
+        const parts = steps.filter((s) => s.kind === "skip" && s.item === "self-frame").map((s) => s.part);
+        expect(parts).toEqual(["self-share", "self-stopped", "self-off"]);
+        // 判定しない読みも行数は保存する (次の読みの since)。判定する読みは checks を持つ。
+        for (const label of ["self-share", "self-stopped", "self-off"]) expect(steps.find((s) => s.kind === "judge-log-lines" && s.label === label)!.checks).toEqual([]);
+        for (const label of ["self-during", "self-after"]) expect(steps.find((s) => s.kind === "judge-log-lines" && s.label === label)!.checks.length).toBeGreaterThan(0);
+        // 配信者が通話にいる間のメッセージは判定し、抜ける・戻るの判定は skip。
+        expect(steps.filter((s) => s.kind === "judge-rt" && s.inputs && s.inputs.texts && s.inputs.texts.dialog === "broadcaster-in-call")).toHaveLength(1);
+        expect(steps.filter((s) => s.kind === "skip" && s.item === "broadcaster-left")).toHaveLength(2);
     });
 });
 
@@ -832,7 +915,7 @@ describe("judgeSelfAccount (OBS のログの Facts の行の self=yes の読み)
 describe("judge-lines の表の絞り方", () => {
     const results = [
         { name: "wait-self-account", ...judgeSelfAccount({ lines: ["12:00:00.000: [cordmux] Connected to Vesktop", "12:00:05.000: [cordmux] Facts: roster=3 self=-"] }) },
-        { name: "judge-roster-labels", ...judgeRosterLabels({ lines: ["20:00:00.000: [cordmux] Composite roster label ready: index=0 paint_ms=1", "20:00:00.100: [cordmux] Composite roster shows 2 participant(s)"], baselineCount: 0 }) },
+        { name: "judge-roster-labels", ...judgeRosterLabels({ lines: ["20:00:00.000: [cordmux] Composite roster label ready: index=0 paint_ms=1", "20:00:00.100: [cordmux] Composite roster shows 3 participant(s)"], baselineCount: 0, expectedPeople: 3 }) },
     ] as any;
 
     it("items を渡すとその項目だけを並べる。渡さなければ全項目", () => {
@@ -846,7 +929,7 @@ describe("judge-lines の表の絞り方", () => {
         expect(some.rows.find((r: Step) => r.item === "latency")).toMatchObject({ ok: null });
     });
 
-    it("自分のアカウントが届かなければ表で失敗 (gate の行)。届けば合格。並びは人数が 2 のとき合格", () => {
+    it("自分のアカウントが届かなければ表で失敗 (gate の行)。届けば合格。並びは期待の人数 (3) のとき合格", () => {
         const red = judgeLinesSummary(results, { items: RECHECK_JUDGE_ITEMS });
         expect(red.rows.find((r: Step) => r.item === "self-account")).toMatchObject({ ok: false, onFail: "gate", detail: { factsDash: 1, factsYes: 0 } });
         expect(red.red).toEqual(["self-account"]);
@@ -855,7 +938,7 @@ describe("judge-lines の表の絞り方", () => {
             { items: RECHECK_JUDGE_ITEMS },
         );
         expect(green.rows.find((r: Step) => r.item === "self-account")).toMatchObject({ ok: true, detail: { factsYes: 1, firstYesAfterSec: 5 } });
-        expect(green.rows.find((r: Step) => r.item === "roster-labels")).toMatchObject({ ok: true, detail: { people: 2 } });
+        expect(green.rows.find((r: Step) => r.item === "roster-labels")).toMatchObject({ ok: true, detail: { people: 3, expectedPeople: 3 } });
         expect(green.red).toEqual([]);
     });
 });

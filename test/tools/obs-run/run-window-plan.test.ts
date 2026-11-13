@@ -1887,8 +1887,10 @@ describe("planSteps", () => {
             // 本体の後の操作 (欄への入力・録画のラベル・わざと異常) は count-operations より後 = 数えない。
             for (const kind of ["tamper-file", "wait-finalize"]) expect(kinds.indexOf(kind) === -1 || kinds.indexOf(kind) > countIdx).toBe(true);
             // ウィンドウのコンポーネントを押す手順 (メニュー・設定ウィンドウ) も配信中の区間にはない (合成のソースの撮影は録画の前、別アカウント方式は数えた後)。
+            // 行を押す前に [参加者] タブを開く手順だけはあるが、タブを選ぶだけで状態を変えないので、操作の数に数えない印 (readOnlyOp) を持つ。
             const recordStart = kinds.indexOf("record-start");
-            expect(r.steps.slice(recordStart, countIdx).filter((s) => s.kind === "dialog-click")).toHaveLength(0);
+            const inWindow = r.steps.slice(recordStart, countIdx).filter((s) => s.kind === "dialog-click");
+            expect(inWindow.map((s) => [s.controlType, s.buttonTextId, s.readOnlyOp])).toEqual([["TabItem", "cordmux.dock.tab_people.label", true]]);
             expect(r.steps.findIndex((s) => s.kind === "dock-click" && s.textId === TEXT_ID_RECORD_START)).toBeGreaterThan(countIdx);
         });
 
@@ -1937,10 +1939,12 @@ describe("planSteps", () => {
             const firstShot = r.steps.indexOf(shots[0]);
             const changed = r.steps.indexOf(shots.at(-1)!);
             const clicks = r.steps.slice(firstShot, changed + 4).filter((s) => s.kind === "dialog-click");
+            // 戻した後は [参加者] タブへ戻す (後の手順が参加者の行を押すため)。
             expect(clicks.map((c) => [c.controlType, c.buttonTextId, c.buttonGroupTextId ?? null, c.desired ?? null])).toEqual([
                 ["TabItem", TEXT_ID_DOCK_TAB_DISPLAY, null, null],
                 ["CheckBox", TEXT_ID_LOOK_SHOW, TEXT_ID_LOOK_HEADING_NAME, "off"],
                 ["CheckBox", TEXT_ID_LOOK_SHOW, TEXT_ID_LOOK_HEADING_NAME, "on"],
+                ["TabItem", "cordmux.dock.tab_people.label", null, null],
             ]);
             expect(r.steps.indexOf(clicks[1])).toBeLessThan(changed);
             expect(r.steps.indexOf(clicks[2])).toBeGreaterThan(changed);
@@ -1964,14 +1968,17 @@ describe("planSteps", () => {
             // 通話に参加して共有を始めるのは繋がった後、配線の前。
             const join = r.steps.findIndex((s, i) => s.kind === "human" && i > idx("wait-connection"));
             expect(join).toBeLessThan(idx("wire-composite"));
-            expect(r.steps[join]).toMatchObject({ until: "go-file", timeoutMs: HUMAN_JOIN_TIMEOUT_MS });
+            // 返事を待たず、4 つのアカウントが入って 3 人が共有を始めたことを OBS の記録で見て進む (11-13 の 1 回目は、返事の後に Vesktop が入っていなかった)。
+            expect(r.steps[join]).toMatchObject({ until: "call-ready", timeoutMs: HUMAN_JOIN_TIMEOUT_MS, roster: 4, sharing: 3 });
             // ボイスチャンネルの名前は --voice-channel で渡したときだけ文に入る。渡さなければ名前を挙げない。
             expect(r.steps[join].message).toContain("指定のボイスチャンネル");
             // Chrome は実行を始める前に、実行スクリプトの側がテスト用のマイクの音つきで起動しておく (途中で閉じさせない)。
             // Vesktop の共有は依頼しない (VESKTOP_SHARE_IN_CALL_ONE)。
             expect(r.steps[join].message).toBe(callJoinMessage({ vesktopShare: VESKTOP_SHARE_IN_CALL_ONE }));
             expect(r.steps[join].message).not.toContain("閉じて");
-            expect(r.steps[join].message).toContain("マイクのミュートを解除");
+            // テスト用のマイクの音は Chrome だけ。ほかの 3 つのマイクはミュート (スピーカーから出た音が声に混ざらない)。
+            expect(r.steps[join].message).toContain("マイクは、Chrome (sub2) だけミュートを解除し");
+            expect(r.steps[join].message).toContain("ほかの3つはミュートにしてください");
         });
 
         it("参加の文 (callJoinMessage): Vesktop の共有は旗で切り替わる。どちらの形も Chrome を閉じさせない", () => {
@@ -1979,8 +1986,9 @@ describe("planSteps", () => {
             const without = callJoinMessage({ vesktopShare: false });
             const withShare = callJoinMessage({ vesktopShare: true });
             expect(without).toContain("Vesktop (sub1) では画面共有を始めないでください");
-            // Vesktop も同じボイスチャンネルに入ることを文で依頼する。
-            expect(withShare).toContain("Vesktop (sub1) でも同じボイスチャンネルに入り、画面共有を1つ始めてください");
+            // Vesktop も同じボイスチャンネルに入ることを、どちらの形でも文で依頼する。
+            for (const m of [without, withShare]) expect(m).toContain("Vesktop (sub1) の4つで、指定のボイスチャンネルに入ってください");
+            expect(withShare).toContain("Vesktop (sub1) でも、画面共有を1つ始めてください");
             // 利用者に見せる文は、英数字と日本語の間に半角の空白を入れない。
             for (const m of [without, withShare]) expect(m).not.toMatch(/[A-Za-z0-9] [\u3041-\u3093\u30a1-\u30f6\u4e00-\u9fa0]|[\u3041-\u3093\u30a1-\u30f6\u4e00-\u9fa0] [A-Za-z0-9]/);
             for (const m of [without, withShare]) {
@@ -2161,13 +2169,20 @@ describe("planSteps", () => {
                 for (const label of ["av1", "av2"]) {
                     const start = at(steps, (s) => s.kind === "record-start" && s.label === label);
                     expect(steps[start]).toMatchObject({ stream: false });
-                    // 録画の間はドックの行で、声を全員ミュートにし、テスト動画を共有している人の画面共有の音のミュートを外す。止めた直後に戻す。
+                    // 録画の間はドックの行で、声を全員ミュートにし、ほかの共有している人 (メインと Firefox) の画面共有の音をミュートにし、
+                    // テスト動画を共有している人の画面共有の音のミュートを外す (合成のソースの音は全員の音を混ぜた 1 本)。止めた直後に戻す。
                     const voices = callVoicePersons({}).length;
-                    expect(steps[start - 3 - voices]).toMatchObject({ kind: "human", until: "go-file" });
-                    expect(steps[start - 3 - voices].message).toContain("テスト動画");
-                    expect(steps[start - 2 - voices]).toMatchObject({ kind: "wait", ms: CALL_AV_SHARE_SETTLE_MS });
-                    expect(steps.slice(start - 1 - voices, start - 1).map((s) => [s.textId, s.textArgs[0], s.desired, s.muteOp])).toEqual(
+                    const others = [DEFAULT_CALL_ACCOUNTS.main, DEFAULT_CALL_ACCOUNTS.firefox];
+                    const head = start - 1 - others.length - voices;
+                    expect(steps[head - 3]).toMatchObject({ kind: "human", until: "go-file" });
+                    expect(steps[head - 3].message).toContain("テスト動画");
+                    expect(steps[head - 2]).toMatchObject({ kind: "wait", ms: CALL_AV_SHARE_SETTLE_MS });
+                    expect(steps[head - 1]).toMatchObject({ kind: "dialog-click", controlType: "TabItem", buttonTextId: "cordmux.dock.tab_people.label", readOnlyOp: true });
+                    expect(steps.slice(head, head + voices).map((s) => [s.textId, s.textArgs[0], s.desired, s.muteOp])).toEqual(
                         callVoicePersons({}).map((p) => ["cordmux.dock.row_voice_mute.a11y", p, "on", true]),
+                    );
+                    expect(steps.slice(head + voices, start - 1).map((s) => [s.textId, s.textArgs[0], s.desired, s.absentOk])).toEqual(
+                        others.map((p) => ["cordmux.dock.row_screen_mute.a11y", p, "on", true]),
                     );
                     expect(steps[start - 1]).toMatchObject({ kind: "dock-click", textId: "cordmux.dock.row_screen_mute.a11y", textArgs: [DEFAULT_CALL_ACCOUNTS.chrome], desired: "off", muteOp: true });
                     expect(steps[start + 1]).toMatchObject({ kind: "wait", ms: CALL_AV_RECORD_MS });
@@ -2380,8 +2395,10 @@ describe("planSteps", () => {
             expect(at(steps, (s) => s.kind === "judge-vencord-dir-restored")).toBeGreaterThan(uninstall);
             expect(steps.find((s) => s.kind === "judge-vencord-dir-restored")).toMatchObject({ gate: true });
             // テストを実行する人の操作に掛かる案内の判定はゲートにしない (誰も操作しない)。異常の検知 (tamper) の判定はゲートのまま。
+            // 配信者が抜ける・戻る判定の 2 つは、テスト用の送信側では人を抜けさせられないので、リハーサルでは判定しない (skip)。
             const noticeJudges = steps.filter((s) => s.kind === "judge-rt" && (Array.isArray(s.inputs.names.textPrefix) || s.inputs.names.textPrefix === TEXT_ID_NO_VIDEO));
-            expect(noticeJudges.length).toBe(5);
+            expect(noticeJudges.length).toBe(3);
+            expect(steps.filter((s) => s.kind === "skip" && s.item === "broadcaster-left")).toHaveLength(2);
             for (const j of noticeJudges) expect(j.gate).toBeUndefined();
             for (const j of steps.filter((s) => s.kind === "judge-rt" && s.inputs.names.textPrefix === TEXT_ID_VENCORD_OVERWRITTEN)) expect(j.gate).toBe(true);
             // テスト用の送信側は OBS を閉じる前に止める。

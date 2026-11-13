@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import {
     AC30_ITEM_LABELS,
     CORDMUX_SOURCE_KINDS,
+    REHEARSAL_NOT_JUDGED,
     audioBufferingFromLog,
     cellRegionsForJudge,
     compositeCellRegions,
@@ -130,8 +131,10 @@ describe("合成のソースが既定の場合の実行計画", () => {
         expect(steps.some((s) => s.kind === "obsws-request" && s.label === "ac30-before")).toBe(false);
     });
 
-    it("飛ばすステップはない (名前ラベルの設定・声のミュート・使う声・A/V の切り分けは合成のソースの形で実行する)", () => {
-        expect(steps.filter((s) => s.kind === "skip")).toHaveLength(0);
+    it("飛ばすステップは、リハーサルで判定しない項目 (REHEARSAL_NOT_JUDGED) だけ (名前ラベルの設定・声のミュート・使う声・A/V の切り分けは合成のソースの形で実行する)", () => {
+        const skipped = steps.filter((s) => s.kind === "skip");
+        expect(skipped.map((s) => s.item)).toEqual(["version-row", "broadcaster-left", "broadcaster-left", "latency"]);
+        for (const s of skipped) expect(Object.keys(REHEARSAL_NOT_JUDGED)).toContain(s.item);
         const k = kinds(steps);
         for (const made of ["judge-ac31", "judge-ac32", "judge-voice-source"]) expect(k).toContain(made);
     });

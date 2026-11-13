@@ -801,13 +801,32 @@ export const ROUNDTRIP_TAMPER_FILE = "vencordDesktopRenderer.js";
 // ---- call-1 の実行計画 (4 アカウントの通話のテストと短い項目を 1 回の実行 (2 時間 30 分) にまとめたもの) の値 -----------------------
 //
 // **人の操作は手順 "human" で待つ**: 実行スクリプトは人の操作を自分では行わず、ログに「HUMAN: <文>」を書いて
-// 条件が満たされるまで見る。条件 (until) は 4 つ:
+// 条件が満たされるまで見る。条件 (until) は 5 つ:
 //   go-file                      <出力>/window3b/human-go.txt があれば消して進む (どの until でも有効)
 //   state-json-points-to-placed  実際の state.json の vencordDir が配置物の data/vencord を指したら進む
 //   state-json-restored          state.json が製品のバックアップ (vencord_dir_backup.json) の previous に戻ったら進む
+//   call-ready                   OBS の記録の最後の Facts の行で、通話の人数が roster 以上、画面共有の人数が sharing 以上になったら進む
+//                                (callReadyFromLog。人が返事をしなくても、全員が入って共有を始めたことを実行スクリプトが見て進む)
 //   seconds                      waitSeconds だけ待って進む (--rehearsal がすべての human をこれに置き換える)
 // waitSeconds は**人の操作の見込み** (plannedMinutes が合計に入れる値)。until が seconds のときだけ実際の待ち。
-export const HUMAN_UNTIL_VALUES = ["go-file", "state-json-points-to-placed", "state-json-restored", "seconds"];
+export const HUMAN_UNTIL_VALUES = ["go-file", "state-json-points-to-placed", "state-json-restored", "call-ready", "seconds"];
+// call-ready の読み: 受信側が facts を受け取るたびに書く行 (src-obs/pipeline/pipeline.cpp の handle_facts の
+// 「Facts: roster=<人数か「-」> sharing=<人数> ...」) の最後の 1 行。roster が「-」(通話の参加者が分からない = Vesktop のアカウントが
+// 通話にいない) なら人数は null。
+const FACTS_COUNTS_RE = /\[cordmux\] Facts: roster=(\d+|-) sharing=(\d+)/;
+export function callReadyFromLog(lines) {
+  let last = null;
+  for (const raw of lines || []) {
+    const m = FACTS_COUNTS_RE.exec(String(raw));
+    if (m) last = { roster: m[1] === "-" ? null : Number(m[1]), sharing: Number(m[2]) };
+  }
+  return last;
+}
+// 最後の Facts の行が、通話の人数 roster 以上・画面共有の人数 sharing 以上か。
+export function callReady(lines, { roster, sharing }) {
+  const facts = callReadyFromLog(lines);
+  return Boolean(facts && facts.roster !== null && facts.roster >= roster && facts.sharing >= sharing);
+}
 export const HUMAN_GO_FILE_NAME = "human-go.txt";
 export const HUMAN_POLL_MS = 2000;
 // 人の操作の時限。操作する人がすぐ PC の前に戻れるとは限らないので、操作 1 つにつき 30 分、通話に参加して共有を
@@ -1094,10 +1113,16 @@ export const DEADLINE_MARGIN_FACTOR = 1.15;
 //                         実際のアバターの並び、締めだけを並べる。メインの手順の録画と配信・使う声と音量・av1/av2・連続実行・診断情報の書き出しは
 //                         実行しない。--start-with-add と一緒にだけ受け、メインの手順の長さを決めるフラグ (--vesktop-share --extra-checks --skip-*) とは両立しない
 //                         (どれも recheck の実行計画には適用されないので、渡されたら誤りにして呼び出し行の食い違いを先に見つける)。--rehearsal とは
-//                         両立させる: テスト用の送信側は自分のアカウントを最初から送るので self の待ちは数秒で通り、手順の並びと実行スクリプトの受け渡しを
-//                         実際の実行の前に通せる (実際のアバターの並びと共有の途中の解像度の変化はテスト用の送信側では起こせないので、リハーサルでは入らない)。
+//                         両立させる: 手順の並びと実行スクリプトの受け渡しを、実際の実行の前に通せる。テスト用の送信側では確かめられない項目
+//                         (REHEARSAL_NOT_JUDGED) は、リハーサルでは判定しない (手順 skip に理由を残し、judge-lines の行は判定なし)。
+//                         実際のアバターの並びと共有の途中の解像度の変化はテスト用の送信側では起こせないので、リハーサルでは入らない。
+//   --av-check            --recheck に、テスト動画の映像と音のずれの測定を足す (recheckMeasureSteps)。
+//   --av-only             --recheck --av-check の手順表を、映像と音のずれ (と --latency-person の遅れ) を測るところと締めだけにする
+//                         (callAvOnlyBodySteps)。バージョンの表示・画面共有の音・解像度の変化・エンコードの設定・別アカウント方式のメッセージ・
+//                         自分の枠・スピーカーミュートと抜け戻り・実際のアバターの並びは実行しない。締めのアンインストールは実行スクリプトが押す
+//                         (手順書の道を人が押す確認は --recheck の締めにある)。
 // 引数の値を取るフラグは CALL_ONE_VALUE_FLAGS。
-export const CALL_ONE_OPTION_FLAGS = ["--start-with-add", "--vesktop-share", "--skip-continuous", "--skip-av2", "--skip-speaker-mute", "--extra-checks", "--skip-export-bundle", "--recheck", "--av-check"];
+export const CALL_ONE_OPTION_FLAGS = ["--start-with-add", "--vesktop-share", "--skip-continuous", "--skip-av2", "--skip-speaker-mute", "--extra-checks", "--skip-export-bundle", "--recheck", "--av-check", "--av-only"];
 export const CALL_ONE_VALUE_FLAGS = ["--latency-person", "--voice-channel"];
 // (b) [バージョン情報] の「バージョン」の Vesktop の行の名前 (settings_window.cpp のバージョンの表)。
 export const TEXT_ID_SETTINGS_VERSION_VESKTOP = "cordmux.settings.version_vesktop.label";
@@ -1400,6 +1425,14 @@ export const VESKTOP_LEAVE_AND_QUIT_MESSAGE =
   "4つのアカウントすべてでボイスチャンネルから抜け、通知領域のVesktopのアイコンを右クリックして [Quit] を選んでください (テスト用のOBSのウィンドウはまだ閉じないでください)。" +
   VESKTOP_HIDDEN_ICON_HINT;
 export const VESKTOP_START_AFTER_UNINSTALL_MESSAGE = "Vesktopを起動してください (元の設定で動きます)";
+// --av-only の締め: 測り終えたら、共有を止めて全員で抜け、Vesktop を終了してもらう。アンインストールは実行スクリプトがドックから押す
+// (ウィンドウを押すので、その間はテスト用の OBS に触らないでもらう)。
+// 終了の返事からアンインストールを押すまでの猶予 (callUninstallSteps の --av-only)。
+export const AV_ONLY_QUIT_SETTLE_MS = 10000;
+export const AV_ONLY_LEAVE_AND_QUIT_MESSAGE =
+  "測り終えました。画面共有を止めて、4つのアカウントすべてでボイスチャンネルから抜け、通知領域のVesktopのアイコンを右クリックして [Quit] を選んでください。" +
+  VESKTOP_HIDDEN_ICON_HINT +
+  "。終わったら「OK」と書いてください。その後、こちらがテスト用のOBSでcordmuxのアンインストールを行います (1分ほど)。テスト用のOBSのウィンドウには触らないでください";
 // call-1 の最初の依頼: 実行を始める前に Vesktop を終了している形が前提で、まだ動いていれば同じ [Quit] の方法で終了してから起動する
 // (「まだ開いていれば閉じてから」では X で閉じる読みになるため)。
 // ---- hold と call-hold の配信の受け口 ------------------------------------------
@@ -1787,8 +1820,10 @@ export function parseArgs(argv) {
     // 実行前の点検で足したフラグ (CALL_ONE_OPTION_FLAGS の説明を参照)。どれも既定はなし。
     skipExportBundle: false,
     recheck: false,
-    // --recheck に、テスト動画の A/V の測定 (配信の画面と cordmux の録画) を足す (recheckAvSteps)。既定はなし。
+    // --recheck に、テスト動画の A/V の測定 (配信の画面と cordmux の録画) を足す (recheckMeasureSteps)。既定はなし。
     avCheck: false,
+    // --recheck --av-check を、映像と音のずれ (と --latency-person の遅れ) だけを測って終わる形にする (callAvOnlyBodySteps)。既定はなし。
+    avOnly: false,
     latencyPerson: null,
     // 参加の文で入ってもらうボイスチャンネルの名前 (`--voice-channel`)。渡さなければ null で、文は名前を挙げない。
     voiceChannel: null,
@@ -1817,6 +1852,7 @@ export function parseArgs(argv) {
     "--skip-export-bundle": "skipExportBundle",
     "--recheck": "recheck",
     "--av-check": "avCheck",
+    "--av-only": "avOnly",
   };
   let i = 0;
   while (i < list.length) {
@@ -2208,14 +2244,17 @@ export function parseArgs(argv) {
   // --recheck (CALL_ONE_OPTION_FLAGS の説明を参照): 開始ゲートを実行しない形 (--start-with-add) が前提で、実行計画に適用されないフラグとは一緒に渡せない。
   if (args.recheck) {
     if (!args.startWithAdd) errors.push("--recheck は --start-with-add と一緒に (開始ゲートを実行しない形だけ)");
-    // 並びの人数の期待 (ROSTER_EXPECTED_PEOPLE) は、メインアカウントを自分の枠の人にする別アカウント方式が前提 (入れないと、メインアカウントも並びに出る)。
-    if (args.broadcasterId === null) errors.push("--recheck は --broadcaster-id と一緒に (並びの人数の期待は、メインアカウントを自分の枠の人にする前提)");
+    // --recheck は別アカウント方式の手順 (メインアカウントのメッセージと自分の枠) を確かめる。並びの人数の期待 (rosterExpectedPeople) も、
+    // Vesktop のアカウントがサブアカウントとして並びから外れる別アカウント方式が前提。
+    if (args.broadcasterId === null) errors.push("--recheck は --broadcaster-id と一緒に (別アカウント方式の手順と、並びの人数の期待の前提)");
     for (const [flag, key] of [["--vesktop-share", "vesktopShare"], ["--extra-checks", "extraChecks"], ["--skip-continuous", "skipContinuous"], ["--skip-av2", "skipAv2"], ["--skip-speaker-mute", "skipSpeakerMute"], ["--skip-export-bundle", "skipExportBundle"]]) {
       if (args[key]) errors.push(flag + " は --recheck と一緒に渡せない (--recheck の手順表には適用されない)");
     }
   }
   // --av-check は --recheck の手順表に A/V の測定を足すフラグ。--recheck でない call-1 は、もともと av1 と av2 で測る。
   if (args.avCheck && !args.recheck) errors.push("--av-check は --recheck と一緒に (--recheck でない call-1 は、もともと av1 と av2 で A/V を測る)");
+  // --av-only は --recheck --av-check の手順表を、測るところと締めだけにする (callAvOnlyBodySteps)。
+  if (args.avOnly && !(args.recheck && args.avCheck)) errors.push("--av-only は --recheck --av-check と一緒に (その手順表を、映像と音のずれを測るところと締めだけにする)");
   // Vesktop のウィンドウは Main の 2x2 の空いた象限に置くので、画面の枠は 2 つか 3 つ (1 つなら枠が全面、4 つなら空きがない)。
   if (args.latencyPerson !== null && args.step === "call-1" && latencyFreeCell(callScreens(args)) === null) {
     errors.push("--latency-person は --n-screen 2 か 3 と一緒に (Vesktop のウィンドウを Main の 2x2 の空いた象限に置くため)");
@@ -3594,6 +3633,41 @@ function displayTabSteps(what, opts) {
   return [uiClickStep("ドックの [" + TEXT_ID_DOCK_TAB_DISPLAY + "] タブを選ぶ (" + what + ")", DOCK_WINDOW, TEXT_ID_DOCK_TAB_DISPLAY, { controlType: "TabItem", gate: o.gate })];
 }
 
+// ドックの [参加者] タブを開く (1 手)。参加者の行のチェックとミュートのボタンは、このタブにだけある (ほかのタブを開いたままだと、
+// dock-click.ps1 は行のボタンを見つけられない)。行を押す手順の並びの前に置き、そのタブにいることを保証する。タブを選ぶだけで
+// OBS と cordmux の状態を変えないので、配信中でも「その他の操作」に数えない (readOnlyOp。judgeOperationCount)。
+function peopleTabStep(what) {
+  return { ...uiClickStep("ドックの [" + TEXT_ID_TAB_PEOPLE + "] タブを選ぶ (" + what + ")", DOCK_WINDOW, TEXT_ID_TAB_PEOPLE, { controlType: "TabItem" }), readOnlyOp: true };
+}
+
+// リハーサル (テスト用の送信側) では確かめられないので判定しない項目と、その理由。リハーサルの実行計画は、判定の手順の代わりに
+// 手順 skip (item と、行の一部だけなら part) を置き、judge-lines は item の行を「判定しない」にする (judgeLinesSummary)。
+// 赤として数えると、リハーサルの結果を「想定の赤」と読み分けることになり、ほかの赤を見落とす。確かめられる物は、リハーサルでも判定する。
+export const REHEARSAL_NOT_JUDGED = {
+  "self-account": "テスト用の送信側は Vesktop のアカウントではなく、自分のアカウントを送らない (確かめるのは、製品の送信側が Vesktop のアカウントを読むこと)",
+  "version-row": "テスト用の送信側は Vesktop の中で動かないので、Vesktop のバージョンを送らない",
+  latency: "比べる相手の Vesktop のウィンドウがない",
+  "encode-choice": "テスト用の送信側は、符号化の設定で確保し直す製品の送信側の動き (src-vencord/index.ts) を持たず、共有を始め直すこともできない",
+  "self-frame-share": "テスト用の送信側は、メインアカウントの画面共有を始めることも止めることもできない (ドックのチェックの付け外しは判定する)",
+  "broadcaster-left": "テスト用の送信側は、メインアカウントを通話から抜けさせることも戻すこともできない",
+  "receive-continues": "テスト用の送信側には、スピーカーミュートも最小化もない (Vesktop の動き)",
+  rejoin: "テスト用の送信側は、受け手の Vesktop として通話から抜けることも戻ることもできない",
+  "align-drift": "リハーサルは短く、傾きを読む長さ (" + ALIGN_DRIFT_MIN_SPAN_S / 60 + " 分) 続くストリームがない (長く続いたストリームがあれば判定する)",
+};
+// リハーサルで判定の手順の代わりに置く 1 手 (理由と要件を結果に残す)。opts.part は行の一部 (まとめる読みの label) だけを判定しないとき、
+// opts.reasonKey は REHEARSAL_NOT_JUDGED の別の鍵の理由を使うとき、opts.reason は理由の文そのもの。
+function rehearsalSkipStep(item, label, opts) {
+  const o = opts || {};
+  return step("skip", label + " (リハーサルでは判定しない)", {
+    item,
+    ...(o.part ? { part: o.part } : {}),
+    requirement: "実際の通話",
+    reason: o.reason || REHEARSAL_NOT_JUDGED[o.reasonKey || item] || null,
+  });
+}
+// テスト用の送信側に声だけの人がいないリハーサル (メインアカウントにできる人がいない) の理由。
+const REHEARSAL_NO_MAIN_REASON = "テスト用の送信側に声だけの人がいない (--n-voice 0) ので、メインアカウントにできる人がいない";
+
 // 設定のウィンドウの下のボタン (OBS 自身の文字列の [OK] / [適用])。[OK] は反映して閉じる。
 function settingsButtonStep(obsTextId, what, opts) {
   return uiClickStep("cordmux の設定のウィンドウの [" + obsTextId + "] を押す (" + what + ")", SETTINGS_WINDOW, obsTextId, opts);
@@ -3618,7 +3692,9 @@ function rowCheckStep(personName, desired, what, opts) {
 // 押した状態がミュート中なので、desired が on ならミュートにし、off なら外す)。配信中に押しても、操作数の「ミュート」に数える (muteOp)。
 export const TEXT_ID_ROW_VOICE_MUTE = "cordmux.dock.row_voice_mute.a11y";
 export const TEXT_ID_ROW_SCREEN_MUTE = "cordmux.dock.row_screen_mute.a11y";
-function rowMuteStep(kind, person, desired, what) {
+// opts.absentOk: ボタンが出ていないことを失敗にしない (画面共有の音のボタンは、その人の共有に音がないときは出ない = 混ざる音がない。
+// docs/spec.md と rules_dock.cpp の speaker_state_of)。ほかの人の画面共有の音をミュートにする手順だけが付ける。
+function rowMuteStep(kind, person, desired, what, opts) {
   const target = kind === "voice" ? "声" : "画面共有の音";
   return step("dock-click", "参加者の行「" + person + "」の" + target + "のミュートを" + (desired === "on" ? "入れる" : "外す") + " (" + what + ")", {
     target: "first",
@@ -3627,6 +3703,7 @@ function rowMuteStep(kind, person, desired, what) {
     index: 0,
     desired,
     muteOp: true,
+    ...(opts && opts.absentOk ? { absentOk: true } : {}),
   });
 }
 
@@ -3646,6 +3723,37 @@ export function callVoicePersons(args) {
   const out = [];
   for (let v = 1; v <= callVoices(args); v += 1) out.push(harnessPersonName("voice", callScreens(args) + v));
   return out;
+}
+
+// 画面共有をしている人の見えている名前 (参加の文で共有を頼む人)。実際の通話はメインアカウント・Chrome・Firefox のアカウント
+// (--vesktop-share でも、Vesktop のアカウントの共有は枠に載らないので入れない。docs/spec.md の「枠と配置」)、リハーサルはテスト用の送信側の画面の人。
+export function callScreenSharers(args) {
+  if (args && args.rehearsal) {
+    const out = [];
+    for (let s = 1; s <= callScreens(args); s += 1) out.push(harnessPersonName("screen", s));
+    return out;
+  }
+  const acc = callAccounts(args);
+  return [acc.main, acc.chrome, acc.firefox];
+}
+
+// 別アカウント方式でメインアカウントにする人 (メニューから選ぶ人と、自分の枠のチェックの行)。実際の通話はメインアカウント。
+// リハーサルは、テスト用の送信側の声だけの人の 1 人目 (画面共有していない人。実際の通話の、自分の枠を確かめ始めるときの
+// メインアカウントと同じく、共有していない状態から始まる)。声だけの人がいなければ null (別アカウント方式の手順を判定しない)。
+export function mainAccountFor(args) {
+  if (!args || !args.rehearsal) return callAccounts(args).main;
+  return callVoices(args) >= 1 ? harnessPersonName("voice", callScreens(args) + 1) : null;
+}
+
+// 実際のアバターの並び (rosterCheckSteps) に並ぶはずの人数。docs/spec.md の「名前ラベルと話している人の光」の決まりから出す:
+// 通話に参加している人のうち、サブアカウント (別アカウント方式の Vesktop のアカウント) を除いた全員が、枠に名前ラベル付きで
+// 描かれていなければ並びに出る。並びを撮るのは全員が共有を止め、自分の枠のチェックも外した後なので、通話にいる 4 つの
+// アカウント (CALL_ACCOUNT_ROLES) から、別アカウント方式ならサブアカウント 1 つを引いた数 (メインアカウントも並ぶ)。
+// --broadcaster-id がない (メインアカウントを選ばない) と、Vesktop のアカウントはサブアカウントとして外れず、4 人が並ぶ。
+export function rosterExpectedPeople(args) {
+  const inCall = CALL_ACCOUNT_ROLES.length;
+  const subAccount = args && args.broadcasterId !== null && args.broadcasterId !== undefined ? 1 : 0;
+  return inCall - subAccount;
 }
 
 // 録画のミックスに入れたくない声を、ドックの行のミュートで切る (keep の人の声だけ残す。keep が null なら全員切る)。
@@ -4111,6 +4219,7 @@ function callAc30Steps(person, namesUnknown) {
   const shot = (shotLabel, note) => step("screenshot-window", "参加者の行のチェック: " + note + " を PNG に撮る", { target: "first", shotLabel });
   return [
     compositeSnapshotStep(AC30_ITEM_LABELS.before, "付け外しの前", snapshotExtra),
+    peopleTabStep("参加者の行のチェック: 行を押す前"),
     shot("ac30-before", "付け外しの前"),
     rowCheckStep(person, "off", "参加者の行のチェック: 枠から外す"),
     step("wait", "枠から外れて合成のソースが配置を敷き直すまでの猶予", { ms: SELECT_FOUR_SETTLE_WAIT_MS }),
@@ -4218,6 +4327,8 @@ function callAc31Steps() {
     step("wait", "名前ラベルの設定: 変えた見た目が絵に出るまでの猶予", { ms: UI_APPLY_SETTLE_MS }),
     step("screenshot-source", "名前ラベルの設定の確認 (名前の [表示] を外した後): 合成のソースの絵を PNG に撮る", { source: { kind: "composite" }, label: AC31_LABELS.after }),
     showName("on", "元に戻す"),
+    // 後の手順 (callAc30Steps などの行を押す手順) のために [参加者] タブへ戻す。
+    peopleTabStep("名前ラベルの設定: 見た目の設定を戻した後"),
     step("wait", "名前ラベルの設定: 戻した見た目が絵に出るまでの猶予", { ms: UI_APPLY_SETTLE_MS }),
     step("judge-ac31", "名前ラベルの設定: 前後の絵の名前ラベルの板を plate_measure.py で測り、外した後に板が狭まるか消えたかを当てる (記録するだけ)", { before: AC31_LABELS.before, after: AC31_LABELS.after }),
   ];
@@ -4266,26 +4377,32 @@ function noticeJudgeStep(present, textIds, dialogLabel, gate, what) {
 // 数字の ID は、メニューが人の名前で並ぶので画面に出ない。--broadcaster-id は、別アカウント方式のときに実行する手順を決める印と、
 // 記録から ID を伏せるために残す。
 const NOT_IN_CALL_HEADLINES = [TEXT_ID_MAIN_ACCOUNT_NOT_IN_CALL, TEXT_ID_MAIN_ACCOUNT_NOT_IN_CALL_NO_NAME];
+// リハーサルは、テスト用の送信側の声だけの人をメインアカウントに選び (mainAccountFor)、メニューと配信者が通話にいる間の判定を通す。
+// 配信者が抜ける・戻る判定は、テスト用の送信側では人を抜けさせられないので判定しない (REHEARSAL_NOT_JUDGED)。
 function callBroadcasterSteps(args, poGate) {
+  const main = mainAccountFor(args);
+  if (main === null) return [rehearsalSkipStep("broadcaster-left", "別アカウント方式の手順", { reason: REHEARSAL_NO_MAIN_REASON })];
+  const leftJudge = (dialogLabel, present, what) =>
+    args.rehearsal ? rehearsalSkipStep("broadcaster-left", what) : noticeJudgeStep(present, NOT_IN_CALL_HEADLINES, dialogLabel, poGate, what);
   return [
     uiClickStep("ドックの [" + TEXT_ID_DOCK_ACCOUNT_CHANGE + "] を押してメニューを開く (別アカウント方式に切り替える)", DOCK_WINDOW, TEXT_ID_DOCK_ACCOUNT_CHANGE, { noWait: true, gate: true }),
-    uiClickStep("メニューから配信者「" + callAccounts(args).main + "」を選ぶ (別アカウント方式に切り替える)", MENU_POPUP, null, { controlType: "MenuItem", buttonText: callAccounts(args).main, noWait: true, gate: true }),
+    uiClickStep("メニューから配信者「" + main + "」を選ぶ (別アカウント方式に切り替える)", MENU_POPUP, null, { controlType: "MenuItem", buttonText: main, noWait: true, gate: true }),
     step("screenshot-window", "メインアカウントを選んだ後のドックを PNG に撮る", { target: "first", shotLabel: "broadcaster-change" }),
     step("wait", "選んだ値が保存され、メッセージが引き直されるまでの猶予", { ms: CALL_ACCOUNT_CHANGE_SETTLE_MS }),
     step("obsws-request", "別アカウント方式に切り替えた直後の入力の一覧 (枠に載っている人の名前の記録)", { request: "GetInputList", label: "broadcaster-after-change" }),
     dockTextsStep("broadcaster-in-call"),
     noticeJudgeStep(false, NOT_IN_CALL_HEADLINES, "broadcaster-in-call", poGate, "配信者が通話に参加している間は「ふだんのアカウントがこの通話に参加していません」のメッセージがない"),
-    humanStep("Desktop版のDiscord (" + callAccounts(args).main + ") を通話から抜けさせてください", "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S),
+    humanStep("Desktop版のDiscord (" + main + ") を通話から抜けさせてください", "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S),
     step("wait", "配信者が抜けたことがドックに届くまでの猶予", { ms: CALL_NOTICE_SETTLE_MS }),
     step("screenshot-window", "配信者が通話に参加していない間のドックを PNG に撮る", { target: "first", shotLabel: "broadcaster-left" }),
     step("collect-plugin-log", "プラグインの記録の回収 (配信者が通話に参加していない間)"),
     dockTextsStep("broadcaster-left"),
-    noticeJudgeStep(true, NOT_IN_CALL_HEADLINES, "broadcaster-left", poGate, "配信者が通話に参加していないと「ふだんのアカウントがこの通話に参加していません」のメッセージが出る"),
-    humanStep(callAccounts(args).main + "を通話に戻してください", "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S),
+    leftJudge("broadcaster-left", true, "配信者が通話に参加していないと「ふだんのアカウントがこの通話に参加していません」のメッセージが出る"),
+    humanStep(main + "を通話に戻してください", "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S),
     step("wait", "配信者が戻ったことがドックに届くまでの猶予", { ms: CALL_NOTICE_SETTLE_MS }),
     step("screenshot-window", "配信者が戻った後のドックを PNG に撮る", { target: "first", shotLabel: "broadcaster-back" }),
     dockTextsStep("broadcaster-back"),
-    noticeJudgeStep(false, NOT_IN_CALL_HEADLINES, "broadcaster-back", poGate, "配信者が戻るとメッセージが消える"),
+    leftJudge("broadcaster-back", false, "配信者が戻るとメッセージが消える"),
     // --skip-speaker-mute (CALL_ONE_OPTION_FLAGS のコメント): ここから下のスピーカーミュートと解除を省く。
     ...(args.skipSpeakerMute ? [] : callSpeakerMuteSteps(poGate)),
   ];
@@ -4327,15 +4444,21 @@ function speakerMuteJudgeSteps(dialogLabel, gate, what) {
 
 // (b)(g) テスト動画で A/V。共有の中身は白のマーカー + 2 kHz のテスト用の動画 (sync.py がそのまま
 // 使える形)。配信は続いているので録画だけを始める (stream:false)。label は av1 / av2。
-// **録画の間はドックの行で、声をみんなミュートにし、テスト動画を共有している人の画面共有の音のミュートを外す** (そうしないと
-// Chrome のテスト用のマイクの 1 kHz が録画に混ざる。役割 chrome のアカウント)。
-// 戻すのは録画を止めた直後。ドックの行のミュートは覚えられない (次に OBS を起動すると元に戻る) ので、途中で抜けた経路の後始末は要らない。
+// **録画の間はドックの行で、声をみんなミュートにし、ほかの人の画面共有の音をミュートにして、テスト動画を共有している人の画面共有の音の
+// ミュートを外す**。合成のソースの音は全員の音を混ぜた 1 本なので、そうしないと、Chrome のテスト用のマイクの 1 kHz や、
+// ほかの人の画面共有の音 (画面全体の共有には、スピーカーから出たテスト動画の音も入る) が録画に混ざり、マーカーの組が別の人の音と組になる。
+// 画面共有の音は共有が始まるたびにミュートから始まる (docs/spec.md) が、前の手順で外したままの人がいても混ざらないよう、毎回ミュートにする
+// (ミュートのときに押しても状態は変わらない。dock-click.ps1 は行き先と同じなら押さない)。
+// 戻すのは録画を止めた直後で、声のミュートを外し、テスト動画の人の画面共有の音を既定のミュートに戻す (ほかの人の画面共有の音は既定のミュートの
+// まま)。ドックの行のミュートは覚えられない (次に OBS を起動すると元に戻る) ので、途中で抜けた経路の後始末は要らない。
+// message が null のときは人に頼まない (--recheck は参加の文でテスト動画の共有まで頼んでいる)。
 function callAvSteps(args, label, message, screens = CALL_SCREEN_COUNT, targetAccount = callAccounts(args).chrome) {
-  // 録画のミックスにテスト動画の音だけを入れる。ドックの行で、声をみんなミュートにし、テスト動画を共有している人の
-  // 画面共有の音のミュートを外す (画面共有の音は共有が始まるたびにミュートから始まるので、ほかの人の画面共有の音は切ってある)。
   const everyone = callVoicePersons(args);
+  const others = callScreenSharers(args).filter((p) => p !== targetAccount);
   const isolate = [
+    peopleTabStep("A/V の録画 (" + label + "): 行のミュートを押す前"),
     ...voiceIsolateSteps(everyone, null, "A/V の録画 (" + label + "): 声をミュートにして、録画のミックスにマーカー以外の 1 kHz を混ぜない"),
+    ...others.map((p) => rowMuteStep("screen", p, "on", "A/V の録画 (" + label + "): ほかの人の画面共有の音を録画のミックスに混ぜない", { absentOk: true })),
     rowMuteStep("screen", targetAccount, "off", "A/V の録画 (" + label + "): テスト動画の音を鳴らす"),
   ];
   const restore = [
@@ -4343,7 +4466,7 @@ function callAvSteps(args, label, message, screens = CALL_SCREEN_COUNT, targetAc
     ...voiceRestoreSteps(everyone, "A/V の録画 (" + label + "): 声のミュートを戻す"),
   ];
   return [
-    humanStep(message, "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHARE_S),
+    ...(message === null ? [] : [humanStep(message, "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHARE_S)]),
     step("wait", "共有の映像と音が枠に乗るまでの猶予", { ms: CALL_AV_SHARE_SETTLE_MS }),
     ...isolate,
     step("record-start", "A/V の録画を始める (" + label + "。配信は続けたまま録画だけ)", { stream: false, label }),
@@ -4489,7 +4612,7 @@ export function callVoiceSourceStepsWithCheck(args) {
 // --extra-checks の (b): cordmux の設定のウィンドウの [バージョン情報] のページの「バージョン」を読み、Vesktop の行が「-」でないかを見る
 // (バージョンを運ぶ経路がないと、ドックの Vesktop のバージョンが「-」になる)。読むだけで設定は変えないので [キャンセル] で閉じる。
 // 録画と配信を始める前に置く (配信中の操作の数を増やさない)。
-function callVersionCheckSteps() {
+function callVersionCheckSteps(args) {
   return [
     ...settingsPageSteps(TEXT_ID_SETTINGS_PAGE_ABOUT, "バージョンの表示を読む"),
     step("dialog-click", "cordmux の設定のウィンドウの [" + TEXT_ID_SETTINGS_PAGE_ABOUT + "] のページの文を押さずに読む (バージョンの表)", {
@@ -4505,16 +4628,18 @@ function callVersionCheckSteps() {
     // バージョンの行の読み: ラベルと値の順に頼らない。表の 7 つのラベルのテキスト (labels) でラベルと値を分け、cordmux (OBS) の行 (いつも
     // バージョンのテキストが出る行 = reference) でラベルと値のどちらが先かを確認してから Vesktop の行の値を読む。値が読めない行は製品が読み上げの
     // 名前を「取得できません」(unavailable) にするので、UI Automation で読むテキストは「-」ではなくそれになる。
-    step("judge-rt", "バージョンの表の Vesktop の行が「-」でない (ラベルと値の順は cordmux (OBS) の行で確認する)", {
-      judge: "version-row-shown",
-      inputs: {
-        texts: { dialog: "about-versions" },
-        names: { textPrefix: TEXT_ID_SETTINGS_VERSION_VESKTOP },
-        labels: { textPrefix: TEXT_ID_SETTINGS_VERSION_LABELS },
-        reference: { textPrefix: TEXT_ID_SETTINGS_VERSION_OBS_PLUGIN },
-        unavailable: { textPrefix: TEXT_ID_SETTINGS_UNAVAILABLE_A11Y },
-      },
-    }),
+    args && args.rehearsal
+      ? rehearsalSkipStep("version-row", "バージョンの表の Vesktop の行")
+      : step("judge-rt", "バージョンの表の Vesktop の行が「-」でない (ラベルと値の順は cordmux (OBS) の行で確認する)", {
+          judge: "version-row-shown",
+          inputs: {
+            texts: { dialog: "about-versions" },
+            names: { textPrefix: TEXT_ID_SETTINGS_VERSION_VESKTOP },
+            labels: { textPrefix: TEXT_ID_SETTINGS_VERSION_LABELS },
+            reference: { textPrefix: TEXT_ID_SETTINGS_VERSION_OBS_PLUGIN },
+            unavailable: { textPrefix: TEXT_ID_SETTINGS_UNAVAILABLE_A11Y },
+          },
+        }),
     settingsButtonStep(OBS_TEXT_CANCEL, "読むだけなので変えずに閉じる"),
   ];
 }
@@ -4664,13 +4789,16 @@ function callLatencySteps(args, screens) {
   ];
 }
 
-// sync.py の結果 (judge の記録。recording の label で引く) に合否の基準を当てる手順 (記録するだけ)。
-function avSyncJudgeStep(recording) {
+// sync.py の結果 (judge の記録。recording の label で引く) に合否の基準を当てる手順 (記録するだけ)。person を渡すと、その人の枠
+// (テスト動画を共有している人。枠は OBS の記録の枠の割り当てと cordmux の録画の録画ログから引く) だけを判定する。合成のソースの音は
+// 全員の音を混ぜた 1 本なので、ほかの人の枠に白が写っていても (画面全体の共有にテスト動画のウィンドウが写る)、その組は別の経路の映像と
+// テスト動画の音の差で、映像と音のずれではない。
+function avSyncJudgeStep(recording, person) {
   return step(
     "judge-av-sync",
-    "合否の基準: " + recording + " の sync.py の平均のずれ (音が先 " + AV_SYNC_AUDIO_LEAD_LIMIT_MS + " ms 未満・音が遅れ " + AV_SYNC_AUDIO_LAG_LIMIT_MS +
-      " ms 未満) と傾き (" + AV_TREND_DEFECT_MS_PER_MIN + " ms/分を超えて 0 と分けられれば欠陥)。記録するだけ",
-    { recording },
+    "合否の基準: " + recording + " の sync.py の" + (person ? " " + person + " の枠の" : "") + "平均のずれ (音が先 " + AV_SYNC_AUDIO_LEAD_LIMIT_MS + " ms 未満・音が遅れ " +
+      AV_SYNC_AUDIO_LAG_LIMIT_MS + " ms 未満) と、一時的な段を除いた傾き (" + AV_TREND_DEFECT_MS_PER_MIN + " ms/分を超えて 0 と分けられれば欠陥)。記録するだけ",
+    { recording, ...(person ? { person } : {}) },
   );
 }
 
@@ -4715,21 +4843,22 @@ function callContinuousSteps(args) {
 // 実際のアバターの並び (judgeRosterLabels のコメント) を撮るかどうか。--extra-checks か --recheck の実際の call-1 だけ (リハーサルのテスト用の送信側は
 // アバターを送らず、共有も止めない)。
 export function rosterCheckPlanned(args) {
-  return Boolean(args && args.step === "call-1" && (args.extraChecks || args.recheck) && !args.rehearsal);
+  return Boolean(args && args.step === "call-1" && (args.extraChecks || args.recheck) && !args.avOnly && !args.rehearsal);
 }
 
 // 共有を止めてもらう -> 並びが描かれるまで待つ -> cordmux のソースの絵と全体の PNG を撮る -> 並びの名前ラベルの行を数える。
-// 通話から抜ける前なので、画面共有していない参加者が全員、実際のアバターで並ぶはず。
-function rosterCheckSteps() {
+// 通話から抜ける前なので、画面共有していない参加者が全員、実際のアバターで並ぶはず。期待の人数は rosterExpectedPeople。
+function rosterCheckSteps(args) {
+  const expectedPeople = rosterExpectedPeople(args);
   return [
     step("count-roster-labels", "共有を止めてもらう前の、並びの名前ラベルの行 (Composite roster label ready) の数を保存する", { label: ROSTER_BASELINE_LABEL }),
     humanStep(VESKTOP_STOP_SHARING_MESSAGE, "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S),
     step("wait", "共有をやめた人が並びに移り、名前ラベルが描かれるまでの猶予", { ms: ROSTER_LABEL_SETTLE_MS }),
     step("screenshot-source", "実際のアバターの並び: 合成のソースの絵を PNG に撮る (共有していない参加者が実際のアバターで並ぶ)", { source: { kind: "composite" }, label: ROSTER_SHOT_LABEL }),
     step("screenshot-window", "実際のアバターの並び: ドックを PNG に撮る (参加者の行)", { target: "first", shotLabel: ROSTER_SHOT_LABEL }),
-    step("judge-roster-labels", "並びの名前ラベルの行が、共有を止めた後に出たか (番号の数は期待の人数 " + ROSTER_EXPECTED_PEOPLE + " と比べて記録するだけ)", {
+    step("judge-roster-labels", "並びの名前ラベルの行が、共有を止めた後に出たか (並んだ人数を期待の人数 " + expectedPeople + " と比べて記録するだけ)", {
       baseline: ROSTER_BASELINE_LABEL,
-      expectedPeople: ROSTER_EXPECTED_PEOPLE,
+      expectedPeople,
     }),
   ];
 }
@@ -4747,6 +4876,18 @@ function callUninstallSteps(args) {
   if (args.rehearsal) {
     return [capture, ...uninstallSteps("rehearsal", REHEARSAL_UNINSTALL_DONE_TIMEOUT_MS, { entry: "settings" })];
   }
+  // --av-only: 人に頼むのは、通話から抜けて Vesktop を終了することだけ。アンインストールは実行スクリプトが押す (リハーサルと同じ入口)。
+  // 手順書の道を人が押す確認は --recheck の締めにあり、ここで確かめたいのは映像と音のずれなので、人の操作を増やさない。
+  if (args.avOnly) {
+    return [
+      { ...humanStep(AV_ONLY_LEAVE_AND_QUIT_MESSAGE, "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S), quitVesktop: true },
+      // 製品は Vesktop が起動している間はアンインストールの確認を開かない。接続が切れている間は Vesktop の終了を毎秒見る
+      // (dock_poll.cpp の vesktop_quit_check_due) が、返事の時点で Vesktop のプロセスがまだ終わりきっていないことがあるので、少し待ってから押す。
+      step("wait", "Vesktop の終了がドックに届くまでの猶予 (アンインストールを押す前)", { ms: AV_ONLY_QUIT_SETTLE_MS }),
+      capture,
+      ...uninstallSteps("av-only", ROUNDTRIP_UNINSTALL_DONE_TIMEOUT_MS, { entry: "settings" }),
+    ];
+  }
   // 製品は Vesktop が動いている間はアンインストールできない (settings の uninstall_vesktop_running) ので、
   // 先に Vesktop を終了してもらう。Vesktop は終了時に state.json を
   // 書き直すので、この順を守らないとアンインストールで戻した値が上書きされる恐れもある (call-gate-b の存在理由と同じ)。
@@ -4754,7 +4895,7 @@ function callUninstallSteps(args) {
   // (VESKTOP_HANG_UP_AND_QUIT_MESSAGE のコメント)。
   const split = rosterCheckPlanned(args);
   return [
-    ...(split ? rosterCheckSteps() : []),
+    ...(split ? rosterCheckSteps(args) : []),
     { ...humanStep(split ? VESKTOP_LEAVE_AND_QUIT_MESSAGE : VESKTOP_HANG_UP_AND_QUIT_MESSAGE, "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S), quitVesktop: true },
     capture,
     humanStep(
@@ -4963,9 +5104,10 @@ export const VESKTOP_REJOIN_SETTLE_MS = 30000;
 export const LOG_PATTERN_LIMITS_SENT = "Quality limits sent to Vesktop \\(.*encoder=software latency=quality\\)";
 export const LOG_PATTERN_SENDER_CHOICE = "video stream \\d+: stage=\\S+ format=\\S+ preference=prefer-software latencyMode=quality";
 export const LOG_PATTERN_SELF_ON = "Self frame turned on: dock";
+// 自動 (枠に載せる人の選び方) で、メインアカウントが画面共有を始めてチェックが付いた行 (dock_poll.cpp の step_self_frame)。
+export const LOG_PATTERN_SELF_ON_SHARE = "Self frame turned on: screen share";
 export const LOG_PATTERN_SELF_OFF = "Self frame turned off: dock";
-// 付いた理由を問わないパターン (手動のときは、共有を始めても付かないことを見る。dock_poll.cpp の step_self_frame と set_self_frame)。
-export const LOG_PATTERN_SELF_ON_ANY = "Self frame turned on";
+// 外れた理由を問わないパターン (共有を止めても外れないことを見る。dock_poll.cpp の step_self_frame と set_self_frame)。
 export const LOG_PATTERN_SELF_OFF_ANY = "Self frame turned off";
 export const LOG_PATTERN_CANVAS_COUNT = "Composite layout canvas=\\S+ count=(\\d+)";
 export const LOG_PATTERN_CANVAS_SELF = "Composite layout canvas=\\S+ count=\\d+ self=";
@@ -4982,11 +5124,16 @@ function judgeLogLinesStep(label, what, opts) {
 // 入力の音量メーターを読む -> ログに画面共有の音を混ぜた行があるか -> ミュートに戻す -> 声のミュートを戻す。共有の音が届く Chrome (実機の実行では Chrome のアカウント、
 // リハーサルではマーカーの音を乗せたテスト用の画面)。声を切るのは、合成のソースの入力のメーターが声の音も含むため (Chrome のテスト用のマイクの 1 kHz が
 // 混ざると、画面共有の音が届かなくても peak がしきい値を超える。callAvSteps と同じ)。
+// ほかの人の画面共有の音もミュートにする (メーターは合成のソースの全部の音なので、ほかの人の共有の音が届くと、確かめる人の音が
+// 届かなくても peak がしきい値を超える。callAvSteps と同じ)。
 function screenAudioSteps(args) {
   const account = args.rehearsal ? REHEARSAL_AV_SCREEN_ACCOUNT : callAccounts(args).chrome;
   const everyone = callVoicePersons(args);
+  const others = callScreenSharers(args).filter((p) => p !== account);
   return [
+    peopleTabStep("画面共有の音: 行のミュートを押す前"),
     ...voiceIsolateSteps(everyone, null, "画面共有の音: 声をミュートにして、メーターに声の音を混ぜない"),
+    ...others.map((p) => rowMuteStep("screen", p, "on", "画面共有の音: ほかの人の画面共有の音をメーターに混ぜない", { absentOk: true })),
     judgeLogLinesStep("sa-before", "画面共有の音: ミュートを外す前の記録の行数を保存する"),
     rowMuteStep("screen", account, "off", "画面共有の音: ミュートを外して合成のソースの音に届くかを見る"),
     step("wait", "画面共有の音が合成のソースの音に混ざり始めるまでの猶予", { ms: SCREEN_AUDIO_SETTLE_MS }),
@@ -5008,7 +5155,7 @@ function screenAudioSteps(args) {
 
 // 共有の途中の解像度の変化を実行スクリプトが起こせる実行か (実機の実行だけ。リハーサルのテスト用の送信側には Chrome のウィンドウがない)。
 export function resolutionChangePlanned(args) {
-  return Boolean(args && args.step === "call-1" && args.recheck && !args.rehearsal);
+  return Boolean(args && args.step === "call-1" && args.recheck && !args.avOnly && !args.rehearsal);
 }
 
 // 共有の途中の解像度の変化: 録画を始め -> Chrome のウィンドウを縮める -> 猶予 -> 画像と配置 -> 元の大きさへ戻す -> 猶予 -> 録画を止める。録画の欠落・静止は OBS を閉じた後に frames.py が読む (callRecheckAnalysisSteps)。
@@ -5065,32 +5212,52 @@ function encodeSettingsSteps(args) {
     humanStep(encodeRestartShareMessage(args.voiceChannel, callAccounts(args)), "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHARE_S),
     step("wait", "共有が始まり直して、送信側が符号化の設定で確保し直すまでの猶予", { ms: ENCODE_SENDER_SETTLE_MS }),
     step("collect-plugin-log", "プラグインの記録の回収 (共有を始め直した後)"),
-    judgeLogLinesStep("encode-choice", "符号化の設定: 記録に、送信側がソフトウェア・高品質で確保した行があるか", {
-      since: "encode-before",
-      checks: [{ id: "sender-choice", pattern: LOG_PATTERN_SENDER_CHOICE, min: 1 }],
-    }),
+    args.rehearsal
+      ? rehearsalSkipStep("encode-choice", "符号化の設定: 送信側がソフトウェア・高品質で確保し直したか")
+      : judgeLogLinesStep("encode-choice", "符号化の設定: 記録に、送信側がソフトウェア・高品質で確保した行があるか", {
+          since: "encode-before",
+          checks: [{ id: "sender-choice", pattern: LOG_PATTERN_SENDER_CHOICE, min: 1 }],
+        }),
   ];
 }
 
-// 自分の枠 (ほかの人の行と同じ動き): 自分の枠に映すソースを作って選び -> 共有の前の読み -> メインのアカウントに共有を始めてもらう (手動なので自分の枠は
-// 出ない) -> ドックの自分の行のチェックを付ける (自分の枠が出る) -> メインのアカウントに共有を止めてもらう (チェックも自分の枠も残る) -> チェックを外す
-// (自分の枠が消える)。枠の数は「Composite layout」の行の count で読む (自分の枠が付くと 1 つ増え、外すと元に戻る。メインのアカウントの共有そのものは枠に載らない。
-// 配置の行は変わったときだけ出るので、変わらないことは「新しい行がない」で読む)。メインのアカウントの行は callAccounts(args).main。
-// リハーサルのテスト用の送信側は、自分の枠の人が通話に参加していないので行がなく、共有も止めない。行を押すステップと、共有を止めた後の読みは、想定どおり失敗になる。
+// 自分の枠 (ほかの人の行と同じ動き)。call-1 は枠に載せる人の選び方を「自動」にする (buildCallOneSteps) ので、確かめる動きは docs/spec.md の
+// 「自分の枠」の自動のときの決まり: メインアカウントが画面共有している間はチェックが付く (自分の枠が出る)、共有を止めても外れない、
+// ドックで外すと消え、付けると出る。並び:
+//   自分の枠に映すソースを作って選ぶ -> 共有の前の読み (self-before) -> メインアカウントに共有を始めてもらう (自動でチェックが付き、枠が 1 つ増えて
+//   self= が入る。self-share) -> 共有を止めてもらう (チェックも自分の枠も残る。self-stopped) -> ドックで自分の行のチェックを外す (消えて元の数。self-off)
+//   -> 付ける (出て 1 つ増える。self-during) -> 外す (元の数。self-after)。
+// 枠の数は「Composite layout」の行の count で読む (配置の行は変わったときだけ出るので、変わらないことは「新しい行がない」で読む。メインアカウントの
+// 共有そのものは、OBS のソースを選んでいる間は枠に載らない)。行を押す前に、ドックの [参加者] タブを開く ([表示] タブで映像を選んだ後なので、
+// 開かないと行のチェックが見つからない)。
+// リハーサルは、テスト用の送信側の声だけの人をメインアカウントにする (mainAccountFor)。その人は共有を始めも止めもしないので、共有による
+// 付け外し (self-share・self-stopped) と、共有で付いたチェックを外す読み (self-off) は判定せず (REHEARSAL_NOT_JUDGED)、行数の保存だけを通す。
+// ドックのチェックの付け外し (self-during・self-after) は判定する。
 function selfFrameSteps(args) {
+  const main = mainAccountFor(args);
+  if (main === null) return [rehearsalSkipStep("self-frame", "自分の枠", { reason: REHEARSAL_NO_MAIN_REASON })];
   const reads = (label, note) => [
     compositeSnapshotStep(label, note, { namesUnknown: !args.rehearsal }),
     dockTextsStep(label),
     step("screenshot-window", "自分の枠: " + note + "のドックを PNG に撮る", { target: "first", shotLabel: label }),
   ];
-  const selfRowCheck = (desired, what) =>
-    step("dock-click", "参加者の行「" + callAccounts(args).main + "」のチェックを" + (desired === "off" ? "外す" : "付ける") + " (自分の枠: " + what + ")", {
+  const selfRowCheck = (desired, what) => [
+    peopleTabStep("自分の枠: 自分の行のチェックを押す前"),
+    step("dock-click", "参加者の行「" + main + "」のチェックを" + (desired === "off" ? "外す" : "付ける") + " (自分の枠: " + what + ")", {
       target: "first",
-      name: callAccounts(args).main,
+      name: main,
       index: 0,
       desired,
-    });
+    }),
+  ];
+  // リハーサルで判定しない読み: 次の読みの since のために行数だけを保存し、判定しないことを skip で残す (judgeLinesSummary は part の分を外す)。
+  const judgeRead = (label, what, opts) =>
+    args.rehearsal && opts.notInRehearsal
+      ? [judgeLogLinesStep(label, what + " (行数の保存だけ)", { since: opts.since }), rehearsalSkipStep("self-frame", "自分の枠: " + what, { part: label, reasonKey: "self-frame-share" })]
+      : [judgeLogLinesStep(label, what, { since: opts.since, checks: opts.checks })];
   const unchanged = { id: "layout-unchanged", pattern: LOG_PATTERN_CANVAS_COUNT, min: 0, max: 0 };
+  const countIs = (delta) => ({ id: "canvas-count", pattern: LOG_PATTERN_CANVAS_COUNT, min: 1, group: 1, delta: { from: "self-before", equals: delta } });
+  const selfIn = { id: "canvas-self", pattern: LOG_PATTERN_CANVAS_SELF, min: 1 };
   return [
     step("obsws-request", "自分の枠: 録画に出ない別のシーンを作る", { request: "CreateScene", requestData: { sceneName: SELF_FRAME_SCENE_NAME }, label: "self-frame-scene" }),
     step("obsws-request", "自分の枠: そのシーンに映すソース (色のソース) を作る", {
@@ -5100,51 +5267,58 @@ function selfFrameSteps(args) {
     }),
     ...displayTabSteps("自分の枠に映す映像を選ぶ"),
     comboSelectStep("[" + TEXT_ID_LOOK_SELF_FRAME_SOURCE + "] で作ったソースを選ぶ", TEXT_ID_LOOK_SELF_FRAME_SOURCE, { selectText: SELF_FRAME_SOURCE_NAME }),
+    peopleTabStep("自分の枠: 映像を選んだ後"),
     step("wait", "保存されて自分の枠が準備されるまでの猶予", { ms: CALL_ACCOUNT_CHANGE_SETTLE_MS }),
     ...reads("self-before", "共有の前"),
     judgeLogLinesStep("self-before", "自分の枠: 共有の前の枠の数を記録から読む", { checks: [{ id: "canvas-count", pattern: LOG_PATTERN_CANVAS_COUNT, min: 1, group: 1 }] }),
     humanStep(selfFrameShareStartMessage(args.voiceChannel, callAccounts(args)), "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHARE_S),
     step("wait", "共有の始まりが自分の枠に届くまでの猶予", { ms: SELF_FRAME_SETTLE_MS }),
-    step("collect-plugin-log", "プラグインの記録の回収 (" + callAccounts(args).main + " の共有中)"),
-    ...reads("self-share", "共有を始めた後 (手動なので自分の枠は出ない)"),
-    judgeLogLinesStep("self-share", "自分の枠: 手動のときは、共有を始めても自分の枠は点灯せず、枠の数も変わらない", {
+    step("collect-plugin-log", "プラグインの記録の回収 (" + main + " の共有中)"),
+    ...reads("self-share", "共有を始めた後 (自動なので自分の枠が出る)"),
+    ...judgeRead("self-share", "自動では、共有を始めるとチェックが付いて自分の枠が点灯し、枠が 1 つ増えて self= が入る", {
       since: "self-before",
-      checks: [{ id: "self-not-on", pattern: LOG_PATTERN_SELF_ON_ANY, min: 0, max: 0 }, unchanged],
+      notInRehearsal: true,
+      checks: [{ id: "self-on-share", pattern: LOG_PATTERN_SELF_ON_SHARE, min: 1 }, countIs(1), selfIn],
     }),
-    selfRowCheck("on", "チェックを付ける"),
+    humanStep(selfFrameShareStopMessage(args.voiceChannel, callAccounts(args)), "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S),
+    step("wait", "共有の終わりが自分の枠に届くまでの猶予", { ms: SELF_FRAME_SETTLE_MS }),
+    step("collect-plugin-log", "プラグインの記録の回収 (" + main + " の共有を止めた後)"),
+    ...reads("self-stopped", "共有を止めた後 (チェックも自分の枠も残る)"),
+    ...judgeRead("self-stopped", "共有を止めても、チェックは外れず、自分の枠は出たまま、枠の数も変わらない", {
+      since: "self-share",
+      notInRehearsal: true,
+      checks: [{ id: "self-not-off", pattern: LOG_PATTERN_SELF_OFF_ANY, min: 0, max: 0 }, unchanged],
+    }),
+    ...selfRowCheck("off", "共有で付いたチェックを外す"),
+    step("wait", "チェックが自分の枠に届くまでの猶予", { ms: SELF_FRAME_DOCK_SETTLE_MS }),
+    step("collect-plugin-log", "プラグインの記録の回収 (自分の行のチェックを外した後)"),
+    ...reads("self-off", "共有で付いたチェックを外した後"),
+    ...judgeRead("self-off", "チェックを外すと自分の枠が消え、枠の数が元に戻る", {
+      since: "self-stopped",
+      notInRehearsal: true,
+      checks: [{ id: "self-off", pattern: LOG_PATTERN_SELF_OFF, min: 1 }, countIs(0)],
+    }),
+    ...selfRowCheck("on", "チェックを付ける"),
     step("wait", "チェックが自分の枠に届くまでの猶予", { ms: SELF_FRAME_DOCK_SETTLE_MS }),
     step("collect-plugin-log", "プラグインの記録の回収 (自分の行のチェックを付けた後)"),
     ...reads("self-during", "チェックを付けた後"),
     step("screenshot-source", "自分の枠: 合成のソースの絵を PNG に撮る (チェックを付けた後)", { source: { kind: "composite" }, label: "self-during" }),
-    judgeLogLinesStep("self-during", "自分の枠: チェックを付けると自分の枠が点灯し、枠が 1 つ増えて self= が入る", {
-      since: "self-share",
-      checks: [
-        { id: "self-on", pattern: LOG_PATTERN_SELF_ON, min: 1 },
-        { id: "canvas-count", pattern: LOG_PATTERN_CANVAS_COUNT, min: 1, group: 1, delta: { from: "self-before", equals: 1 } },
-        { id: "canvas-self", pattern: LOG_PATTERN_CANVAS_SELF, min: 1 },
-      ],
+    ...judgeRead("self-during", "チェックを付けると自分の枠が点灯し、枠が 1 つ増えて self= が入る", {
+      since: "self-off",
+      checks: [{ id: "self-on", pattern: LOG_PATTERN_SELF_ON, min: 1 }, countIs(1), selfIn],
     }),
-    humanStep(selfFrameShareStopMessage(args.voiceChannel, callAccounts(args)), "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S),
-    step("wait", "共有の終わりが自分の枠に届くまでの猶予", { ms: SELF_FRAME_SETTLE_MS }),
-    step("collect-plugin-log", "プラグインの記録の回収 (" + callAccounts(args).main + " の共有を止めた後)"),
-    ...reads("self-stopped", "共有を止めた後 (チェックも自分の枠も残る)"),
-    judgeLogLinesStep("self-stopped", "自分の枠: 共有を止めても、チェックは外れず、自分の枠は出たまま、枠の数も変わらない", {
-      since: "self-during",
-      checks: [{ id: "self-not-off", pattern: LOG_PATTERN_SELF_OFF_ANY, min: 0, max: 0 }, unchanged],
-    }),
-    selfRowCheck("off", "チェックを外す"),
+    ...selfRowCheck("off", "チェックを外す"),
     step("wait", "チェックが自分の枠に届くまでの猶予", { ms: SELF_FRAME_DOCK_SETTLE_MS }),
     step("collect-plugin-log", "プラグインの記録の回収 (自分の行のチェックを外した後)"),
     ...reads("self-after", "チェックを外した後"),
-    judgeLogLinesStep("self-after", "自分の枠: チェックを外すと自分の枠が消え、枠の数が元に戻る", {
-      since: "self-stopped",
-      checks: [
-        { id: "self-off", pattern: LOG_PATTERN_SELF_OFF, min: 1 },
-        { id: "canvas-count", pattern: LOG_PATTERN_CANVAS_COUNT, min: 1, group: 1, delta: { from: "self-before", equals: 0 } },
-      ],
+    ...judgeRead("self-after", "チェックを外すと自分の枠が消え、枠の数が元に戻る", {
+      since: "self-during",
+      checks: [{ id: "self-off", pattern: LOG_PATTERN_SELF_OFF, min: 1 }, countIs(0)],
     }),
   ];
 }
+// 自分の枠の判定の読みの名前 (judge-log-lines の label。judge-lines の self-frame の行がまとめる)。
+export const SELF_FRAME_READ_LABELS = ["self-share", "self-stopped", "self-off", "self-during", "self-after"];
 
 // スピーカーミュートと最小化の間も受け取りが続くこと -> 受け手の Vesktop が通話から抜けても接続が保たれ、戻ると映り直すこと。
 function speakerMuteAndRejoinSteps(args) {
@@ -5180,6 +5354,11 @@ function speakerMuteAndRejoinSteps(args) {
       judge: "named-in-texts",
       inputs: { texts: { dialog: VESKTOP_REJOIN_LABEL }, names: { value: sharing } },
     }),
+    // リハーサルは人の操作 (スピーカーミュート・最小化・抜けて戻る) が起きないので、上の読みは通すが、judge-lines の 2 行は判定しない
+    // (起きていないことの読みが合格に見えないようにする。REHEARSAL_NOT_JUDGED)。
+    ...(args.rehearsal
+      ? [rehearsalSkipStep("receive-continues", "スピーカーミュートと最小化の間も受け取りが続く"), rehearsalSkipStep("rejoin", "受け手の Vesktop の抜け戻り")]
+      : []),
   ];
 }
 export const VESKTOP_LEAVE_BASELINE_LABEL = "before-vesktop-leave";
@@ -5187,30 +5366,31 @@ export const RECEIVE_CONTINUES_LABEL = "mute-minimized";
 export const VESKTOP_LEFT_LABEL = "vesktop-left";
 export const VESKTOP_REJOIN_LABEL = "vesktop-rejoined";
 
-// --recheck の本体: 参加後の画像 -> バージョンの表示 -> 画面共有の音 -> 映像の遅延 (--latency-person があるとき) ->
+// --recheck の本体: 参加後の画像 -> バージョンの表示 -> 画面共有の音 -> 遅れと映像と音のずれの測定 (recheckMeasureSteps) ->
 // 共有の途中の解像度の変化 (実機の実行だけ) -> エンコードの設定 -> 別アカウント方式のメッセージ (--broadcaster-id があるとき。スピーカーミュートの段階は
 // 入れない) -> 自分の枠 -> スピーカーミュートと最小化・受け手の Vesktop の抜け戻り。メインの録画と配信は実行しないので、録画は配信なしの録画
-// (遅延・解像度の変化) だけになる。
-// --av-check: 画面共有の映像と音のずれを、配信の画面 (OBS の録画 av1) と cordmux の録画の両方で測る。遅延 (callLatencySteps) と
-// 同じ回に測り、「映像のバッファ + 描く刻みの半分 - 遅延 = 音の遅れ」の関係が成り立つかを読む材料にする (値を補正に使わない)。
-// cordmux の録画は A/V の録画の前に始めて後に止め、同じ区間のテスト動画を含める。
-function recheckAvSteps(args) {
+// (遅延・A/V・解像度の変化) だけになる。
+// 遅れ (--latency-person) と A/V (--av-check) を測る間は、cordmux の録画を続ける (recheckMeasureSteps)。
+//   - A/V: 画面共有の映像と音のずれを、配信の画面 (OBS の録画 av1) と cordmux の録画の両方で測る。遅延 (callLatencySteps) と
+//     同じ回に測り、「映像のバッファ + 描く刻みの半分 - 遅延 = 音の遅れ」の関係が成り立つかを読む材料にする (値を補正に使わない)。
+//   - 枠の人: 合成のソースの枠に誰が載っているかは、OBS の記録に名前がない (枠の番号とストリームの番号だけ)。人とストリームの対応は
+//     cordmux の録画の録画ログにある (personScreenStreams) ので、遅れと A/V の OBS の録画の区間を cordmux の録画で覆い、その区間の対応から、
+//     遅れを読む人とテスト動画を共有している人の枠を自動で見つける (judge-latency と judge-av-sync)。
+// テスト動画の共有は参加の文 (callJoinMessage の recheck) で頼んでいるので、A/V の録画の前にもう一度は頼まない。
+function recheckMeasureSteps(args) {
+  if (!args.latencyPerson && !args.avCheck) return [];
   const avAccount = args.rehearsal ? REHEARSAL_AV_SCREEN_ACCOUNT : callAccounts(args).chrome;
-  return [
-    step("dock-click", "ドックの [" + TEXT_ID_RECORD_START + "] を押して cordmux の録画を始める (A/V の測定の区間を含めるため)", {
+  const steps = [
+    step("dock-click", "ドックの [" + TEXT_ID_RECORD_START + "] を押して cordmux の録画を始める (遅れと A/V の測定の区間を含め、録画ログから枠の人を引くため)", {
       target: "first",
       textId: TEXT_ID_RECORD_START,
       desired: "on",
       gate: true,
     }),
-    ...callAvSteps(
-      args,
-      "av1",
-      "Chrome (" + callAccounts(args).chrome + ") で『テスト動画』のタブを、音声も含めて共有してください (最初から共有したままなら、そのまま伝えてください)",
-      callScreens(args),
-      avAccount,
-    ),
-    avSyncJudgeStep("av1"),
+  ];
+  if (args.latencyPerson) steps.push(...callLatencySteps(args, callScreens(args)));
+  if (args.avCheck) steps.push(...callAvSteps(args, "av1", null, callScreens(args), avAccount));
+  steps.push(
     step("dock-click", "ドックの [" + TEXT_ID_RECORD_STOP + "] を押して cordmux の録画を終える", {
       target: "first",
       textId: TEXT_ID_RECORD_STOP,
@@ -5225,19 +5405,24 @@ function recheckAvSteps(args) {
       gate: true,
     }),
     step("collect-record-session", "cordmux の録画のフォルダ (録画ログ・区間・黒・完成) の一覧を結果に残す", { recordDirRel: RECORD_DIR_REL }),
-    step("judge-record-sync", "cordmux の録画の、" + avAccount + " の画面の完成に sync.py を実行する (録画の中の映像と音のずれ)", {
-      person: avAccount,
-      recordDirRel: RECORD_DIR_REL,
-    }),
-  ];
+  );
+  if (args.avCheck) {
+    steps.push(
+      avSyncJudgeStep("av1", avAccount),
+      step("judge-record-sync", "cordmux の録画の、" + avAccount + " の画面の完成に sync.py を実行する (録画の中の映像と音のずれ)", {
+        person: avAccount,
+        recordDirRel: RECORD_DIR_REL,
+      }),
+    );
+  }
+  return steps;
 }
 
 function callRecheckBodySteps(args) {
   const steps = [...callJoinedPictureSteps(args)];
-  steps.push(...callVersionCheckSteps());
+  steps.push(...callVersionCheckSteps(args));
   steps.push(...screenAudioSteps(args));
-  if (args.latencyPerson) steps.push(...callLatencySteps(args, callScreens(args)));
-  if (args.avCheck) steps.push(...recheckAvSteps(args));
+  steps.push(...recheckMeasureSteps(args));
   if (resolutionChangePlanned(args)) steps.push(...resolutionChangeSteps());
   steps.push(...encodeSettingsSteps(args));
   if (args.broadcasterId !== null && args.broadcasterId !== undefined) {
@@ -5245,6 +5430,12 @@ function callRecheckBodySteps(args) {
     steps.push(...selfFrameSteps(args), ...speakerMuteAndRejoinSteps(args));
   }
   return steps;
+}
+
+// --av-only の本体: 参加後の画像 -> 遅れと映像と音のずれの測定だけ (recheckMeasureSteps)。締めは callClosingSteps (人は抜けて Vesktop を終了し、
+// アンインストールは実行スクリプトが押す。callUninstallSteps)。
+function callAvOnlyBodySteps(args) {
+  return [...callJoinedPictureSteps(args), ...recheckMeasureSteps(args)];
 }
 
 function callBodySteps(args) {
@@ -5260,7 +5451,7 @@ function callBodySteps(args) {
   }
   steps.push(...callAc31Steps());
   // --extra-checks の (b): バージョンの表示 (録画と配信の前。設定ウィンドウの操作は配信中の操作に数えない位置)。
-  if (args.extraChecks) steps.push(...callVersionCheckSteps());
+  if (args.extraChecks) steps.push(...callVersionCheckSteps(args));
   steps.push(step("stream-sink-start", "配信の受信側 (ffmpeg -listen rtmp) を起動する (実行の最後まで開けたまま)", {}));
   // 2 回目の A/V (av2) の 90 分の起点は、このメインの録画の開始。
   const mainStartIndex = steps.length;
@@ -5393,26 +5584,30 @@ function callAnalysisSteps(args) {
 }
 
 // 遅延の録画に latency.py を実行する (ツールが無ければ「ツールがない」と記録して先へ進む)。--latency-person が無ければステップごと省く。
+// 遅れを読む人の枠は、遅れの録画の始めと終わりに読んだ枠の割り当て (OBS の記録の Screen slot N carries stream M) と、その区間を覆う
+// cordmux の録画の録画ログ (人とストリームの対応) から引く (recheckMeasureSteps。personScreenStreams と personCellOf)。録画ログが区間を
+// 覆わないとき (--recheck でない call-1) は、テスト用の送信側なら名前 (harness-screen-<ストリームの番号>) で引き、それもできなければ
+// 判定せず (handRead)、枠の PNG で選んで latency.py を手で実行する。リハーサルは比べる Vesktop のウィンドウがないので判定しない。
 function judgeLatencySteps(args) {
   if (!args.latencyPerson) return [];
+  if (args.rehearsal) return [rehearsalSkipStep("latency", "cordmux が足す遅れ")];
   return [
     step("judge-latency", "cordmux が足す遅れ: 遅れの録画の、" + latencyPersonFor(args) + " の枠と Vesktop のウィンドウで同じ帯の番号が出るフレームの差を latency.py で読む (目標 " + LATENCY_TARGET_DETECT_MS + " / " + LATENCY_TARGET_ACCEPT_MS + " ms。記録するだけ)", {
       recording: LATENCY_RECORDING_LABEL,
       person: latencyPersonFor(args),
       cells: callScreens(args),
       tool: LATENCY_TOOL,
-      // 実際の通話は、合成のソースの枠が誰のものかが記録にも場面の項目にも出ない (compositeSnapshotStep の namesUnknown)。
-      // 人を見つけられないときは失敗にせず、PNG で枠を読み、latency.py を手で実行する。
-      ...(args.rehearsal ? {} : { namesUnknown: true }),
     }),
   ];
 }
 
 // OBS のログから、ストリームごとの整列のずれの傾き・送信側のフォールバックの段階・アイコンを送らなかった行・接続と切断の数を数える。
-function judgeCallLogStep() {
+// リハーサルは短く、傾きを読む長さ続くストリームがないので、そのときは判定しない (shortRunNotJudged。長く続いたストリームがあれば判定する)。
+function judgeCallLogStep(args) {
   return step("judge-call-log", "OBS の記録から、ストリームごとの整列のずれの傾き・送信側のフォールバックの段階・アイコンを送らなかった行・接続と切断の数を数える", {
     maxDriftPercent: ALIGN_DRIFT_MAX_PERCENT,
     minSpanSeconds: ALIGN_DRIFT_MIN_SPAN_S,
+    ...(args && args.rehearsal ? { shortRunNotJudged: REHEARSAL_NOT_JUDGED["align-drift"] } : {}),
   });
 }
 
@@ -5434,6 +5629,13 @@ export const RECHECK_JUDGE_ITEMS = [
   "rejoin",
   "align-drift",
 ];
+// --recheck の judge-lines の項目。--av-check なら A/V の 2 行 (合成のソースと cordmux の録画) を足す。--av-only は、実行した項目
+// (追加・接続・遅れ・A/V・整列のずれの傾き) だけを並べる。
+export function recheckJudgeItems(args) {
+  const av = args && args.avCheck ? ["av-sync-av1", "record-sync"] : [];
+  if (args && args.avOnly) return ["add-to-vesktop", "vesktop-connects", ...(args.latencyPerson ? ["latency"] : []), ...av, "align-drift"];
+  return [...RECHECK_JUDGE_ITEMS, ...av];
+}
 
 // 共有の途中の解像度の変化の録画を frames.py で読むステップ (実機の実行だけ。resolutionChangePlanned)。区画は合成の枠。
 function judgeResolutionChangeSteps(args) {
@@ -5454,8 +5656,8 @@ function callRecheckAnalysisSteps(args) {
   return [
     ...judgeResolutionChangeSteps(args),
     ...judgeLatencySteps(args),
-    judgeCallLogStep(),
-    step("judge-lines", "合否のしきい値を当てた判定を 1 つの表にまとめる (--recheck で実行した項目だけ。記録するだけ)", { items: RECHECK_JUDGE_ITEMS }),
+    judgeCallLogStep(args),
+    step("judge-lines", "合否のしきい値を当てた判定を 1 つの表にまとめる (--recheck で実行した項目だけ。記録するだけ)", { items: recheckJudgeItems(args) }),
   ];
 }
 
@@ -5499,40 +5701,62 @@ function callExtraAnalysisSteps(args) {
     }),
     ...latency,
     // (e) OBS のログの stats 行と送信側の行。
-    judgeCallLogStep(),
+    judgeCallLogStep(args),
     // しきい値を当てた判定を 1 つの表にまとめる (実行中に止める判定と、記録するだけの判定を分けて書く)。
     step("judge-lines", "合否のしきい値を当てた判定を 1 つの表にまとめる (JUDGE_LINES。どれも記録するだけ)", {}),
   ];
 }
 
-// 通話に参加する案内の文 (利用者に見せる)。Chrome は、実行スクリプトを動かす側が**実行を始める前に**テスト用のマイクの音つきで起動しておく
-// (launch-chrome-fake-mic.ps1)。
-// Vesktop の共有は VESKTOP_SHARE_IN_CALL_ONE が true のときだけ依頼する。
+// 通話に参加する案内の文 (利用者に見せる)。4 つのアカウント (CALL_ACCOUNT_ROLES) 全部に、ボイスチャンネルに入ることを頼む (Vesktop のアカウントも
+// 入らないと、cordmux は何も受け取らない。11-13 の 1 回目は文が Vesktop に入ることを頼んでおらず、入る前に次の手順へ進んだ)。
+// マイク: 4 つとも同じ PC のマイクなので、スピーカーから出た音 (テスト動画の音を含む) を拾うと、声として配信の音に混ざる。
+//   - --recheck (--av-only を含む): 4 つともミュートにする。声の音を使う確認がないので、Chrome をテスト用のマイクの音つきで起動する
+//     (launch-chrome-fake-mic.ps1) 必要もない。Chrome は、実行スクリプトを動かす側が実行を始める前にテスト動画のページを開いておく。
+//   - それ以外の call-1: Chrome だけミュートを解除する (使う声の確認と声のミュートの往復は、Chrome のテスト用のマイクの 1 kHz を声として使う。
+//     Chrome は launch-chrome-fake-mic.ps1 で起動しておく)。ほかの 3 つはミュートにする。
+// Vesktop の共有は vesktopShare (--vesktop-share) のときだけ依頼する。
 // ボイスチャンネルの名前は `--voice-channel` の値 (`voiceChannel`)。名前をコードに書かないため、渡されていなければ名前を挙げずに書く。
-// recheck が真のとき (--recheck): Chrome の共有にタブの音声を含めてもらう 1 文 (画面共有の音を確認するため) と、連絡が途絶えたときの案内を添える。
-export function callJoinMessage({ vesktopShare, voiceChannel, recheck, accounts = DEFAULT_CALL_ACCOUNTS } = { vesktopShare: VESKTOP_SHARE_IN_CALL_ONE, voiceChannel: null, recheck: false, accounts: DEFAULT_CALL_ACCOUNTS }) {
+// recheck が真のとき: Chrome の共有にテスト動画のタブを音声付きで選んでもらう 1 文 (画面共有の音と、映像と音のずれを確かめるため。
+// 後の A/V の録画の前にもう一度は頼まない) と、連絡が途絶えたときの案内を添える。
+// 返事は要らない: 実行スクリプトが OBS の記録で、全員が入って共有を始めたことを見て進む (callJoinStep の until call-ready)。
+export function callJoinMessage({ vesktopShare, voiceChannel, recheck, avOnly, accounts = DEFAULT_CALL_ACCOUNTS } = { vesktopShare: VESKTOP_SHARE_IN_CALL_ONE, voiceChannel: null, recheck: false, avOnly: false, accounts: DEFAULT_CALL_ACCOUNTS }) {
   const channel = voiceChannel ? "ボイスチャンネル「" + voiceChannel + "」" : "指定のボイスチャンネル";
-  const sameChannel = voiceChannel ? "「" + voiceChannel + "」" : "同じボイスチャンネル";
-  const base = callJoinBaseMessage(channel, sameChannel, vesktopShare, accounts);
+  const base = callJoinBaseMessage(channel, vesktopShare, Boolean(recheck), accounts);
+  const ready = "\n全員が入って画面共有を始めると、こちらで確かめて次へ進みます (返事は必要ありません)。";
   return recheck
     ? base +
         "\nChrome (" + accounts.chrome + ") の画面共有は、先に「テスト動画」のタブで「再生する (音が出ます)」のボタンを押し、そのタブを選んで「タブの音声も共有する」のチェックを付けてください " +
-        "(画面共有の音が届くかを確認するためです)。\n" +
+        (avOnly ? "(映像と音のずれを確かめるためです)。" : "(画面共有の音が届くかと、映像と音のずれを確かめるためです)。") +
+        ready +
+        "\n" +
         CALL_CONTACT_LOST_GUIDANCE
-    : base;
+    : base + ready;
 }
 
-function callJoinBaseMessage(channel, sameChannel, vesktopShare, accounts) {
+function callJoinBaseMessage(channel, vesktopShare, recheck, accounts) {
+  const sharers = "Desktop版のDiscord (" + accounts.main + ")、Firefox (" + accounts.firefox + ")、Chrome (" + accounts.chrome + ")";
   return (
-    "Desktop版のDiscord (" + accounts.main + ") とFirefox (" + accounts.firefox + ") で" + channel + "に入ってください。" +
-    "こちらが先に開いておいたChrome (" + accounts.chrome + ") でも入り、Chromeのマイクのミュートを解除してください (試験の音はそこから送ります)。" +
-    "3つとも画面共有を始めてください。" +
-    (vesktopShare
-      ? // 4 つとも同じ PC のマイクなので、テスト用の音を送る Chrome 以外はマイクをミュートにする
-        // (部屋の音とスピーカーから出た 1 kHz を拾うと、使う声の確認 (--extra-checks の (c)) とテスト動画の A/V の音が濁る)。
-        // Vesktop も同じチャンネルに入ることを文で依頼する (入ることを書かないと、共有だけを依頼する文になるため)。
-        "Vesktop (" + accounts.receiver + ") でも" + sameChannel + "に入り、画面共有を1つ始めてください。Chrome以外のマイクはミュートにしてください。"
-      : "Vesktop (" + accounts.receiver + ") では画面共有を始めないでください。")
+    "Desktop版のDiscord (" + accounts.main + ")、Firefox (" + accounts.firefox + ")、こちらが先に開いておいたChrome (" + accounts.chrome + ")、Vesktop (" +
+    accounts.receiver + ") の4つで、" + channel + "に入ってください。" +
+    (recheck
+      ? "マイクは4つともミュートにしてください (スピーカーから出たテスト動画の音をマイクが拾うと、配信の音に混ざるためです)。"
+      : "マイクは、Chrome (" + accounts.chrome + ") だけミュートを解除し (テスト用の音はそこから送ります)、ほかの3つはミュートにしてください " +
+        "(スピーカーから出た音をマイクが拾うと、配信の音に混ざるためです)。") +
+    "\n" + sharers + " の3つで画面共有を始めてください。" +
+    (vesktopShare ? "Vesktop (" + accounts.receiver + ") でも、画面共有を1つ始めてください。" : "Vesktop (" + accounts.receiver + ") では画面共有を始めないでください。")
+  );
+}
+
+// 参加と共有の依頼。返事を待たず、OBS の記録の最後の Facts の行で、通話の人数が 4 つのアカウント以上、画面共有の人数が共有を頼んだ人数以上に
+// なったら進む (until call-ready)。人が返事を書いた通知ファイルでも進む (どの until でも同じ) が、その場合は全員がそろう前に進みうるので、
+// 実行スクリプトを動かす側は、この手順では通知ファイルを置かない (README の「実際の通話」)。
+function callJoinStep(args) {
+  return humanStep(
+    callJoinMessage({ vesktopShare: args.vesktopShare || VESKTOP_SHARE_IN_CALL_ONE, voiceChannel: args.voiceChannel, recheck: Boolean(args.recheck), avOnly: Boolean(args.avOnly), accounts: callAccounts(args) }),
+    "call-ready",
+    HUMAN_JOIN_TIMEOUT_MS,
+    HUMAN_ALLOWANCE_JOIN_S,
+    { roster: CALL_ACCOUNT_ROLES.length, sharing: callScreenSharers(args).length },
   );
 }
 
@@ -5581,7 +5805,7 @@ function buildCallOneSteps(args) {
   if (args.rehearsal) {
     // リハーサル: 実機の Vesktop の代わりにテスト用の送信側を使う (--step record と同じ手順。画面 4 + 声 4、マーカーの音は画面の 1 つ目)。
     // [Vesktop に追加] は実行スクリプトが押す (absent の偽の state.json に製品が書き、バックアップができる = アンインストールの判定の材料)。
-    const body = rehearseSteps([...(args.recheck ? callRecheckBodySteps(args) : callBodySteps(args)), ...callClosingSteps(args)]);
+    const body = rehearseSteps([...callOneBodySteps(args), ...callClosingSteps(args)]);
     const harnessSeconds = Math.ceil(plannedSeconds(body) * REHEARSAL_HARNESS_LIFETIME_FACTOR) + REHEARSAL_HARNESS_MARGIN_S;
     steps.push(step("wait", "ドックがメッセージを描くまでの猶予 (押す前)", { ms: SELECT_FOUR_SETTLE_WAIT_MS }));
     steps.push(step("dock-click", "リハーサル: 実行スクリプトが [" + TEXT_ID_ADD_TO_VESKTOP + "] を押す (偽の state.json に製品が書く)", {
@@ -5604,8 +5828,9 @@ function buildCallOneSteps(args) {
       }),
     );
     steps.push(step("wait-connection", "テスト用の送信側が接続を確立するまで待つ", { timeoutMs: REHEARSAL_CONNECT_WAIT_TIMEOUT_MS, gate: true }));
-    // テスト用の送信側は自分のアカウントを最初から送るので、ステップの並びと実行スクリプトの受け渡しを通すために、実機の実行と同じ位置に置く。
-    if (args.recheck) steps.push(selfAccountWaitStep());
+    // テスト用の送信側は Vesktop のアカウントではなく、自分のアカウントを送らない。実機の実行と同じ位置に、判定しないことの記録を置く
+    // (REHEARSAL_NOT_JUDGED。送信側が Vesktop のアカウントを読むかは、実際の通話でしか確かめられない)。
+    if (args.recheck && !args.avOnly) steps.push(rehearsalSkipStep("self-account", "送信側が自分のアカウントを届けたか"));
     // --extra-checks の (a): 参加と共有の前の接続の数を保存する (実機の実行と同じ位置)。
     if (args.extraChecks) steps.push(step("count-connections", "参加と共有の前の送信部の接続の数を保存する (共有で落ちていないかを後で比べる)", { label: JOIN_BASELINE_LABEL }));
     steps.push(...rehearseSteps([humanStep("(リハーサル) 通話に参加して共有を始める操作の代わりに待つ", "go-file", HUMAN_JOIN_TIMEOUT_MS, HUMAN_ALLOWANCE_JOIN_S)]));
@@ -5634,7 +5859,8 @@ function buildCallOneSteps(args) {
         }),
       );
       // --recheck: 接続の直後に、送信側が自分のアカウントを届けたかを見る (止めない。以後の確認は自分のアカウントが届かなくても測れる)。
-      if (args.recheck) steps.push(selfAccountWaitStep(ADD_TO_VESKTOP_BASELINE_LABEL));
+      // --av-only は映像と音のずれだけを確かめるので見ない。
+      if (args.recheck && !args.avOnly) steps.push(selfAccountWaitStep(ADD_TO_VESKTOP_BASELINE_LABEL));
     } else {
       // **利用者が Vesktop を開き直すのはこの待ちの前**。call-gate-d の
       // Vesktop は package.json を退けた状態で起動しているので、package.json も必要な場合は送信部が
@@ -5649,8 +5875,8 @@ function buildCallOneSteps(args) {
     }
     // --extra-checks の (a): 参加と共有の前の接続の数を保存する (callBodySteps の after-join・after-main がこれと比べる)。
     if (args.extraChecks) steps.push(step("count-connections", "参加と共有の前の送信部の接続の数を保存する (共有で落ちていないかを後で比べる)", { label: JOIN_BASELINE_LABEL }));
-    steps.push(humanStep(callJoinMessage({ vesktopShare: args.vesktopShare || VESKTOP_SHARE_IN_CALL_ONE, voiceChannel: args.voiceChannel, recheck: Boolean(args.recheck), accounts: callAccounts(args) }), "go-file", HUMAN_JOIN_TIMEOUT_MS, HUMAN_ALLOWANCE_JOIN_S));
-    steps.push(...(args.recheck ? callRecheckBodySteps(args) : callBodySteps(args)));
+    steps.push(callJoinStep(args));
+    steps.push(...callOneBodySteps(args));
     steps.push(...callClosingSteps(args));
   }
   steps.push(...closeSteps("first"));
@@ -5660,6 +5886,12 @@ function buildCallOneSteps(args) {
   // 30 / 60 / 90 分の位置の obs-stats。リハーサルは待ちを縮めた分だけ位置も縮める (手順を一度通すため)。
   const marks = args.rehearsal ? CALL_STATS_MARK_MINUTES.map((m) => m * REHEARSAL_TIME_FACTOR) : CALL_STATS_MARK_MINUTES;
   return insertStatsAtMinutes(steps, marks);
+}
+
+// call-1 の本体 (参加の後から締めの前まで)。--recheck は短い実行、--av-only はその中の遅れと映像と音のずれの測定だけ。
+function callOneBodySteps(args) {
+  if (!args.recheck) return callBodySteps(args);
+  return args.avOnly ? callAvOnlyBodySteps(args) : callRecheckBodySteps(args);
 }
 
 // テスト用の送信側 (harness の Electron) の起動の引数。userData (Electron が設定やキャッシュを書く場所) を userDataDir に向ける。
@@ -5956,9 +6188,9 @@ export const ROSTER_BASELINE_LABEL = "before-roster";
 export const ROSTER_SHOT_LABEL = "roster-real";
 // 共有を止めてから並びの名前ラベルが描かれるまでの猶予 (名前ラベルは別の担当が非同期に描く。ドックの周期より十分長い値)。
 export const ROSTER_LABEL_SETTLE_MS = 10000;
-// 実際の通話で並ぶと期待する人数。通話に参加する 4 アカウントのうち、自分の枠の人 (メインアカウント) と、受け取りに使うアカウント
-// (Vesktop のサブアカウント) は並びに出ない (dock/build_observation.cpp の composite_roster_people) ので 2。数えるだけで、失敗にはしない。
-export const ROSTER_EXPECTED_PEOPLE = 2;
+// 実際の通話で並ぶと期待する人数は rosterExpectedPeople (docs/spec.md の並びの決まりから出す)。メインアカウントは、自分の枠が出ていなければ
+// 並びに出る (並びを撮るのは自分の枠のチェックを外した後)。並びから外れるのは、別アカウント方式のサブアカウント (Vesktop のアカウント) だけ
+// (dock/build_observation.cpp の composite_roster_people)。
 const ROSTER_LABEL_READY_RE = /\[cordmux\] Composite roster label ready: index=(\d+)/;
 export function rosterLabelReadyFromLog(lines) {
   const out = [];
@@ -5985,15 +6217,17 @@ export function rosterShownFromLog(lines) {
   return last;
 }
 
-export function judgeRosterLabels({ lines, baselineCount, expectedPeople = ROSTER_EXPECTED_PEOPLE } = {}) {
+export function judgeRosterLabels({ lines, baselineCount, expectedPeople } = {}) {
   const all = rosterLabelReadyFromLog(lines);
   const base = Math.max(0, Number(baselineCount) || 0);
   const added = all.slice(base);
   const shown = rosterShownFromLog(lines);
   const people = shown ? shown.people : null;
-  const complete = people === expectedPeople;
-  const reason =
-    shown === null
+  const expectedKnown = Number.isInteger(expectedPeople);
+  const complete = expectedKnown && people === expectedPeople;
+  const reason = !expectedKnown
+    ? "the expected number of people was not given"
+    : shown === null
       ? "no roster count line in the OBS log (the plugin may be older than the line), so the number of people cannot be told; read the picture"
       : complete
         ? ""
@@ -6004,7 +6238,7 @@ export function judgeRosterLabels({ lines, baselineCount, expectedPeople = ROSTE
     addedLines: added.length,
     people,
     peopleAt: shown ? shown.t : null,
-    expectedPeople,
+    expectedPeople: expectedKnown ? expectedPeople : null,
     complete,
   });
 }
@@ -6351,12 +6585,15 @@ export function avatarIssuesFromLog(lines) {
 
 // (e) の判定: 整列の傾きが上限の内か (ALIGN_DRIFT_MIN_SPAN_S 以上続いたストリームだけ)。フォールバック・アイコン・接続は数を残すだけで、ok には入れない
 // (どれも人が読む情報。フォールバックは負荷の結果、アイコンは見た目の結果で、合否のしきい値をここで決めない)。傾きを読めるストリームが 1 つも無ければ失敗。
+// opts.shortRunNotJudged (理由の文。リハーサル) があれば、傾きを読める長さのストリームが 1 つも無いときは失敗にせず判定しない (ok null)。
 export function judgeCallLog(lines, opts) {
   const streams = [...alignStatsFromLog(lines).entries()].sort((a, b) => a[0] - b[0]).map(([stream, samples]) => ({ stream, ...alignDriftOf(samples, opts) }));
   const judged = streams.filter((s) => s.judged);
   const over = judged.filter((s) => s.ok === false).map((s) => s.stream);
+  const short = opts && typeof opts.shortRunNotJudged === "string" && judged.length === 0;
   const reason = judged.length === 0 ? "no stream had stats lines long enough to read the drift" : "the alignment drift is over the limit on stream " + over.join(", ");
-  return result(judged.length > 0 && over.length === 0, reason, {
+  return result(short ? null : judged.length > 0 && over.length === 0, short ? reason + " (not judged: " + opts.shortRunNotJudged + ")" : reason, {
+    ...(short ? { notJudged: opts.shortRunNotJudged } : {}),
     align: streams,
     stages: senderStagesFromLog(lines),
     avatars: avatarIssuesFromLog(lines),
@@ -6374,25 +6611,49 @@ export function keySendingSteps(steps) {
     .map((s) => ({ id: s.id || null, kind: s.kind, label: s.label }));
 }
 
-// sync.py の傾き (trend) をしきい値で判定する。verdict は
-//   defect        |傾き| > AV_TREND_DEFECT_MS_PER_MIN かつ 95% の幅が 0 を含まない (0 と分けられる) = 欠陥
-//   undetermined  |傾き| はしきい値を超えたが 95% の幅が 0 を含む (この録画では 0 と分けられない) = 長い通話で確認する
-//   long-call     |傾き| がしきい値の内 = この録画では欠陥と言えない。長い通話で確認する項目として残す
-//   not-judged    組が少ないか短い (AV_TREND_MIN_PAIRS / AV_TREND_MIN_SPAN_S)、または sync.py が幅を出していない
+// sync.py の傾き (trend) をしきい値で判定する。見分けたいのは、ずれが時間とともに溜まって広がる形 (長い配信で限りなく大きくなる。欠陥) と、
+// 一時的に上下して戻る段 (溜まらない)。sync.py は段を外した基準の組の傾き (trend.baseline) と段の並び (trend.steps) を出す
+// (sync.py の「一時的な段と、時間とともに広がる傾きを分ける」)。判定は基準の傾きで行い、段は数と高さを記録する (段で欠陥にはしない)。
+// 基準がない前の形の出力は、全部の組の傾きで判定する (fitOn: all-pairs)。verdict は
+//   defect        |傾き| > AV_TREND_DEFECT_MS_PER_MIN かつ 95% の幅が 0 を含まない (0 と分けられる) = 時間とともに広がる。欠陥
+//   undetermined  |傾き| はしきい値を超えたが 95% の幅が 0 を含むか幅が出せない (ずれが段のように留まり、独立な組が少ない)、
+//                 または録画の終わりが段の途中 (戻るかが分からない) = この録画では分けられない。長い通話で確認する
+//   long-call     |傾き| がしきい値の内 = この録画では広がりと言えない。長い通話で確認する項目として残す
+//   not-judged    組が少ないか短い (AV_TREND_MIN_PAIRS / AV_TREND_MIN_SPAN_S)、または前の形の出力が幅を出していない
 export function judgeAvTrend(trend) {
   const t = trend || {};
-  const slope = typeof t.slope_ms_per_min === "number" && Number.isFinite(t.slope_ms_per_min) ? t.slope_ms_per_min : null;
-  const ci = Array.isArray(t.slope_ci95_ms_per_min) && t.slope_ci95_ms_per_min.length === 2 && t.slope_ci95_ms_per_min.every((x) => typeof x === "number") ? t.slope_ci95_ms_per_min : null;
-  const pairs = typeof t.pairs === "number" ? t.pairs : 0;
-  const span = typeof t.span_s === "number" ? t.span_s : 0;
-  const base = { slopeMsPerMin: slope, ci95MsPerMin: ci, pairs, spanSeconds: span, limitMsPerMin: AV_TREND_DEFECT_MS_PER_MIN };
+  const b = t.baseline && typeof t.baseline === "object" ? t.baseline : null;
+  const fit = b || t;
+  const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+  const slope = num(fit.slope_ms_per_min);
+  const ci = Array.isArray(fit.slope_ci95_ms_per_min) && fit.slope_ci95_ms_per_min.length === 2 && fit.slope_ci95_ms_per_min.every((x) => typeof x === "number") ? fit.slope_ci95_ms_per_min : null;
+  const pairs = typeof fit.pairs === "number" ? fit.pairs : 0;
+  const span = typeof fit.span_s === "number" ? fit.span_s : 0;
+  const steps = Array.isArray(t.steps) ? t.steps : null;
+  const endsOff = t.ends_off_baseline === true;
+  const base = {
+    slopeMsPerMin: slope,
+    ci95MsPerMin: ci,
+    pairs,
+    spanSeconds: span,
+    limitMsPerMin: AV_TREND_DEFECT_MS_PER_MIN,
+    fitOn: b ? "baseline" : "all-pairs",
+    ...(b ? { allPairsSlopeMsPerMin: num(t.slope_ms_per_min), lag1Autocorr: num(b.lag1_autocorr), effectivePairs: num(b.effective_pairs) } : {}),
+    steps: steps ? steps.map((x) => ({ startS: x.start_s, endS: x.end_s, pairs: x.pairs, heightMs: x.height_ms, returned: x.returned })) : null,
+    stepCount: steps ? steps.length : null,
+    endsOffBaseline: endsOff,
+  };
   if (slope === null || pairs < AV_TREND_MIN_PAIRS || span < AV_TREND_MIN_SPAN_S) {
-    return { ...base, verdict: "not-judged", note: "fewer than " + AV_TREND_MIN_PAIRS + " pairs or shorter than " + AV_TREND_MIN_SPAN_S + " s" };
+    return { ...base, verdict: "not-judged", note: "fewer than " + AV_TREND_MIN_PAIRS + " pairs or shorter than " + AV_TREND_MIN_SPAN_S + " s" + (b ? " (outside the steps)" : "") };
   }
-  if (!ci) return { ...base, verdict: "not-judged", note: "sync.py gave no 95% interval of the slope" };
-  const separated = ci[0] > 0 || ci[1] < 0;
-  if (Math.abs(slope) > AV_TREND_DEFECT_MS_PER_MIN && separated) return { ...base, verdict: "defect", note: null };
-  if (Math.abs(slope) > AV_TREND_DEFECT_MS_PER_MIN) return { ...base, verdict: "undetermined", note: "over the line but the 95% interval includes 0; confirm in a long call" };
+  if (!ci && !b) return { ...base, verdict: "not-judged", note: "sync.py gave no 95% interval of the slope" };
+  const separated = ci !== null && (ci[0] > 0 || ci[1] < 0);
+  const over = Math.abs(slope) > AV_TREND_DEFECT_MS_PER_MIN;
+  if (over && separated) return { ...base, verdict: "defect", note: null };
+  if (over) {
+    return { ...base, verdict: "undetermined", note: (ci ? "over the line but the 95% interval includes 0" : "over the line but the offset stays in levels (too few independent pairs for an interval)") + "; confirm in a long call" };
+  }
+  if (endsOff) return { ...base, verdict: "undetermined", note: "the recording ended during a step, so whether it returns is not known; confirm in a long call" };
   return { ...base, verdict: "long-call", note: "within the line in this recording; confirm in a long call" };
 }
 
@@ -6425,20 +6686,33 @@ export function judgeAvSyncLines(data) {
   };
 }
 
-// sync.py の判定結果 (judge の結果。セルごとの perCell か 1 つの data) の全部のセルをしきい値で判定する。組のあるセルが 1 つも
+// sync.py の判定結果 (judge の結果。セルごとの perCell か 1 つの data) のセルをしきい値で判定する。組のあるセルが 1 つも
 // 無ければ失敗 (テスト動画を共有しているセルで組が取れていない = 測れていない)。
-export function judgeAvSync(judged) {
+// opts.person を渡すと、その人の枠 (opts.cell。テスト動画を共有している人) だけを判定し、ほかのセルは判定しない (verdict other-person)。
+// 合成のソースの音は全員の音を混ぜた 1 本なので、ほかの人の枠の白 (画面全体の共有にテスト動画が写る) とテスト動画の音の組は、
+// 映像と音のずれではなく、別の経路の映像の差を測る。枠が分からなければ (opts.cell が null) 判定しない (ok null。理由は opts.cellReason)。
+export function judgeAvSync(judged, opts) {
+  const o = opts || {};
   if (!judged) return result(false, "the sync.py result was not found", { cells: [], judgedCells: 0 });
   if (judged.ok === false) return result(false, "sync.py did not run: " + String(judged.error || "unknown"), { cells: [], judgedCells: 0 });
   const list = Array.isArray(judged.perCell) ? judged.perCell : judged.data ? [{ cell: 0, data: judged.data }] : [];
-  const cells = list.map((c) => ({ cell: c && c.cell, ...judgeAvSyncLines(c && c.data) }));
+  const person = o.person || null;
+  const target = person !== null && Number.isInteger(o.cell) ? o.cell : null;
+  if (person !== null && target === null) {
+    return result(null, "the frame of " + person + " was not found: " + String(o.cellReason || "unknown"), { person, personCell: null, cells: [], judgedCells: 0 });
+  }
+  const cells = list.map((c) => {
+    const cell = c && c.cell;
+    if (target !== null && cell !== target) return { cell, ok: null, verdict: "other-person", paired: c && c.data && typeof c.data.paired === "number" ? c.data.paired : null };
+    return { cell, ...judgeAvSyncLines(c && c.data) };
+  });
   const decided = cells.filter((c) => c.ok !== null);
   const failed = decided.filter((c) => c.ok === false).map((c) => c.cell);
   // 組はあるが下限に届かないセルだけのときは、測れていないので成功でも失敗でもない (null)。
   const fewPairs = cells.filter((c) => c.verdict === "too-few-pairs").map((c) => c.cell);
   const reason = decided.length === 0 ? (fewPairs.length > 0 ? "too few pairs to judge on cell " + fewPairs.join(", ") : "no cell has paired events (the test video was not measured)") : "outside the line on cell " + failed.join(", ");
   const ok = decided.length === 0 && fewPairs.length > 0 ? null : decided.length > 0 && failed.length === 0;
-  return result(ok, reason, { cells, judgedCells: decided.length });
+  return result(ok, reason, { cells, judgedCells: decided.length, ...(person !== null ? { person, personCell: target } : {}) });
 }
 
 // ---- 合成のソースの実行 (--composite) の判定 (純関数。run-window.mjs が呼ぶ) --------------------------------------
@@ -6556,11 +6830,63 @@ export function harnessPersonsFromSlotStreams(streams) {
   return out;
 }
 
+// ---- 枠に載っている人を、OBS の記録の枠の割り当てと cordmux の録画の録画ログから引く ----------------------------------------------
+// 実際の通話の OBS の記録には、人の名前を書かない (枠の番号とストリームの番号だけ: 「Screen slot N carries stream M」)。人とストリームの
+// 対応は cordmux の録画の録画ログにある (person の行の user_id と display_name、segment の行の user_id・kind・stream_id と時刻)。
+// ストリームの番号は再接続で別の人に割り当てられうる (docs/architecture.md の「録画ログ」) ので、対応は、判定する OBS の録画の区間
+// (fromMs から toMs。システム時刻の ms) に重なる segment の行だけから取る。テスト用の送信側は user_id がそのまま名前なので、名前も
+// user_id として引く (pickPersonScreenOutput と同じ)。user_id は戻り値に入れない (結果 JSON に書かない)。
+// segment の行の時刻: 始まりは first_pts_wall_us、長さは last_pts_us - first_pts_us (閉じていない行は今も続いているとみなす)。
+export function personScreenStreams({ ledger, person, fromMs, toMs }) {
+  if (!ledger) return { streams: [], reason: "no cordmux recording ledger" };
+  const name = String(person || "");
+  const ids = new Set((ledger.person || []).filter((p) => p && p.display_name === name).map((p) => String(p.user_id)));
+  ids.add(name);
+  const fromUs = Number(fromMs) * 1000;
+  const toUs = Number(toMs) * 1000;
+  const overlaps = (seg) => {
+    const start = Number(seg.first_pts_wall_us);
+    if (!Number.isFinite(start)) return false;
+    const open = seg.close_reason === "not_closed" || !Number.isFinite(Number(seg.last_pts_us));
+    const end = open ? Infinity : start + Math.max(0, Number(seg.last_pts_us) - Number(seg.first_pts_us));
+    return start < toUs && end > fromUs;
+  };
+  const screens = (ledger.segment || []).filter((seg) => seg && String(seg.kind || "") === "screen" && Number.isInteger(Number(seg.stream_id)) && overlaps(seg));
+  const mine = new Set(screens.filter((seg) => ids.has(String(seg.user_id))).map((seg) => Number(seg.stream_id)));
+  // 同じ区間に別の人が同じストリームの番号を持っていたら、その番号では人を決められない。
+  const others = new Set(screens.filter((seg) => !ids.has(String(seg.user_id))).map((seg) => Number(seg.stream_id)));
+  const streams = [...mine].filter((id) => !others.has(id)).sort((a, b) => a - b);
+  const reason =
+    mine.size === 0
+      ? "the cordmux recording has no screen segment of " + name + " during the recording"
+      : streams.length === 0
+        ? "the stream of " + name + " was also used by another person during the recording"
+        : null;
+  return { streams, reason };
+}
+
+// 録画の始めと終わりに読んだ枠 (captures の cells の stream) のうち、streams のどれかを運んでいた枠。始めと終わりの両方で同じ枠に
+// 載っていたときだけ、その枠 (cell = 枠の番号 - 1) を返す (途中で枠を移った人の区画は 1 つに決まらない)。
+export function personCellOf({ captures, streams }) {
+  const wanted = new Set((streams || []).map(Number));
+  const usable = (captures || []).filter((c) => c && Array.isArray(c.cells));
+  if (usable.length === 0) return { cell: null, reason: "the frames were not read at the start and the end of the recording" };
+  if (wanted.size === 0) return { cell: null, reason: "no stream to look for" };
+  const seen = usable.map((c) => {
+    const hit = c.cells.filter((x) => wanted.has(Number(x.stream)));
+    return hit.length === 1 ? hit[0].cell : null;
+  });
+  if (seen.some((c) => c === null)) return { cell: null, reason: "the stream was not on exactly one frame at the " + usable.map((c, i) => (seen[i] === null ? c.when || "?" : null)).filter(Boolean).join(" and ") + " of the recording" };
+  if (new Set(seen).size !== 1) return { cell: null, reason: "the person moved to another frame during the recording" };
+  return { cell: seen[0], reason: null };
+}
+
 // 配置の行のタイルを、判定ツールのセル (screenCellRegions と同じ形) にする。cell は枠の番号 - 1 (人との対応は枠の番号で引く)。
 // 矩形は OBS の基本の解像度 (配置の行の canvas) の上の値で、録画の上の値へは GetVideoSettings の output / base の比で補正する
 // (screenCellRegions と同じ丸め)。sourceName は、枠ごとの公開のソースがないので常に null (人の枠は persons から引く)。自分の枠は
 // cells に入れず self に置く。
-export function compositeCellRegions({ layout, videoSettings, persons }) {
+// slotStreams (枠の番号 -> ストリームの番号。screenSlotStreamsFromLines) を渡すと、セルにストリームの番号 (stream) も入れる (personCellOf が引く)。
+export function compositeCellRegions({ layout, videoSettings, persons, slotStreams }) {
   if (!layout) return { ok: false, regionSource: "composite-layout", canvas: null, cells: [], skipped: [], self: null, error: "no Composite layout line in the OBS log" };
   const vs = videoSettings || {};
   const baseW = layout.canvas.width > 0 ? layout.canvas.width : Number(vs.baseWidth) > 0 ? Number(vs.baseWidth) : 1920;
@@ -6591,6 +6917,7 @@ export function compositeCellRegions({ layout, videoSettings, persons }) {
       cell: tile.slot - 1,
       sourceName: null,
       person: persons && typeof persons[tile.slot] === "string" ? persons[tile.slot] : null,
+      stream: slotStreams && Number.isInteger(slotStreams[tile.slot]) ? slotStreams[tile.slot] : null,
       ...rect,
       bitCell: Math.max(1, Math.round(BIT_CELL_SOURCE_PX * scale * sx)),
       scaleX: scale,
@@ -6976,12 +7303,15 @@ export function pickMonitorItem(items, monitor) {
 // latency.py に渡す 2 つの区画。a = 遅れを読む人の cordmux の枠 (録画の始めと終わりに読んだ枠の四角 = cellRegionsForJudge。
 // その人の枠は名前の %1 で探す)、b = Vesktop のウィンドウを置いた区画 (reference。置いたときに読んだ四角)。人の枠が見つからなければ
 // regionA は null (「測れない」と理由を書く。ほかの人の枠と取り違えない)。
-export function latencyRegions({ captures, cells, person, personForm, reference }) {
+// resolvedCell (personCellOf で引いた枠) があればそれを使い、無ければセルの名前 (テスト用の送信側の名前) で探す。
+export function latencyRegions({ captures, cells, person, personForm, reference, resolvedCell }) {
   const regions = cellRegionsForJudge({ captures, cells });
-  let cell = null;
-  for (const capture of captures || []) {
-    for (const c of (capture && capture.cells) || []) {
-      if (c.person === person || (personForm && personFromSlotName(c.sourceName, c.cell + 1, personForm) === person)) cell = c.cell;
+  let cell = Number.isInteger(resolvedCell) ? resolvedCell : null;
+  if (cell === null) {
+    for (const capture of captures || []) {
+      for (const c of (capture && capture.cells) || []) {
+        if (c.person === person || (personForm && personFromSlotName(c.sourceName, c.cell + 1, personForm) === person)) cell = c.cell;
+      }
     }
   }
   const regionA = cell !== null ? regions.find((r) => r.cell === cell) || null : null;
@@ -7190,8 +7520,8 @@ export const JUDGE_LINES = [
   { item: "add-to-vesktop", what: "[Vesktopに追加] が state.json に届く (10 分)", line: "vencordDir が配置物の data/vencord を指す", onFail: "stop" },
   { item: "vesktop-connects", what: "起動し直した Vesktop の送信部が繋ぐ (20 分)", line: "保存した数より hello が増える", onFail: "stop" },
   { item: "self-account", what: "送信側が自分のアカウントを届ける (--recheck)", line: "接続の後、" + SELF_ACCOUNT_WAIT_TIMEOUT_MS / 1000 + " 秒以内に OBS の記録の Facts の行に self=yes が出る", onFail: "gate" },
-  { item: "av-sync-main", what: "OBS の出口の映像と音のずれ (本編)", line: "音が先 " + AV_SYNC_AUDIO_LEAD_LIMIT_MS + " ms 未満・音が遅れ " + AV_SYNC_AUDIO_LAG_LIMIT_MS + " ms 未満、傾きが欠陥でない", onFail: "record" },
-  { item: "av-sync-av1", what: "OBS の出口の映像と音のずれ (av1)", line: "同上", onFail: "record" },
+  { item: "av-sync-main", what: "OBS の出口の映像と音のずれ (本編)", line: "音が先 " + AV_SYNC_AUDIO_LEAD_LIMIT_MS + " ms 未満・音が遅れ " + AV_SYNC_AUDIO_LAG_LIMIT_MS + " ms 未満、時間とともに広がらない (一時的な段を除いた傾きが " + AV_TREND_DEFECT_MS_PER_MIN + " ms/分を超えて 0 と分けられれば欠陥。段は数と高さを記録する)", onFail: "record" },
+  { item: "av-sync-av1", what: "OBS の出口の映像と音のずれ (av1。--recheck はテスト動画を共有している人の枠だけ)", line: "同上", onFail: "record" },
   { item: "av-sync-av2", what: "OBS の出口の映像と音のずれ (av2)", line: "同上", onFail: "record" },
   { item: "av-drift", what: "av2 - av1", line: "区画ごとの |差| < " + AV_DRIFT_DELTA_LIMIT_MS + " ms", onFail: "record" },
   { item: "record-sync", what: "途中で始めた cordmux の録画の中の映像と音のずれ", line: "本編と同じ", onFail: "record" },
@@ -7201,13 +7531,13 @@ export const JUDGE_LINES = [
   { item: "ac32", what: "声のミュートの往復", line: "ミュートは無音、外し直すと基準の ±" + AC32_GAIN_TOLERANCE_DB + " dB に戻る", onFail: "record" },
   { item: "voice-source", what: "使う声の置き換え", line: "置き換えると声を借りる人の枠で 1 kHz、戻すと声を貸す人の枠で 1 kHz", onFail: "record" },
   { item: "voice-volume", what: "声の音量 " + VOICE_VOLUME_PCT + "%", line: "100% の録画に対して +" + (Math.round(20 * Math.log10(VOICE_VOLUME_PCT / 100) * 100) / 100) + " dB ±" + VOICE_VOLUME_GAIN_TOLERANCE_DB + " dB (切れうる大きさなら下限だけ見る)", onFail: "record" },
-  { item: "roster-labels", what: "実際のアバターの並び (画面共有していない参加者)", line: "共有を止めた後に、並びの名前ラベルの描画の行が出て、並んだ人数 (番号の最大 + 1) が期待の人数 " + ROSTER_EXPECTED_PEOPLE + " と等しい (絵も PNG で目で読む)", onFail: "record" },
+  { item: "roster-labels", what: "実際のアバターの並び (画面共有していない参加者)", line: "共有を止めた後に、並びの人数の行 (Composite roster shows N) の最後の値が、期待の人数 (通話の 4 つのアカウントから、別アカウント方式のサブアカウントを引いた数。メインアカウントも並ぶ) と等しい (絵も PNG で目で読む)", onFail: "record" },
   { item: "version-row", what: "Vesktop の版の表示", line: "Vesktop の行の値が数字を含む", onFail: "record" },
   { item: "screen-audio", what: "画面共有の音のミュートを外すと合成のソースの音に届く (--recheck)", line: "合成のソースの入力の peak が " + INPUT_LEVEL_THRESHOLD_DBFS + " dBFS より大きい。記録に screen_audio の placed_frames が 1 以上の行がある", onFail: "record" },
   { item: "format-change", what: "共有の途中の解像度の変化の録画 (--recheck)", line: "frames.py の結果で、全部の枠が crc_failures 0、unreadable_frames 0、max_freeze_ms " + RESCHANGE_MAX_FREEZE_MS + " 以下 (絵は PNG を目で読む)", onFail: "record" },
   { item: "encode-limits", what: "符号化の設定が送信側へ送られる (--recheck)", line: "記録に 'Quality limits sent to Vesktop' の行があり、encoder=software latency=quality", onFail: "record" },
   { item: "encode-choice", what: "送信側が符号化の設定で確保し直す (--recheck)", line: "記録に、送信側の stage の行が preference=prefer-software latencyMode=quality で出る", onFail: "record" },
-  { item: "self-frame", what: "自分の枠 (--recheck)", line: "手動では共有を始めても 'Self frame turned on' が出ず枠が変わらない・自分の行のチェックを付けると 'Self frame turned on: dock'・枠が 1 つ増える・self= が入る・共有を止めても変わらない・チェックを外すと 'Self frame turned off: dock'・枠が元に戻る", onFail: "record" },
+  { item: "self-frame", what: "自分の枠 (--recheck。枠に載せる人の選び方は自動)", line: "メインアカウントが共有を始めると 'Self frame turned on: screen share'・枠が 1 つ増えて self= が入る・共有を止めても外れず枠も変わらない・自分の行のチェックを外すと 'Self frame turned off: dock' で枠が元の数・付けると 'Self frame turned on: dock' で 1 つ増えて self= が入る・外すと元の数", onFail: "record" },
   { item: "receive-continues", what: "スピーカーミュートと最小化の間も受け取りが続く (--recheck)", line: "stats video の received_hz が止まらない (直近 " + VIDEO_RATE_WINDOW_LINES + " 行のどれかが " + VIDEO_STOPPED_HZ + " 以上)", onFail: "record" },
   { item: "rejoin", what: "受け手の Vesktop の抜け戻り (--recheck)", line: "抜けても close と hello が増えず、戻ると映像が受け取られる", onFail: "record" },
   { item: "connections-kept", what: "Vesktop が共有と本編で落ちない", line: "close と hello が増えない", onFail: "record" },
@@ -7269,10 +7599,14 @@ export function judgeLinesSummary(results, opts) {
     const ok = bad ? false : detail.length > 0 && detail.every((c) => c.ok === true) ? true : null;
     return { ok, reason: bad ? "cell " + bad.cell + ": crc_failures=" + bad.crcFailures + " unreadable_frames=" + bad.unreadableFrames + " max_freeze_ms=" + bad.maxFreezeMs : null, derived: true, detail };
   })();
-  const selfShare = logOf("self-share");
-  const selfDuring = logOf("self-during");
-  const selfStopped = logOf("self-stopped");
-  const selfAfter = logOf("self-after");
+  // 判定しない項目 (リハーサルの skip。REHEARSAL_NOT_JUDGED): part のない skip は行ごと判定しない、part のある skip はその読みを
+  // まとめから外す。
+  const skips = list.filter((r) => r && r.name === "skip" && typeof r.item === "string");
+  const skippedWhole = new Map(skips.filter((r) => !r.part).map((r) => [r.item, r.reason || null]));
+  const skippedParts = (item) => new Set(skips.filter((r) => r.item === item && r.part).map((r) => r.part));
+  // 自分の枠: 読みの名前ごとの結果 (SELF_FRAME_READ_LABELS)。リハーサルで判定しない読みは外す。
+  const selfFrameParts = SELF_FRAME_READ_LABELS.filter((label) => !skippedParts("self-frame").has(label));
+  const selfFrameDetail = Object.fromEntries(SELF_FRAME_READ_LABELS.map((label) => [label, skippedParts("self-frame").has(label) ? "not judged" : checksOf(logOf(label))]));
   const keptLeft = last((r) => r.name === "judge-connections-kept" && r.label === VESKTOP_LEFT_LABEL);
   const rateMute = rateOf(RECEIVE_CONTINUES_LABEL);
   const rateBack = rateOf(VESKTOP_REJOIN_LABEL);
@@ -7281,7 +7615,7 @@ export function judgeLinesSummary(results, opts) {
     "format-change": reschangeFrames,
     "encode-limits": combine([logOf("encode-limits")], { checks: checksOf(logOf("encode-limits")) }),
     "encode-choice": combine([logOf("encode-choice")], { checks: checksOf(logOf("encode-choice")) }),
-    "self-frame": combine([selfShare, selfDuring, selfStopped, selfAfter], { share: checksOf(selfShare), during: checksOf(selfDuring), stopped: checksOf(selfStopped), after: checksOf(selfAfter) }),
+    "self-frame": selfFrameParts.length > 0 ? combine(selfFrameParts.map(logOf), selfFrameDetail) : null,
     "receive-continues": combine([rateMute], { receivedHz: rateMute ? rateMute.receivedHz : null }),
     rejoin: combine([keptLeft, rateBack], { connectionsKept: keptLeft ? { ok: keptLeft.ok, closes: keptLeft.closes, hellos: keptLeft.hellos } : null, receivedHz: rateBack ? rateBack.receivedHz : null }),
     "add-to-vesktop": last((r) => r.name === "human" && r.until === "state-json-points-to-placed"),
@@ -7307,7 +7641,23 @@ export function judgeLinesSummary(results, opts) {
   };
   const kept = list.filter((r) => r && r.name === "judge-connections-kept");
   const keptOk = kept.length === 0 ? null : kept.every((r) => r.ok === true);
+  // A/V の行の傾きの読み (judgeAvTrend): 時間とともに広がるか (verdict と基準の傾き) と、一時的な段の数と高さを分けて残す。
+  const trendDetail = (t) =>
+    t
+      ? {
+          trend: t.verdict,
+          slopeMsPerMin: t.slopeMsPerMin,
+          ci95MsPerMin: t.ci95MsPerMin ?? null,
+          fitOn: t.fitOn ?? null,
+          steps: Array.isArray(t.steps) ? t.steps.map((x) => ({ startS: x.startS, endS: x.endS, heightMs: x.heightMs, returned: x.returned })) : null,
+        }
+      : { trend: null };
   const rows = JUDGE_LINES.filter((line) => !only || only.has(line.item)).map((line) => {
+    // 判定しない行 (リハーサルの skip、または判定の側が判定しないとした行): 答えは null で、理由を残す。
+    const notJudged = skippedWhole.has(line.item) ? skippedWhole.get(line.item) || "not judged in this run" : found[line.item] && typeof found[line.item].notJudged === "string" ? found[line.item].notJudged : null;
+    if (notJudged !== null) {
+      return { item: line.item, what: line.what, line: line.line, onFail: line.onFail, ok: null, notJudged, reason: "not judged: " + notJudged, detail: null };
+    }
     const r = found[line.item];
     const ok = line.item === "connections-kept" ? keptOk : r ? (r.ok === undefined ? null : r.ok) : null;
     const detail =
@@ -7316,9 +7666,9 @@ export function judgeLinesSummary(results, opts) {
         : line.item === "connections-kept"
         ? kept.map((x) => ({ label: x.label, ok: x.ok, closes: x.closes, hellos: x.hellos }))
         : line.item.startsWith("av-sync")
-          ? r && Array.isArray(r.cells) ? r.cells.filter((c) => c.ok !== null).map((c) => ({ cell: c.cell, meanMs: c.meanMs, paired: c.paired, trend: c.trend ? c.trend.verdict : null, slopeMsPerMin: c.trend ? c.trend.slopeMsPerMin : null })) : null
+          ? r && Array.isArray(r.cells) ? r.cells.filter((c) => c.ok !== null).map((c) => ({ cell: c.cell, ...(r.person ? { person: r.person } : {}), meanMs: c.meanMs, paired: c.paired, ...trendDetail(c.trend) })) : null
           : line.item === "record-sync"
-            ? r && r.lines ? { meanMs: r.lines.meanMs, paired: r.lines.paired, trend: r.lines.trend ? r.lines.trend.verdict : null } : null
+            ? r && r.lines ? { meanMs: r.lines.meanMs, paired: r.lines.paired, ...trendDetail(r.lines.trend) } : null
             : line.item === "align-drift"
               ? r && Array.isArray(r.align) ? r.align.map((a) => ({ stream: a.stream, judged: a.judged, ok: a.ok, slopePercent: a.slopePercent, restarts: a.restarts })) : null
               : pick(r, ["reason", "measuredMs", "estimatedMs", "designQuestion", "value", "orientation", "soundingSlots", "presentBefore", "goneAfterRemove", "backAfterRestore", "cells", "satisfiedBy", "timedOut", "names", "counts", "mode", "hasSelf", "totalShown", "withoutShown", "count", "handRead", "finalTotalMs", "bySource", "gainDb", "expectedDb", "errorDb", "indexes", "addedLines", "complete", "people", "contiguous", "expectedPeople", "connected", "factsYes", "factsDash", "firstYesAfterSec", "yesBeforeConnection", "waitedMs"]);
@@ -7328,7 +7678,8 @@ export function judgeLinesSummary(results, opts) {
       line: line.line,
       onFail: line.onFail,
       ok,
-      reason: r && (r.ok === false || r.handRead === true) ? r.reason || r.error || null : null,
+      // 合格でない行は理由を残す (判定できない行 = ok null も、理由があれば。テスト動画の人の枠が見つからないなど)。
+      reason: r && r.ok !== true ? r.reason || r.error || null : null,
       detail,
     };
   });

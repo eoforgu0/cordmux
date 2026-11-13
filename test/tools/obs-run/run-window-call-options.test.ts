@@ -93,11 +93,11 @@ function jaIniKeys(): Set<string> {
 }
 
 describe("call-1 のオプションの引数 (CALL_ONE_OPTION_FLAGS)", () => {
-    it("9 つとも値を取らない真偽のオプションで、既定は全部なし (7 つ目の --skip-export-bundle は書き出しのバンドルの確認を省く、8 つ目の --recheck は短い再確認、9 つ目の --av-check は再確認に A/V の測定を足す)", () => {
-        expect(CALL_ONE_OPTION_FLAGS).toEqual(["--start-with-add", "--vesktop-share", "--skip-continuous", "--skip-av2", "--skip-speaker-mute", "--extra-checks", "--skip-export-bundle", "--recheck", "--av-check"]);
+    it("10 個とも値を取らない真偽のオプションで、既定は全部なし (7 つ目の --skip-export-bundle は書き出しのバンドルの確認を省く、8 つ目の --recheck は短い再確認、9 つ目の --av-check は再確認に A/V の測定を足す、10 個目の --av-only は再確認を A/V の測定と締めだけにする)", () => {
+        expect(CALL_ONE_OPTION_FLAGS).toEqual(["--start-with-add", "--vesktop-share", "--skip-continuous", "--skip-av2", "--skip-speaker-mute", "--extra-checks", "--skip-export-bundle", "--recheck", "--av-check", "--av-only"]);
         const keys = ["startWithAdd", "vesktopShare", "skipContinuous", "skipAv2", "skipSpeakerMute", "extraChecks", "skipExportBundle"];
         const plain = parseArgs(REAL).args;
-        for (const key of [...keys, "recheck", "avCheck"]) expect(plain[key]).toBe(false);
+        for (const key of [...keys, "recheck", "avCheck", "avOnly"]) expect(plain[key]).toBe(false);
         const all = parseArgs([...REAL, ...STAGE, "--skip-av2", "--skip-export-bundle"]);
         expect(all.errors).toEqual([]);
         for (const key of keys) expect(all.args[key]).toBe(true);
@@ -165,11 +165,13 @@ describe("--vesktop-share / --skip-continuous / --skip-av2 / --skip-speaker-mute
         const join = plan([...REAL, "--vesktop-share"]).steps.find((s) => s.kind === "human" && String(s.message).includes("ボイスチャンネル"))!;
         expect(join.message).toBe(callJoinMessage({ vesktopShare: true }));
         // Vesktop も同じボイスチャンネルに入ることを依頼する (名前は --voice-channel で渡したときだけメッセージに入る)。
-        expect(join.message).toContain("でも同じボイスチャンネルに入り、画面共有を1つ始めてください");
+        expect(join.message).toContain("Vesktop (sub1) の4つで、指定のボイスチャンネルに入ってください");
+        expect(join.message).toContain("Vesktop (sub1) でも、画面共有を1つ始めてください");
         const named = plan([...REAL, "--vesktop-share", "--voice-channel", "lobby"]).steps.find((s) => s.kind === "human" && String(s.message).includes("ボイスチャンネル"))!;
         expect(named.message).toBe(callJoinMessage({ vesktopShare: true, voiceChannel: "lobby" }));
-        expect(named.message).toContain("でも「lobby」に入り、画面共有を1つ始めてください");
-        expect(join.message).toContain("Chrome以外のマイクはミュートにしてください");
+        expect(named.message).toContain("の4つで、ボイスチャンネル「lobby」に入ってください");
+        expect(join.message).toContain("マイクは、Chrome (sub2) だけミュートを解除し");
+        expect(join.message).toContain("ほかの3つはミュートにしてください");
         expect(join.message).not.toContain("では画面共有を始めないでください");
         // 人に見せるメッセージでは、英数字と日本語の間に半角の空白を入れない。
         expect(join.message).not.toMatch(/[A-Za-z0-9] [\u3041-\u3093\u30a1-\u30f6\u4e00-\u9fa0]|[\u3041-\u3093\u30a1-\u30f6\u4e00-\u9fa0] [A-Za-z0-9]/);

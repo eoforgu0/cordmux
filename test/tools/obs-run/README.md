@@ -81,7 +81,7 @@ node test/tools/obs-run/run-window.mjs --obs _work/obs-33.0.1 --out _work/out/<�
 | `--allow-unknown-encoder` | `nvidia-smi` を読めなくても進める |
 | `--allow-outside-work` | `--obs` と `--out` の場所の制限を外す |
 
-`call-1` のオプション (`--call-minutes` `--broadcaster-id` `--latency-person` `--voice-channel` `--start-with-add` `--vesktop-share` `--skip-continuous` `--skip-av2` `--skip-speaker-mute` `--extra-checks` `--skip-export-bundle` `--recheck` `--av-check` `--browser-profile` `--shared-content-dir` `--temp-vencord-build`) と、`hold` のオプション (`--hold-minutes` `--no-seed` `--keep-recordings` `--replay-buffer` `--self-mic` `--screen-sizes` `--screen-names` `--screen-images` `--voice-users` `--label-em-ratio-pct` `--wire-composite`) は、対応するステップ以外では受け付けない。誤った組み合わせは、OBS を起動する前に終了コード 1 で止まる。
+`call-1` のオプション (`--call-minutes` `--broadcaster-id` `--latency-person` `--voice-channel` `--start-with-add` `--vesktop-share` `--skip-continuous` `--skip-av2` `--skip-speaker-mute` `--extra-checks` `--skip-export-bundle` `--recheck` `--av-check` `--av-only` `--browser-profile` `--shared-content-dir` `--temp-vencord-build`) と、`hold` のオプション (`--hold-minutes` `--no-seed` `--keep-recordings` `--replay-buffer` `--self-mic` `--screen-sizes` `--screen-names` `--screen-images` `--voice-users` `--label-em-ratio-pct` `--wire-composite`) は、対応するステップ以外では受け付けない。誤った組み合わせは、OBS を起動する前に終了コード 1 で止まる。
 
 `--call-accounts <JSON ファイル>`: 実際の通話の実行 (`--step call-1` で、リハーサルでもドライランでもないもの) に必須である。通話に参加するアカウントの、Discord に表示される名前を次の形で書く。リポジトリの外に置く。
 
@@ -101,10 +101,11 @@ node test/tools/obs-run/run-window.mjs --obs _work/obs-33.0.1 --out _work/out/<�
 ### 実行中の入力と出力
 
 - 結果は `<--out>/window3b/result-<ステップ>-<tag>.json` に書く。録画、スクリーンショット、判定ツールの出力も `window3b` の下に置く。
-- 人の操作を待つステップ (`human`) は、ログに `HUMAN: <操作の文>` と書き、条件を満たすまで 2 秒ごとに見る。条件は次の 4 つである。どの条件でも、`<--out>/window3b/human-go.txt` があれば削除して進む。
+- 人の操作を待つステップ (`human`) は、ログに `HUMAN: <操作の文>` と書き、条件を満たすまで 2 秒ごとに見る。条件は次の 5 つである。どの条件でも、`<--out>/window3b/human-go.txt` があれば削除して進む。
   - `go-file`: `human-go.txt` が置かれる
   - `state-json-points-to-placed`: 実際の `state.json` の `vencordDir` が、テスト用にインストールしたフォルダーを指す
   - `state-json-restored`: `state.json` が、製品のバックアップの `previous` に戻る
+  - `call-ready`: OBS のログの最後の `Facts` の行で、通話の人数と画面共有の人数が、頼んだ人数に届く (`call-1` の参加の依頼。人の返事は要らないので、この手順では `human-go.txt` を置かない。置くと、全員がそろう前に進む)
   - `seconds`: 指定した秒数だけ待つ (`--rehearsal` は、すべての人の操作をこれにする)
 - `<--out>/window3b/stop-run.txt` を置くと、期限に当たったときと同じ経路で残りの手順を抜ける。後片付けは実行する。
 - 操作を待つ時限は 1 操作につき 30 分、通話に参加して共有を始めるまでは 40 分である。人が PC の前にすぐ戻れるとは限らないため。待つ長さは合否に使わない。
@@ -154,12 +155,17 @@ node test/tools/obs-run/run-window.mjs --obs _work/obs-33.0.1 --out _work/out/<�
 - `--broadcaster-id <ID>`: メインアカウントの Discord ユーザー ID (数字 1 から 20 桁)。サブアカウントを使う構成の手順が加わる。結果 JSON には書かない。
 - `--start-with-add`: 開始ゲートを実行せず、Vesktop の終了と [Vesktopに追加] から始める (追加の後に Vesktop を起動してもらう)。
 - `--vesktop-share`: 参加の文で、Vesktop の共有も依頼する (メインアカウントだけの構成の使い方)。
-- `--latency-person <名前>`: cordmux が足す遅れを測る区間を足す。名前は、遅れを読む画面共有している人として見えている名前。
+- `--latency-person <名前>`: cordmux が足す遅れを測る区間を足す。名前は、遅れを読む画面共有している人として見えている名前。その人の枠は、OBS のログの枠の割り当て (`Screen slot N carries stream M`) と、遅れの録画の区間を覆う cordmux の録画の録画ログ (人とストリームの番号の対応) から引く。覆う録画がない実行 (`--recheck` でない `call-1`) では引けないことがあり、そのときは判定せず、枠の PNG で選んで `latency.py` を手で実行する。
 - `--voice-channel <名前>`: 参加の文で入ってもらうボイスチャンネルの名前。渡さなければ、文は名前を挙げない。
 - `--skip-continuous`: 連続運転と、2 回目のテスト動画の A/V の待ちを省く。`--skip-av2`: 2 回目のテスト動画の A/V と、1 回目との差を省く。`--skip-speaker-mute`: サブアカウントを使う構成の、スピーカーミュートと解除を省く (`--broadcaster-id` が要る)。`--skip-export-bundle`: 締めの診断情報の書き出しを省く。
 - `--extra-checks`: 人の操作が要らない追加の確認。合否は記録するが、実行は止めない。確認するのは、接続が切れていないこと、バージョンの行の表示、使う声の置き換え、声の音量、テスト動画を共有している人の画面の A/V、ログから読む整列のずれの傾き、実際のアバターの並び、映像のバッファの統計である。
-- `--recheck`: 送信側の修正を確認する短い実行。`--start-with-add` と `--broadcaster-id` が要る。
-- `--av-check`: `--recheck` に、テスト動画の A/V の測定を足す。遅れの測定の後で cordmux の録画を始め、テスト動画の共有を 5 分録って `sync.py` で読み (`av1`)、cordmux の録画を止めて、録画の中の A/V も読む (`judge-record-sync`)。人の操作はテスト動画の共有の 1 つ。遅れと同じ回に測り、映像のバッファ、描く刻みの半分、遅れ、音の遅れの関係を読む材料にする。`--recheck` が要る。
+- `--recheck`: 送信側の修正を確認する短い実行。`--start-with-add` と `--broadcaster-id` が要る。参加の依頼は、4 つのアカウント (Vesktop を含む) に通話へ入ることと、4 つともマイクをミュートにすることを頼み、Chrome にはテスト動画のタブを音声付きで共有してもらう。声の音を使う確認がないので、Chrome をテスト用のマイクの音つき (`launch-chrome-fake-mic.ps1`) で起動する必要はない (テスト動画のページを開いた Chrome を用意する)。
+- `--av-check`: `--recheck` に、テスト動画の A/V の測定を足す。cordmux の録画を遅れの測定の前に始め、テスト動画の共有を 5 分録って `sync.py` で読み (`av1`)、cordmux の録画を止めて、録画の中の A/V も読む (`judge-record-sync`)。テスト動画の共有は参加の依頼で頼んでいるので、人の操作は増えない。合成のソースの判定は、テスト動画を共有している人の枠だけで行う (枠は `--latency-person` と同じ方法で引く)。録画の間は、ドックの行で声と、テスト動画の人のほかの画面共有の音をミュートにする (合成のソースの音は全員の音を混ぜた 1 本なので)。遅れと同じ回に測り、映像のバッファ、描く刻みの半分、遅れ、音の遅れの関係を読む材料にする。`--recheck` が要る。
+- `--av-only`: `--recheck --av-check` の手順表を、映像と音のずれ (と `--latency-person` の遅れ) を測るところと締めだけにする。人の操作は、Vesktop の終了と [Vesktopに追加]、Vesktop の起動、通話への参加と共有 (返事は要らない)、遅れの表示 (`--latency-person` のとき)、通話から抜けて Vesktop を終了、Vesktop の起動の案内である。アンインストールは実行スクリプトが押す。`--recheck --av-check` が要る。
+
+映像と音のずれの傾きは、`sync.py` が一時的な段 (一定の高さに上がって戻る組の並び) を外した基準の組で読む。時間とともに広がる (1 ms/分を超えて 0 と分けられる) ときだけ欠陥とし、段は数と高さを記録する。規則と値の理由は `sync.py` の「一時的な段と、時間とともに広がる傾きを分ける」にある。
+
+`--rehearsal` は、テスト用の送信側では確かめられない項目 (自分のアカウントを届けるか、Vesktop の版の表示、遅れ、エンコードの設定での確保し直し、メインアカウントの共有による自分の枠、配信者の抜け戻り、スピーカーミュートと Vesktop の抜け戻り) を判定しない。判定の手順の代わりに `skip` の手順に理由を残し、`judge-lines` の表では判定なしにする (`run-window-plan.mjs` の `REHEARSAL_NOT_JUDGED`)。整列のずれの傾きは、傾きを読む長さ続くストリームがなければ判定しない。別アカウント方式と自分の枠は、テスト用の送信側の声だけの人をメインアカウントにして、ドックの付け外しを判定する。
 
 実行の前に、`--dry-run` で `humanSteps` を見て、人の操作の一覧と順番を確認する。
 

@@ -17,6 +17,8 @@
 #                       例えば 119 を 120-124 に複製する形で、凍結の後に欠落が付随して出る)
 #   --dup-every N    : N 番目ごとの位置の出力フレームをもう 1 つ複製して差し込む (重複)
 #   --audio-shift-ms D : マーカー音 (1 kHz/2 kHz) の鳴る実時刻を D ms ずらす (映像側の白は動かさない)
+#   --audio-step A:B:D : A 秒から B 秒の前までのマーカー音だけを、さらに D ms ずらす (一時的な段。何度でも渡せる)
+#   --audio-drift-ms-per-min R : マーカー音のずれを、時刻とともに分あたり R ms ずつ増やす (時間とともに広がるずれ)
 #   --competing-1k A : マーカー音とは別に、振幅 A の 1 kHz を最初から最後まで鳴らし続けて混ぜる
 #                       (Chrome のテスト用のマイクの 1 kHz が録画に混ざった形。マーカーの 2 kHz と同じ
 #                       振幅 0.5 を渡しても、sync.py はマーカーを見つけられなければならない)
@@ -50,7 +52,7 @@
 # 使い方: python make_material.py <出力.mp4> [--seconds 20] [--fps 60] [--width 640] [--height 360]
 #         [--sync-every 5] [--cell 8]
 #         [--drop-every N] [--freeze-ms M --freeze-at S] [--dup-every N] [--audio-shift-ms D]
-#         [--competing-1k A] [--vfr]
+#         [--audio-step A:B:D ...] [--audio-drift-ms-per-min R] [--competing-1k A] [--vfr]
 #         [--scene plain|window|tab|tabfill] [--strip clock|legacy] [--counter-start N] [--pad-to WxH] [--crf N]
 import argparse
 import os
@@ -83,6 +85,8 @@ def parse_args():
     p.add_argument("--freeze-at", type=float, default=0.0)
     p.add_argument("--dup-every", type=int, default=0)
     p.add_argument("--audio-shift-ms", type=float, default=0.0)
+    p.add_argument("--audio-step", action="append", default=[])
+    p.add_argument("--audio-drift-ms-per-min", type=float, default=0.0)
     p.add_argument("--competing-1k", type=float, default=0.0)
     p.add_argument("--vfr", action="store_true")
     p.add_argument("--scene", choices=("plain", "window", "tab", "tabfill"), default="plain")
@@ -264,12 +268,29 @@ def scene_static(scene):
     return img
 
 
-def build_audio(nominal_frames, fps, boundaries, audio_shift_ms, competing_1k=0.0):
+def parse_audio_steps(texts):
+    """--audio-step の "A:B:D" の並びを (A 秒, B 秒, D ms) の並びにする。"""
+    out = []
+    for text in texts or []:
+        a, b, d = (float(x) for x in text.split(":"))
+        out.append((a, b, d))
+    return out
+
+
+def marker_shift_ms(at_s, audio_shift_ms, steps, drift_ms_per_min):
+    """映像の白の時刻 at_s のマーカー音を、どれだけずらすか (ms)。一定のずれ + 段 + 時刻に比例するずれ。"""
+    shift = audio_shift_ms + drift_ms_per_min * at_s / 60.0
+    for a, b, d in steps or []:
+        if a <= at_s < b:
+            shift += d
+    return shift
+
+
+def build_audio(nominal_frames, fps, boundaries, audio_shift_ms, competing_1k=0.0, steps=None, drift_ms_per_min=0.0):
     duration_s = nominal_frames / fps
     n = int(round(duration_s * SAMPLE_RATE))
-    shift_s = audio_shift_ms / 1000.0
     t = np.arange(n, dtype=np.float64) / SAMPLE_RATE
-    burst_starts_s = [bd / fps + shift_s for bd in boundaries]
+    burst_starts_s = [bd / fps + marker_shift_ms(bd / fps, audio_shift_ms, steps, drift_ms_per_min) / 1000.0 for bd in boundaries]
     freq = np.full(n, BASE_HZ)
     for bs in burst_starts_s:
         in_burst = (t >= bs) & (t < bs + BURST_MS / 1000.0)
@@ -302,7 +323,8 @@ def main():
         nominal_frames, args.fps, args.sync_every,
         args.drop_every, args.freeze_ms, args.freeze_at, args.dup_every)
 
-    pcm = build_audio(nominal_frames, args.fps, boundaries, args.audio_shift_ms, args.competing_1k)
+    pcm = build_audio(nominal_frames, args.fps, boundaries, args.audio_shift_ms, args.competing_1k,
+                      parse_audio_steps(args.audio_step), args.audio_drift_ms_per_min)
     wav_path = args.output + ".tmp.wav"
     write_wav(wav_path, pcm)
 

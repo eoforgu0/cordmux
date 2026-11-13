@@ -133,8 +133,13 @@ describe("--call-accounts: 実行計画と人への文の名前", () => {
 
     it("役割と手順の対応: 声の行・画面共有の音・使う声の置き換え・外して戻す人", () => {
         const steps = plan(EXTRA, OTHER);
-        const mutes = steps.filter((s) => s.kind === "dock-click" && Array.isArray(s.textArgs)).map((s) => s.textArgs[0]);
-        expect(new Set(mutes)).toEqual(new Set(["carol", "dave"]));
+        // 声のミュートは Chrome と Firefox のアカウント (メインアカウントの声は既定でミュート)。
+        const voiceMutes = steps.filter((s) => s.kind === "dock-click" && s.textId === "cordmux.dock.row_voice_mute.a11y").map((s) => s.textArgs[0]);
+        expect(new Set(voiceMutes)).toEqual(new Set(["carol", "dave"]));
+        // 画面共有の音: テスト動画の人 (Chrome) のミュートを外し、ほかの共有している人 (メインと Firefox) はミュートにする (出ていなければ失敗にしない)。
+        const screenMutes = steps.filter((s) => s.kind === "dock-click" && s.textId === "cordmux.dock.row_screen_mute.a11y");
+        expect(new Set(screenMutes.filter((s) => s.desired === "off").map((s) => s.textArgs[0]))).toEqual(new Set(["carol"]));
+        expect(new Set(screenMutes.filter((s) => s.absentOk === true).map((s) => s.textArgs[0]))).toEqual(new Set(["alice", "dave"]));
         const swap = steps.find((s) => s.kind === "human" && String(s.message).includes("の行の [...]"));
         expect(String(swap?.message)).toContain("daveの行の [...]");
         expect(String(swap?.message)).toContain("「carol」を選んで");

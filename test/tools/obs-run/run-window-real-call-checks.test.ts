@@ -18,7 +18,7 @@ import {
     INCOMING_VIDEO_LABEL,
     JUDGE_LINES,
     ROSTER_BASELINE_LABEL,
-    ROSTER_EXPECTED_PEOPLE,
+    rosterExpectedPeople,
     ROSTER_LABEL_SETTLE_MS,
     ROSTER_SHOT_LABEL,
     TEXT_ID_AUDIO_VOICE_KIND,
@@ -196,15 +196,15 @@ describe("(1) 声の音量", () => {
         it("judgeLinesSummary が表に載せる (判定できない場合は ok null で失敗にならない)", () => {
             const rows = judgeLinesSummary([
                 { name: "judge-voice-volume", ...judgeVoiceVolume({ before: heard(0.05), after: heard(0.1) }) },
-                { name: "judge-roster-labels", ...judgeRosterLabels({ lines: ["20:00:00.000: [cordmux] Composite roster shows 1 participant(s)"], baselineCount: 0 }) },
+                { name: "judge-roster-labels", ...judgeRosterLabels({ lines: ["20:00:00.000: [cordmux] Composite roster shows 1 participant(s)"], baselineCount: 0, expectedPeople: 3 }) },
             ] as any).rows;
             expect(rows.find((r: Step) => r.item === "voice-volume")).toMatchObject({ ok: true, detail: { gainDb: 6.02, expectedDb: 6.02 } });
-            // 1 人しか並んでいない (期待は 2 人) ので失敗。2 人並べば成功。
+            // 1 人しか並んでいない (期待は 3 人) ので失敗。3 人並べば成功。
             expect(rows.find((r: Step) => r.item === "roster-labels")).toMatchObject({ ok: false, detail: { people: 1 } });
-            const twoRows = judgeLinesSummary([
-                { name: "judge-roster-labels", ...judgeRosterLabels({ lines: ["20:00:00.000: [cordmux] Composite roster label ready: index=0 paint_ms=1", "20:00:00.100: [cordmux] Composite roster shows 2 participant(s)"], baselineCount: 0 }) },
+            const threeRows = judgeLinesSummary([
+                { name: "judge-roster-labels", ...judgeRosterLabels({ lines: ["20:00:00.000: [cordmux] Composite roster label ready: index=0 paint_ms=1", "20:00:00.100: [cordmux] Composite roster shows 3 participant(s)"], baselineCount: 0, expectedPeople: 3 }) },
             ] as any).rows;
-            expect(twoRows.find((r: Step) => r.item === "roster-labels")).toMatchObject({ ok: true, detail: { people: 2 } });
+            expect(threeRows.find((r: Step) => r.item === "roster-labels")).toMatchObject({ ok: true, detail: { people: 3 } });
             const undecided = judgeLinesSummary([{ name: "judge-voice-volume", ...judgeVoiceVolume({}) }] as any);
             expect(undecided.rows.find((r: Step) => r.item === "voice-volume")!.ok).toBe(null);
             expect(undecided.red).not.toContain("voice-volume");
@@ -235,7 +235,12 @@ describe("(2) 実際のアバターの並び", () => {
         expect(steps[count + 2]).toMatchObject({ kind: "wait", ms: ROSTER_LABEL_SETTLE_MS });
         expect(steps[count + 3]).toMatchObject({ kind: "screenshot-source", source: { kind: "composite" }, label: ROSTER_SHOT_LABEL });
         expect(steps[count + 4]).toMatchObject({ kind: "screenshot-window", target: "first", shotLabel: ROSTER_SHOT_LABEL });
-        expect(steps[count + 5]).toMatchObject({ kind: "judge-roster-labels", baseline: ROSTER_BASELINE_LABEL, expectedPeople: ROSTER_EXPECTED_PEOPLE });
+        // 期待の人数は docs/spec.md の並びの決まりから出す (rosterExpectedPeople): 通話の 4 つのアカウントから、別アカウント方式の
+        // サブアカウント (Vesktop) を引いた 3 人。メインアカウントは、自分の枠が出ていなければ並ぶ (11-13 の実際の通話でも 3 人並んだ)。
+        expect(steps[count + 5]).toMatchObject({ kind: "judge-roster-labels", baseline: ROSTER_BASELINE_LABEL, expectedPeople: rosterExpectedPeople({ broadcasterId: "1" }) });
+        expect(rosterExpectedPeople({ broadcasterId: "1" })).toBe(3);
+        // メインアカウントを選ばない (--broadcaster-id がない) と、Vesktop のアカウントもサブアカウントとして外れないので 4 人。
+        expect(rosterExpectedPeople({ broadcasterId: null })).toBe(4);
         expect(steps[count + 5].gate).toBeUndefined();
         const quit = steps[count + 6];
         expect(quit).toMatchObject({ kind: "human", message: VESKTOP_LEAVE_AND_QUIT_MESSAGE, quitVesktop: true, until: "go-file", timeoutMs: HUMAN_TIMEOUT_MS });
@@ -281,21 +286,23 @@ describe("(2) 実際のアバターの並び", () => {
         const shows = (time: string, n: number) => `${time}: [cordmux] Composite roster shows ${n} participant(s)`;
 
         it("並んだ人数は「Composite roster shows N participant(s)」の最後の値で数え、期待の人数と等しいときだけ成功", () => {
-            // 3 人並んだ (期待は 2 人): 並べない人が並んだ形は失敗。名前ラベルの行の index (0 と 1 だけ) には引きずられない。
-            const three = judgeRosterLabels({ lines: [...lines.slice(0, 4), shows("20:30:10.600", 3)], baselineCount: 1 });
-            expect(three).toMatchObject({ ok: false, baselineCount: 1, addedLines: 2, people: 3, expectedPeople: ROSTER_EXPECTED_PEOPLE, complete: false });
-            expect(three.reason).toContain("the roster shows 3 people, expected 2");
-            // 途中で 3 人になってから 2 人に落ち着いた: 最後の値で成功。
-            const settled = [shows("20:30:09.000", 3), line("20:30:10.000", 0), shows("20:30:11.000", 2)];
-            expect(judgeRosterLabels({ lines: settled, baselineCount: 0 })).toMatchObject({ ok: true, people: 2, peopleAt: 20 * 3600 + 30 * 60 + 11, complete: true });
+            // 4 人並んだ (期待は 3 人): 並べない人 (サブアカウント) が並んだ形は失敗。名前ラベルの行の index (0 と 1 だけ) には引きずられない。
+            const four = judgeRosterLabels({ lines: [...lines.slice(0, 4), shows("20:30:10.600", 4)], baselineCount: 1, expectedPeople: 3 });
+            expect(four).toMatchObject({ ok: false, baselineCount: 1, addedLines: 2, people: 4, expectedPeople: 3, complete: false });
+            expect(four.reason).toContain("the roster shows 4 people, expected 3");
+            // 途中で 4 人になってから 3 人に落ち着いた: 最後の値で成功。
+            const settled = [shows("20:30:09.000", 4), line("20:30:10.000", 0), shows("20:30:11.000", 3)];
+            expect(judgeRosterLabels({ lines: settled, baselineCount: 0, expectedPeople: 3 })).toMatchObject({ ok: true, people: 3, peopleAt: 20 * 3600 + 30 * 60 + 11, complete: true });
             // 1 人しか並ばない (並ぶはずの人が並ばない): 失敗。
-            expect(judgeRosterLabels({ lines: [shows("20:30:10.000", 1)], baselineCount: 0 })).toMatchObject({ ok: false, people: 1, complete: false });
+            expect(judgeRosterLabels({ lines: [shows("20:30:10.000", 1)], baselineCount: 0, expectedPeople: 3 })).toMatchObject({ ok: false, people: 1, complete: false });
             // 0 人の行も読む。
-            expect(judgeRosterLabels({ lines: [shows("20:30:10.000", 0)], baselineCount: 0 })).toMatchObject({ ok: false, people: 0 });
+            expect(judgeRosterLabels({ lines: [shows("20:30:10.000", 0)], baselineCount: 0, expectedPeople: 3 })).toMatchObject({ ok: false, people: 0 });
+            // 期待の人数がなければ、決めつけずに失敗 (理由つき)。
+            expect(judgeRosterLabels({ lines: [shows("20:30:10.000", 3)], baselineCount: 0 })).toMatchObject({ ok: false, expectedPeople: null, reason: "the expected number of people was not given" });
         });
 
         it("人数の行が無ければ失敗 (理由つき。古いバージョンのプラグイン)。保存した数がない・読めない値は 0 から数える", () => {
-            const none = judgeRosterLabels({ lines, baselineCount: 1 });
+            const none = judgeRosterLabels({ lines, baselineCount: 1, expectedPeople: 3 });
             expect(none).toMatchObject({ ok: false, people: null, addedLines: 4 });
             expect(none.reason).toContain("no roster count line");
             expect(judgeRosterLabels({ lines: [], baselineCount: 0 }).ok).toBe(false);
@@ -351,8 +358,11 @@ describe("(3) 映像のバッファの統計 (ドックの [状態] タブ)", ()
         const pressed = steps.slice(first, stop).filter((s) => s.kind === "dialog-click" && !s.listOnly);
         expect(pressed).toHaveLength(2);
         expect(pressed.every((s) => s.readOnlyOp === true)).toBe(true);
-        // バージョンの表示や名前ラベルの設定ウィンドウの操作 (録画の前) にはフラグを付けない。
-        expect(steps.slice(0, first).some((s) => s.readOnlyOp === true)).toBe(false);
+        // バージョンの表示や名前ラベルの設定ウィンドウの操作 (録画の前) にはフラグを付けない。フラグを付けるのは、タブを選ぶだけの手順
+        // (名前ラベルの設定の後に [参加者] タブへ戻す手順と、行を押す前に [参加者] タブを開く手順) だけ。
+        const flagged = steps.slice(0, first).filter((s) => s.readOnlyOp === true);
+        expect(flagged.length).toBeGreaterThan(0);
+        expect(flagged.every((s) => s.kind === "dialog-click" && s.controlType === "TabItem" && s.buttonTextId === "cordmux.dock.tab_people.label")).toBe(true);
         for (const file of ["ja-JP.ini", "en-US.ini"]) expect(iniKeys(file).has(TEXT_ID_TAB_STATUS)).toBe(true);
     });
 

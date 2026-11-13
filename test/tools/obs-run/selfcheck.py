@@ -16,6 +16,7 @@
 #   - ウィンドウの 1 フレーム抜け (RED。欠落 1)
 #   - 古い形の帯のウィンドウの共有 (「帯が見つからない」と出ること。古い frames.py は全部のフレームを 0 と読み、
 #     重複 1199 の RED になる。失敗だけでは「帯がない」と「凍った」を区別できない)
+# sync.py の一時的な段と時間とともに広がるずれの読み分けも確認する (audiostep と audiodrift。150 秒、sync.py だけ。値の範囲は predicates で見る)。
 # sync.py の白の見つけ方と smooth.py の帯の探し方も、共有の形のデータで確認する。
 #   - tab (動画が枠の約 53%) に 4 つの判定スクリプトを全部渡す。sync.py は白 3・対 3 の GREEN に加えて、
 #     領域の平均が 200 超えの規則で数えた白が 0 であること (white_detector.mean_over_200_events) を確認する。
@@ -123,6 +124,30 @@ SCENARIOS = [
      dict(args=REGION_ARGS, checks=dict(
          frames=dict(barcode_found=False, layout=None),
          smooth={"cells.0.barcode_found": False, "cells.0.layout": None}))),
+    # sync.py の一時的な段と、時間とともに広がるずれ (sync.py の「一時的な段と、時間とともに広がる傾きを分ける」)。
+    # 段の判定は組の並びで読むので、run-window-plan.mjs が傾きを判定する長さ (組 10 以上、120 秒以上) の 150 秒にする。
+    # 映像の柄は見ないので、作る手間を減らすため 30 fps にし、sync.py だけを当てる。
+    # audiostep: 60 秒から 85 秒の前まで (マーカー 5 つ) だけ音が 30 ms 遅れる。11-13 の実際の通話の段 (約 25 秒、20-30 ms) の形。
+    #   段が 1 つで戻り、段を除いた基準は平らなこと。全部の組に 1 本の直線を当てる前の読み方では、段の分だけ傾きが立つ。
+    # audiodrift: ずれが分あたり 12 ms 広がる (150 秒で 30 ms)。段はなく、基準の傾きが 12 ms/分の近くで、95% の幅が 1 ms/分より上
+    #   (欠陥と読める) こと。音の始まりは 5 ms の刻みで読むので、ずれは階段になる (残差が隣どうしで似る形でも、広がりを読めること)。
+    ("audiostep", ["--seconds", "150", "--fps", "30", "--audio-step", "60:85:30"], "音が一時的に 30 ms 遅れる段",
+     dict(frames="-", sync="E", smooth="-", analyze="-"),
+     dict(predicates=dict(sync=[
+         ("段が 1 つ (5 組) で、戻った", lambda d: len(d["trend"]["steps"]) == 1 and d["trend"]["steps"][0]["pairs"] == 5
+          and d["trend"]["steps"][0]["returned"] is True),
+         ("段の高さが 30 ms の近く (20 から 40 ms)", lambda d: 20 <= d["trend"]["steps"][0]["height_ms"] <= 40),
+         ("段を除いた基準の傾きが 1 ms/分より小さい", lambda d: abs(d["trend"]["baseline"]["slope_ms_per_min"]) < 1.0),
+         ("録画の終わりは段の途中でない", lambda d: d["trend"]["ends_off_baseline"] is False),
+     ]))),
+    ("audiodrift", ["--seconds", "150", "--fps", "30", "--audio-drift-ms-per-min", "12"], "音のずれが分あたり 12 ms 広がる",
+     dict(frames="-", sync="E", smooth="-", analyze="-"),
+     dict(predicates=dict(sync=[
+         ("段がない", lambda d: d["trend"]["steps"] == []),
+         ("基準の傾きが 12 ms/分の近く (9 から 15)", lambda d: 9 <= d["trend"]["baseline"]["slope_ms_per_min"] <= 15),
+         ("基準の傾きの 95% の幅の下の端が 1 ms/分より上", lambda d: d["trend"]["baseline"]["slope_ci95_ms_per_min"] is not None
+          and d["trend"]["baseline"]["slope_ci95_ms_per_min"][0] > 1.0),
+     ]))),
 ]
 
 
@@ -232,6 +257,20 @@ def main():
                 if got_value != value:
                     row_ok = False
                     details[det] += f" [check {key}: want {value!r} got {got_value!r}]"
+            # 値の範囲や組み合わせで見る確認 (段の数・高さ・傾きなど、決まった 1 つの値にならないもの)。
+            for what, predicate in more.get("predicates", {}).get(det, []):
+                try:
+                    held = bool(predicate(data))
+                except (KeyError, IndexError, TypeError):
+                    held = False
+                if not held:
+                    row_ok = False
+                    details[det] += f" [check {what}: not met]"
+            if det == "sync" and "trend" in data:
+                tr = data["trend"]
+                details[det] += (f" steps={[(s['start_s'], s['end_s'], s['height_ms'], s['returned']) for s in tr.get('steps', [])]}"
+                                 f" baseline_slope={tr.get('baseline', {}).get('slope_ms_per_min')}"
+                                 f" ci95={tr.get('baseline', {}).get('slope_ci95_ms_per_min')}")
         all_ok = all_ok and row_ok
         rows.append((name, label, expect, got, details, row_ok))
 

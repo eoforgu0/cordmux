@@ -252,14 +252,17 @@ describe("遅延を測る区間", () => {
         expect(LATENCY_WINDOW_CAPTURE_SETTINGS).toMatchObject({ priority: 2, method: 2, cursor: false, capture_audio: false });
     });
 
-    it("判定 (latency.py) は OBS を閉じた後・OBS の録画を残す前。人はリハーサルではテスト用の送信側の画面の 1 つ目。gate にしない", () => {
-        for (const [list, person] of [[steps, PERSON], [rehearsal, "harness-screen-1"]] as const) {
-            const i = at(list, (s) => s.kind === "judge-latency");
-            expect(i).toBeGreaterThan(list.map((s) => s.kind).lastIndexOf("close-obs"));
-            expect(i).toBeLessThan(at(list, (s) => s.kind === "keep-obs-recordings"));
-            expect(list[i]).toMatchObject({ recording: LATENCY_RECORDING_LABEL, person, cells: 3, tool: LATENCY_TOOL });
-            expect(list[i].gate).toBeUndefined();
-        }
+    it("判定 (latency.py) は OBS を閉じた後・OBS の録画を残す前。gate にしない。リハーサルは比べる Vesktop のウィンドウがないので判定しない (同じ位置に skip)", () => {
+        const i = at(steps, (s) => s.kind === "judge-latency");
+        expect(i).toBeGreaterThan(steps.map((s) => s.kind).lastIndexOf("close-obs"));
+        expect(i).toBeLessThan(at(steps, (s) => s.kind === "keep-obs-recordings"));
+        expect(steps[i]).toMatchObject({ recording: LATENCY_RECORDING_LABEL, person: PERSON, cells: 3, tool: LATENCY_TOOL });
+        expect(steps[i].gate).toBeUndefined();
+        expect(rehearsal.some((s) => s.kind === "judge-latency")).toBe(false);
+        const skip = at(rehearsal, (s) => s.kind === "skip" && s.item === "latency");
+        expect(skip).toBeGreaterThan(rehearsal.map((s) => s.kind).lastIndexOf("close-obs"));
+        // 遅れの録画そのもの (ウィンドウキャプチャを置いて録る手順) はリハーサルでも通す。人はテスト用の送信側の画面の 1 つ目。
+        expect(rehearsal.find((s) => s.kind === "human" && String(s.message).includes("大きく表示"))!.message).toContain("harness-screen-1");
         const starts = steps.filter((s) => s.kind === "record-start").map((s) => s.label);
         expect(new Set(starts).size).toBe(starts.length);
     });
@@ -374,8 +377,10 @@ describe("遅延を測る区間", () => {
     it("実行スクリプト: judge-latency のログに枠ごとの名前と矩形をコピーし、record-start と record-stop の枠のログにも名前を書く (テキストとして読む)", () => {
         const source = readFileSync(join(HERE, "run-window.mjs"), "utf8");
         expect(source).toContain("const cellsSeen = latencyCellsSeen(state.cellRegionCaptures[s.recording] || []);");
-        expect(source).toContain("const base = { recording, person: s.person || null, regions, cellsSeen, fps: ref ? ref.fps : null };");
-        expect(source).toContain("cells: (capture.cells || []).map((c) => ({ cell: c.cell, sourceName: c.sourceName ?? null,");
+        expect(source).toContain("const base = { recording, person: s.person || null, personCell: { cell: personCell.cell, streams: personCell.streams, from: personCell.from, reason: personCell.reason }, regions, cellsSeen, fps: ref ? ref.fps : null };");
+        expect(source).toContain("cells: (capture.cells || []).map((c) => ({ cell: c.cell, sourceName: c.sourceName ?? null, stream: c.stream ?? null,");
+        // 遅れを読む人の枠は、枠の割り当てと cordmux の録画の録画ログから引く (personCellForRecording)。
+        expect(source).toContain("const personCell = personCellForRecording(s.recording, s.person);");
     });
 });
 
@@ -646,18 +651,20 @@ describe("整列の傾きを frames が減った所で区切る", () => {
 
 describe("参加のメッセージに Vesktop も入る", () => {
     it("--vesktop-share のメッセージは Vesktop にも同じボイスチャンネルに入ることを依頼する", () => {
-        expect(callJoinMessage({ vesktopShare: true })).toContain(") でも同じボイスチャンネルに入り、画面共有を1つ始めてください");
+        expect(callJoinMessage({ vesktopShare: true })).toContain("Vesktop (sub1) の4つで、指定のボイスチャンネルに入ってください");
+        expect(callJoinMessage({ vesktopShare: true })).toContain("Vesktop (sub1) でも、画面共有を1つ始めてください");
+        // --vesktop-share でなくても Vesktop には入ることを頼む (入らないと cordmux は何も受け取らない)。
+        expect(callJoinMessage({ vesktopShare: false })).toContain("Vesktop (sub1) の4つで、指定のボイスチャンネルに入ってください");
         expect(callJoinMessage({ vesktopShare: true }).indexOf("Vesktop (")).toBeGreaterThan(-1);
     });
 
     it("ボイスチャンネルの名前は --voice-channel の値だけから入る (コードに名前を持たない)", () => {
         const named = callJoinMessage({ vesktopShare: true, voiceChannel: CHANNEL });
-        expect(named).toContain("でボイスチャンネル「" + CHANNEL + "」に入ってください。");
-        expect(named).toContain(") でも「" + CHANNEL + "」に入り、画面共有を1つ始めてください");
+        expect(named).toContain("の4つで、ボイスチャンネル「" + CHANNEL + "」に入ってください。");
         const unnamed = callJoinMessage({ vesktopShare: true });
-        expect(unnamed).toContain("で指定のボイスチャンネルに入ってください。");
+        expect(unnamed).toContain("の4つで、指定のボイスチャンネルに入ってください。");
         expect(unnamed).not.toContain("「");
-        const join = plan([...REAL, ...STAGE]).steps.find((s) => s.kind === "human" && s.until === "go-file" && String(s.message).includes("ボイスチャンネル"))!;
+        const join = plan([...REAL, ...STAGE]).steps.find((s) => s.kind === "human" && s.until === "call-ready" && String(s.message).includes("ボイスチャンネル"))!;
         expect(join.message).toBe(named);
     });
 });
@@ -773,7 +780,7 @@ describe("実行の途中で止めるもの (stopOnFail) と記録するだけ�
         expect(r).toMatchObject({ ok: false, red: ["av-sync-av1"] });
         const row = (item: string) => r.rows.find((x: any) => x.item === item);
         expect(row("add-to-vesktop")).toMatchObject({ ok: true, onFail: "stop" });
-        expect(row("av-sync-main").detail).toEqual([{ cell: 2, meanMs: 23.4, paired: 240, trend: "long-call", slopeMsPerMin: 0.2 }]);
+        expect(row("av-sync-main").detail).toEqual([{ cell: 2, meanMs: 23.4, paired: 240, trend: "long-call", slopeMsPerMin: 0.2, ci95MsPerMin: null, fitOn: null, steps: null }]);
         expect(row("av-sync-av1")).toMatchObject({ ok: false, reason: "outside the line on cell 2", onFail: "record" });
         expect(row("latency").detail).toMatchObject({ estimatedMs: 46.7, designQuestion: true });
         expect(row("connections-kept")).toMatchObject({ ok: true });

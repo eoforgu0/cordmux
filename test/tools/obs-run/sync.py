@@ -75,10 +75,35 @@ PAIR_MAX_S = 0.5
 # 時間に対するずれの傾き (出力の trend)。cordmux の録画では音の先行が 10 分で 142 ms から
 # 177 ms へ広がることがあり、それを組の並びから読む (pairs は先頭の 50 組しか出さないので、長い録画では後ろが読めない)。
 # 全部の組で最小二乗の傾き (分あたりの ms) と、先頭と末尾の TREND_EDGE_PAIRS 組の平均を出す。判定はしない (読むのは人と実行スクリプト)。
-# 傾きの標準誤差 (slope_se_ms_per_min) と 95% の幅 (slope_ci95_ms_per_min) も出す。
-# 「傾きは 1 ms/分を超えて 0 と分けられれば欠陥」と判定するには、0 と分けられるかを読むのに傾きの揺れの大きさが要る (組の並びの残差から出す。
-# t 分布の 2 側 95% の値は自由度 n-2 で引く)。合否を決めるのは呼び出し元 (run-window-plan.mjs の judgeAvSyncLines)。
+# 傾きの標準誤差 (slope_se_ms_per_min) と 95% の幅 (slope_ci95_ms_per_min) も出す (t 分布の 2 側 95% の値は自由度 n-2 で引く)。
+# この全部の組の傾きは比べるために残す値で、合否 (run-window-plan.mjs の judgeAvTrend) は、下の段を除いた基準の傾き
+# (trend.baseline) で読む。
 TREND_EDGE_PAIRS = 5
+# 一時的な段と、時間とともに広がる傾きを分ける (出力の trend.baseline と trend.steps)。
+# 見分けたいのは、ずれが時間とともに溜まって長い配信で限りなく大きくなる形 (音と映像の時計の速さの違い。欠陥) と、
+# 一時的に上下して戻る段 (溜まらない。11-13 の実際の通話では、約 25 秒だけ 20-30 ms 上がる段が録画と合成の同じ時刻に出た)。
+# 全部の組に 1 本の直線を当てると、段が直線の傾きとして数えられ、溜まらないずれを欠陥と読む。そこで:
+#   1. 基準: 組ごとに、前後 STEP_BASELINE_WINDOW_S 秒の窓の組の中央値を基準にする。中央値は窓の半分より短い段には動かない。
+#      窓の中に段の組が多いと基準が引っ張られるので、外れとした組を除いて中央値を取り直す (STEP_ITERATIONS 回)。
+#   2. 外れ: 基準との差が STEP_MIN_MS と「隣の組との差の揺れ (中央絶対偏差から出した標準偏差) の STEP_NOISE_K 倍」の
+#      大きいほうを超えた組。同じ向きの外れが STEP_MIN_PAIRS 組以上続けば段、それより短ければ単発の外れ。段の後に
+#      基準の組があれば「戻った」。
+#   3. 広がり: 外れを除いた基準の組に直線を当てる。ずれが段のように一定の値に留まると、直線からの残差が隣どうしで似る
+#      (残差の 1 つ隣との相関 rho が大きい) ので、独立な組の数を n (1 - rho) / (1 + rho) と見て、傾きの標準誤差と 95% の幅を
+#      広げる (残差が独立とみなすと、段や値の揺れを直線の傾きとして「0 と分けられる」と読んでしまう)。
+#   窓の半分より長く続く変化は基準の一部になり、広がりの側で読む (短い録画では、長く続く段と溜まりを分けられないので、
+#   段として除かない)。録画の終わりが外れの途中なら、戻るかが分からないので ends_off_baseline を立てる。
+# 値の根拠: 窓 90 秒は、11-13 の段 (約 25 秒、5 組) が半分 (45 秒) より十分短く、10 分の録画でも窓が数個入る長さ。
+# STEP_MIN_MS 10 は、音のマーカーの始まりを WINDOW_S (5 ms) の刻みで読むので、2 刻みまでの差は刻みの揺れと区別しないため。
+# STEP_NOISE_K 4 は、揺れの大きい録画で、揺れの裾 (正規分布なら 4 標準偏差の外は 1 万に 1 未満) を段と読まないため。
+# 合否を決めるのは呼び出し元 (run-window-plan.mjs の judgeAvTrend)。
+STEP_BASELINE_WINDOW_S = 90.0
+STEP_MIN_MS = 10.0
+STEP_NOISE_K = 4.0
+STEP_MIN_PAIRS = 2
+STEP_ITERATIONS = 3
+# 残差の 1 つ隣との相関の上限 (1 に近いと独立な組の数が 0 に近づき、幅が無限になる。0.95 は独立な組の数が 1/39 になる値)。
+RHO_MAX = 0.95
 # t 分布の 2 側 95% の値 (自由度 1-30)。31 以上は下の trend_t95 の段で近似する (標準の表の値)。
 T95_BY_DOF = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
               2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042]
@@ -122,7 +147,102 @@ def offset_trend(pairs):
     edge = min(TREND_EDGE_PAIRS, n)
     out["first_mean_ms"] = round(float(np.mean(v[:edge])), 1)
     out["last_mean_ms"] = round(float(np.mean(v[-edge:])), 1)
+    out.update(offset_steps(t, v))
     return out
+
+
+def window_baseline(t, v, use):
+    """組ごとに、前後 STEP_BASELINE_WINDOW_S / 2 秒の窓の中で use が真の組の中央値を返す (窓に 1 つも無ければ窓の全部の組)。"""
+    half = STEP_BASELINE_WINDOW_S / 2.0
+    base = np.empty(len(t))
+    for i, ti in enumerate(t):
+        near = np.abs(t - ti) <= half
+        pick = near & use
+        base[i] = float(np.median(v[pick if np.any(pick) else near]))
+    return base
+
+
+def baseline_fit(t, v):
+    """基準の組の直線の傾き (分あたりの ms) と、残差の 1 つ隣との相関で広げた標準誤差と 95% の幅 (上の 3.)。"""
+    n = len(t)
+    out = {"pairs": n, "span_s": None, "slope_ms_per_min": None, "slope_se_ms_per_min": None, "slope_ci95_ms_per_min": None,
+           "lag1_autocorr": None, "effective_pairs": None}
+    if n < 3:
+        return out
+    span = float(t[-1] - t[0])
+    out["span_s"] = round(span, 1)
+    tc = t - t.mean()
+    sxx = float(np.sum(tc * tc))
+    if span <= 0 or sxx <= 0:
+        return out
+    slope = float(np.sum(tc * (v - v.mean())) / sxx)
+    residual = v - (v.mean() + slope * tc)
+    se = math.sqrt(float(np.sum(residual * residual)) / (n - 2) / sxx)
+    rho = 0.0
+    if n >= 4:
+        a = residual[:-1] - residual[:-1].mean()
+        b = residual[1:] - residual[1:].mean()
+        den = math.sqrt(float(np.sum(a * a)) * float(np.sum(b * b)))
+        rho = float(np.sum(a * b)) / den if den > 0 else 0.0
+    rho = min(max(rho, 0.0), RHO_MAX)
+    effective = n * (1.0 - rho) / (1.0 + rho)
+    se_wide = se * math.sqrt((1.0 + rho) / (1.0 - rho)) * 60.0
+    out["slope_ms_per_min"] = round(slope * 60.0, 2)
+    out["slope_se_ms_per_min"] = round(se_wide, 3)
+    out["lag1_autocorr"] = round(rho, 3)
+    out["effective_pairs"] = round(effective, 1)
+    # 独立な組が 3 つ未満 (自由度 1 未満) なら幅は出せない (null。呼び出し元は「0 と分けられない」と読む)。
+    t95 = trend_t95(int(math.floor(effective - 2.0)))
+    if t95 is not None:
+        out["slope_ci95_ms_per_min"] = [round(slope * 60.0 - t95 * se_wide, 2), round(slope * 60.0 + t95 * se_wide, 2)]
+    return out
+
+
+def offset_steps(t, v):
+    """一時的な段と、それを除いた基準の傾き (上の「一時的な段と、時間とともに広がる傾きを分ける」)。"""
+    n = len(t)
+    diffs = np.diff(v)
+    noise = 1.4826 * float(np.median(np.abs(diffs - np.median(diffs)))) / math.sqrt(2.0) if len(diffs) > 0 else 0.0
+    threshold = max(STEP_MIN_MS, STEP_NOISE_K * noise)
+    off = np.zeros(n, dtype=bool)
+    for _ in range(STEP_ITERATIONS):
+        base = window_baseline(t, v, ~off)
+        nxt = np.abs(v - base) > threshold
+        if np.array_equal(nxt, off):
+            break
+        off = nxt
+    base = window_baseline(t, v, ~off)
+    deviation = v - base
+    steps = []
+    spikes = 0
+    i = 0
+    while i < n:
+        if not off[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and off[j + 1] and np.sign(deviation[j + 1]) == np.sign(deviation[i]):
+            j += 1
+        count = j - i + 1
+        if count >= STEP_MIN_PAIRS:
+            steps.append({
+                "start_s": round(float(t[i]), 1), "end_s": round(float(t[j]), 1), "pairs": count,
+                "height_ms": round(float(np.mean(deviation[i:j + 1])), 1),
+                "returned": bool(np.any(~off[j + 1:])),
+            })
+        else:
+            spikes += 1
+        i = j + 1
+    keep = ~off
+    return {
+        "step_threshold_ms": round(threshold, 1),
+        "baseline_window_s": STEP_BASELINE_WINDOW_S,
+        "steps": steps,
+        "spikes": spikes,
+        # 録画の終わりが段の途中 (戻るかが分からない)。単発の外れは数えない。
+        "ends_off_baseline": bool(steps) and not steps[-1]["returned"],
+        "baseline": baseline_fit(t[keep], v[keep]),
+    }
 
 
 def parse_args(argv):

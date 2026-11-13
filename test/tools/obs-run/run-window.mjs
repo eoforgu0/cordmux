@@ -236,6 +236,13 @@ import {
   TEXT_ID_LOOK_FIELD_IN_GROUP,
   recordSessionsRoot,
   isRecordSessionDirName,
+  // 枠の人を、枠の割り当てと cordmux の録画の録画ログから引く。参加と共有がそろったかを Facts の行で見る。
+  personScreenStreams,
+  personCellOf,
+  callReady,
+  callReadyFromLog,
+  isCallStep,
+  RECORD_DIR_REL,
 } from "./run-window-plan.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -290,7 +297,7 @@ const USAGE =
   "[--screen-names <表示名>,... (--n-screen と)] [--screen-images <画像>,... (--n-screen と)] [--voice-users <userId>,... (--n-voice と)] [--label-em-ratio-pct 1.0..8.5] [--wire-composite] (この 5 つも hold だけ。README の「実際の OBS の画面を撮る」) " +
   "[--stream-sink (hold と call-hold。同梱の ffmpeg で 127.0.0.1:1935 の配信を受ける)] " +
   "[--obs-language ja-JP|en-US (hold だけ)] [--obs-theme <OBS のテーマの id>] [--obs-font-scale 8..12] [--obs-density 1|-2|-3|-4|-5] [--obs-hdr] [--obs-full-height-docks on|off] (見た目は hold と dock-view) " +
-  "[--start-with-add] [--vesktop-share] [--skip-continuous] [--skip-av2] [--skip-speaker-mute] [--extra-checks] [--skip-export-bundle] [--latency-person <名前>] [--voice-channel <ボイスチャンネルの名前>] (この 9 つは call-1 だけ。README の「call-1 の旗」) " +
+  "[--start-with-add] [--vesktop-share] [--skip-continuous] [--skip-av2] [--skip-speaker-mute] [--extra-checks] [--skip-export-bundle] [--recheck] [--av-check] [--av-only] [--latency-person <名前>] [--voice-channel <ボイスチャンネルの名前>] (この 12 個は call-1 だけ。README の「実際の通話」) " +
   "[--stream] [--deadline-min 120 (call-1 の既定は実行計画からの見積もりと 180 の大きいほう)] [--tag <名前>] [--allow-unknown-encoder] [--dry-run] " +
   "[--allow-outside-work (--obs を repo の _work の外、--out を _work と build_x64 の外でも受ける。往復でも使える)]\n" +
   "   or: node run-window.mjs --out <out> --step install-roundtrip --tag <tag> --zip <cordmux zip> --obs-zip <OBS zip> " +
@@ -933,6 +940,13 @@ function withElementName(parsed) {
   return { ...rest, elementName: name };
 }
 
+// 手順が absentOk を持ち (rowMuteStep。ほかの人の画面共有の音をミュートにする手順)、押すボタンが出ていなかったときは、失敗にせず
+// 「出ていない」と記録する (画面共有の音のボタンは、その人の共有に音がないときは出ない = 混ざる音がない)。
+function absentAllowed(s, result) {
+  if (!s.absentOk || !result || result.ok !== false || !/^no button or checkbox named /.test(String(result.error || ""))) return result;
+  return { ...result, ok: true, absent: true, note: "the button is not shown (the person has no screen share audio to mix)" };
+}
+
 
 // ---- 判定スクリプト (frames.py / sync.py / smooth.py) と icacls -------------------
 
@@ -1338,6 +1352,8 @@ async function runReal(args, steps, outDir) {
     //   videoRates: measure-video-rate が読んだ映像の数 (label -> parseVideoRateSamples)
     //   obsRecordingsKept: keep-obs-recordings が済んだか (finally で二重に移さない)
     cellRegionCaptures: {},
+    // 録画ごと (label の鍵) の始めと終わりのシステム時刻 (ms)。cordmux の録画の録画ログの segment の行と区間を合わせる (personCellForRecording)。
+    recordWindows: {},
     openRecordingKey: null,
     lastRecordingKey: null,
     videoRates: {},
@@ -1403,13 +1419,18 @@ async function runReal(args, steps, outDir) {
   // 合成のソースが描く画面共有の区画を読む。OBS のログの最後の配置の行から区画を取る (枠の番号と人の対応はログの
   // 「Screen slot N carries ...」の行から。録画の前の最後の行 = 読んだ時点の最後の行)。読めなければ ok:false を返すだけで先へ進む
   // (判定スクリプトは固定の区画にフォールバックし、そのことを regionSource に書く)。
+  // 枠ごとのストリームの番号 (stream) も残す (judge-latency と judge-av-sync が、cordmux の録画の録画ログと合わせて枠の人を引く)。
+  // テスト用の送信側の名前 (harness-screen-<ストリームの番号>) を人として入れるのは、送り手がテスト用の送信側の実行だけ
+  // (実際の通話のストリームの番号は人の名前と結び付かない)。
+  const senderIsHarness = !isCallStep(args.step) || Boolean(args.rehearsal);
   async function captureCellRegions(when) {
     try {
       const videoSettings = await ws.call("GetVideoSettings");
       const { cordmux } = await readCordmuxInputs(ws, textOf);
       const logLines = readFirstObsLogLines();
-      const persons = harnessPersonsFromSlotStreams(screenSlotStreamsFromLines(logLines));
-      return { when, ...compositeCellRegions({ layout: lastCompositeLayout(logLines), videoSettings, inputs: cordmux, persons }) };
+      const slotStreams = screenSlotStreamsFromLines(logLines);
+      const persons = senderIsHarness ? harnessPersonsFromSlotStreams(slotStreams) : {};
+      return { when, ...compositeCellRegions({ layout: lastCompositeLayout(logLines), videoSettings, inputs: cordmux, persons, slotStreams }) };
     } catch (e) {
       return { when, ok: false, regionSource: "composite-layout", error: e.message, cells: [], skipped: [] };
     }
@@ -1419,11 +1440,40 @@ async function runReal(args, steps, outDir) {
   const regionSummary = (capture) => ({
     ok: capture.ok,
     error: capture.error || null,
-    cells: (capture.cells || []).map((c) => ({ cell: c.cell, sourceName: c.sourceName ?? null, x: c.x, y: c.y, w: c.w, h: c.h, bitCell: c.bitCell, sourceWidth: c.sourceWidth, sourceHeight: c.sourceHeight })),
+    cells: (capture.cells || []).map((c) => ({ cell: c.cell, sourceName: c.sourceName ?? null, stream: c.stream ?? null, x: c.x, y: c.y, w: c.w, h: c.h, bitCell: c.bitCell, sourceWidth: c.sourceWidth, sourceHeight: c.sourceHeight })),
     skipped: capture.skipped || [],
     // 合成のソースがあるとき: 区画の出どころと、自分の枠の矩形 (画面共有の区画には入れない)。
     ...(capture.regionSource ? { regionSource: capture.regionSource, self: capture.self ?? null } : {}),
   });
+
+  // OBS の録画 (label の鍵) に載っていた person の枠 (cell = 枠の番号 - 1) を引く。録画の区間 (state.recordWindows) に重なる cordmux の録画の
+  // 録画ログの segment の行から、その人のストリームの番号を取り (personScreenStreams)、録画の始めと終わりに読んだ枠の割り当てで探す
+  // (personCellOf)。録画ログがなければ、テスト用の送信側の実行に限り、枠の名前 (harness-screen-<番号>) で探す。
+  // 返す値に user_id は入れない (結果 JSON に書かない)。
+  function personCellForRecording(recordingKey, person, recordDirRel) {
+    const captures = state.cellRegionCaptures[recordingKey] || [];
+    const win = state.recordWindows[recordingKey] || null;
+    const recordDirAbs = path.join(windowOutDir, recordDirRel || RECORD_DIR_REL);
+    const sessionDir = state.recordSessionDir || newestRecordSessionDir(recordDirAbs);
+    const ledger = sessionDir ? readLedger(sessionDir) : null;
+    if (ledger && win) {
+      const found = personScreenStreams({ ledger, person, fromMs: win.startMs, toMs: win.stopMs });
+      if (found.streams.length > 0) {
+        const picked = personCellOf({ captures, streams: found.streams });
+        return { cell: picked.cell, streams: found.streams, from: "ledger", reason: picked.reason };
+      }
+      if (!senderIsHarness) return { cell: null, streams: [], from: "ledger", reason: found.reason };
+    }
+    if (senderIsHarness) {
+      for (const capture of captures) {
+        for (const c of capture.cells || []) {
+          if (c.person === person) return { cell: c.cell, streams: c.stream !== null && c.stream !== undefined ? [c.stream] : [], from: "harness-name", reason: null };
+        }
+      }
+      return { cell: null, streams: [], from: "harness-name", reason: "the frame of " + person + " was not found in the recording" };
+    }
+    return { cell: null, streams: [], from: null, reason: !win ? "the recording window is not known" : "no cordmux recording covers the recording (the ledger was not found)" };
+  }
 
   // call-1 の OBS の録画を、cleanup.ps1 -KeepRecordings が残す場所へ移す (keep-obs-recordings と finally で共有する)。
   // 書き込むプロセス (OBS と配信の受信側) がファイルを放すまで少し待つことがあるので、数回やり直す。
@@ -2342,7 +2392,7 @@ async function runReal(args, steps, outDir) {
             const execOpts = { encoding: "utf8" };
             if (s.invokeTimeoutMs) execOpts.timeout = s.invokeTimeoutMs;
             const out = execFileSync("powershell", clickArgs, execOpts);
-            record("dock-click", { ...withElementName(JSON.parse(out)), textId: s.textId || null, slotOp: !!s.slotOp, muteOp: !!s.muteOp });
+            record("dock-click", absentAllowed(s, { ...withElementName(JSON.parse(out)), textId: s.textId || null, slotOp: !!s.slotOp, muteOp: !!s.muteOp }));
           } catch (e) {
             const timedOut = !!e.signal || e.code === "ETIMEDOUT";
             const stdout = (e.stdout || "").toString();
@@ -2352,7 +2402,7 @@ async function runReal(args, steps, outDir) {
             } catch {
               /* JSON でなければ e.message を使う */
             }
-            record("dock-click", { ...(withElementName(parsed) || { ok: false, elementName: clickName, timedOut, error: timedOut ? "invoke did not return within " + s.invokeTimeoutMs + " ms (dialog likely opened)" : stdout || e.message }), textId: s.textId || null, slotOp: !!s.slotOp, muteOp: !!s.muteOp });
+            record("dock-click", absentAllowed(s, { ...(withElementName(parsed) || { ok: false, elementName: clickName, timedOut, error: timedOut ? "invoke did not return within " + s.invokeTimeoutMs + " ms (dialog likely opened)" : stdout || e.message }), textId: s.textId || null, slotOp: !!s.slotOp, muteOp: !!s.muteOp }));
           }
           break;
         }
@@ -2769,6 +2819,7 @@ async function runReal(args, steps, outDir) {
           const startRegions = await captureCellRegions("start");
           state.openRecordingKey = s.label || "_last";
           state.cellRegionCaptures[state.openRecordingKey] = [startRegions];
+          state.recordWindows[state.openRecordingKey] = { startMs: state.recordStartMs, stopMs: null };
           record("record-start", { stream: !!s.stream, label: s.label || null, cellRegions: regionSummary(startRegions) });
           break;
         }
@@ -2792,6 +2843,7 @@ async function runReal(args, steps, outDir) {
           state.openRecordingKey = null;
           const endRegions = await captureCellRegions("end");
           state.cellRegionCaptures[regionKey] = [...(state.cellRegionCaptures[regionKey] || []), endRegions];
+          state.recordWindows[regionKey] = { startMs: (state.recordWindows[regionKey] || {}).startMs ?? null, stopMs: Date.now() };
           state.lastRecordingKey = regionKey;
           if (s.stream) await ws.call("StopStream");
           const rec = await ws.call("StopRecord");
@@ -3568,7 +3620,7 @@ async function runReal(args, steps, outDir) {
             break;
           }
           const lines = fs.readFileSync(latest, "utf8").split(/\r?\n/);
-          record("judge-call-log", { logFile: latest, ...judgeCallLog(lines, { maxDriftPercent: s.maxDriftPercent, minSpanSeconds: s.minSpanSeconds }) });
+          record("judge-call-log", { logFile: latest, ...judgeCallLog(lines, { maxDriftPercent: s.maxDriftPercent, minSpanSeconds: s.minSpanSeconds, shortRunNotJudged: s.shortRunNotJudged }) });
           break;
         }
         case "copy-vencord-settings": {
@@ -3733,16 +3785,19 @@ async function runReal(args, steps, outDir) {
           const recording = state.recordings[s.recording] || null;
           const toolPath = path.join(HERE, s.tool || "latency.py");
           const ref = state.latencyReference || null;
+          // 遅れを読む人の枠を、枠の割り当てと cordmux の録画の録画ログから引く (personCellForRecording)。
+          const personCell = personCellForRecording(s.recording, s.person);
           const regions = latencyRegions({
             captures: state.cellRegionCaptures[s.recording] || [],
             cells: s.cells,
             person: s.person,
             reference: ref ? ref.rect.output : null,
+            resolvedCell: personCell.cell,
           });
           // 遅れの録画の始めと終わりに読んだ枠ごとの名前と四角もコピーする (latencyCellsSeen)。人が見つからなかったときに、
           // テストを実行する人が枠の名前で領域 A を選んで手で読み直せるようにするため。
           const cellsSeen = latencyCellsSeen(state.cellRegionCaptures[s.recording] || []);
-          const base = { recording, person: s.person || null, regions, cellsSeen, fps: ref ? ref.fps : null };
+          const base = { recording, person: s.person || null, personCell: { cell: personCell.cell, streams: personCell.streams, from: personCell.from, reason: personCell.reason }, regions, cellsSeen, fps: ref ? ref.fps : null };
           if (!recording) {
             record("judge-latency", { ok: false, reason: "録画がない (" + s.recording + ")", ...base });
             break;
@@ -3751,9 +3806,9 @@ async function runReal(args, steps, outDir) {
             record("judge-latency", { ok: false, toolMissing: true, reason: "ツールがない (" + path.basename(toolPath) + ")", ...base });
             break;
           }
-          if (!regions.regionA && regions.regionB && s.namesUnknown) {
-            // 実際の通話は、枠に載っている人がログから分からない。失敗にせず、手で読む。
-            record("judge-latency", { ok: null, handRead: true, reason: "枠に載っている人が記録から分からないので、PNG で枠を読み、latency.py を手で実行する", ...base });
+          if (!regions.regionA && regions.regionB && personCell.cell === null && !senderIsHarness) {
+            // 枠の人が引けなかった (区間を覆う cordmux の録画がない、または途中で枠を移った)。失敗にせず、理由を残して手で読む。
+            record("judge-latency", { ok: null, handRead: true, reason: "the frame of " + (s.person || "?") + " could not be found automatically (" + personCell.reason + "); choose region A from the PNG and run latency.py by hand", ...base });
             break;
           }
           if (!regions.regionA || !regions.regionB) {
@@ -3783,7 +3838,13 @@ async function runReal(args, steps, outDir) {
         case "judge-av-sync": {
           // sync.py の判定結果 (recording の label で引く。av1 / av2 は label、メインの手順は recording) に基準値を適用する。記録するだけ。
           const judged = [...state.results].reverse().find((r) => r && r.name === "judge" && r.tool === "sync.py" && (r.recording === s.recording || r.label === s.recording)) || null;
-          record("judge-av-sync", { recording: s.recording, ...judgeAvSync(judged) });
+          // s.person があれば、その人 (テスト動画を共有している人) の枠だけを判定する (枠は personCellForRecording で引く)。
+          const personCell = s.person ? personCellForRecording(s.recording, s.person) : null;
+          record("judge-av-sync", {
+            recording: s.recording,
+            ...judgeAvSync(judged, personCell ? { person: s.person, cell: personCell.cell, cellReason: personCell.reason } : {}),
+            ...(personCell ? { personCellFrom: personCell.from, personStreams: personCell.streams } : {}),
+          });
           break;
         }
         case "judge-ac31": {
@@ -3975,6 +4036,8 @@ async function runReal(args, steps, outDir) {
               return "go-file";
             }
             if (s.until === "seconds") return Date.now() - startedAt >= (Number(s.waitSeconds) || 0) * 1000 ? "seconds" : null;
+            // 参加と共有がそろったか (OBS の記録の最後の Facts の行。callReady)。
+            if (s.until === "call-ready") return callReady(readFirstObsLogLines(), { roster: s.roster, sharing: s.sharing }) ? "call-ready" : null;
             if (s.until === "state-json-points-to-placed") {
               const text = readTextOrNull(stateJsonPath);
               if (text === null) return null;
@@ -4001,6 +4064,8 @@ async function runReal(args, steps, outDir) {
             message: s.message,
             until: s.until,
             satisfiedBy,
+            // call-ready: 進んだときの最後の Facts の行の人数 (通知ファイルで進んだときに、そろう前だったかを読むため)。
+            ...(s.until === "call-ready" ? { facts: callReadyFromLog(readFirstObsLogLines()), wanted: { roster: s.roster, sharing: s.sharing } } : {}),
             waitedMs: Date.now() - startedAt,
             timeoutMs,
             timedOut: satisfiedBy === null && !deadlineHit(),
