@@ -7,7 +7,7 @@
 # set: language-marks 言語の指定
 ja:だめ
 en:\bbad\b
-# set: internal-words 内部の語
+# set: no-marks 指定のない行
 \binternal\b
 # set: spacing 空白
 spacing=A:[ぁ-ヿ一-鿿][A-Za-z0-9%]

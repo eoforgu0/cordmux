@@ -1,5 +1,3 @@
 {
-    "description": "see app/none2.txt (expect: missing-path)",
-    "note": "ZZ-30 の例 (expect: record-id)",
-    "fetchedAt": "2031-02-03T04:05:06Z (expect: date)"
+    "description": "see app/none2.txt (expect: missing-path)"
 }

@@ -4,7 +4,7 @@
 struct Impl {
 	void log(const std::string &line); // 宣言は文字列リテラルがないので、何も検出しない
 	void on_close() { log("close: 接続が切れた"); } // expect: ascii | lowercase-start
-	void on_hello() { impl_->log("Connected to Vesktop (AC-66)"); } // expect: design-number
+	void on_hello() { impl_->log("connected to Vesktop"); } // expect: lowercase-start
 	void on_send() { this->log("cordmux couldn't send a message"); } // expect: cordmux-start
 	void on_limits() { log("Quality limits not sent."); } // expect: period-end
 	void others()

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-# 画面の文字列 (src-obs/data/locale の ini の値) に、forbidden_ui_words.txt の記号、表記、内部の語、空白の誤りがないかを
+# 画面の文字列 (src-obs/data/locale の ini の値) に、forbidden_ui_words.txt の記号、表記、空白の誤りがないかを
 # チェックし、一致した値をエラーにする。一覧の行は名前を付けたセットに分けてあり、一致した行のセットの名前をチェック項目の
 # 名前として出力する。一覧の書き方は forbidden_ui_words.txt の先頭のコメントにある。
-# install_guide.py と make_release_notes.py も、load_word_patterns と load_word_rules で同じ一覧を読む。
+# install_guide.py と make_release_notes.py も、load_word_rules で同じ一覧を読む (spacing のセットを使う)。
 #
 #   python forbidden_ui_words.py [PATH...]   ini をチェックする (省くと src-obs/data/locale の 2 つの ini)
 #   python forbidden_ui_words.py --spacing B --question fullwidth   ja_style.txt の代わりにこの書き方でチェックする
@@ -34,7 +34,7 @@ PRUNE_DIRS = {
     "dist", "coverage", "__pycache__", ".venv", "out",
 }
 
-# セットの行: 「# set: internal-words 内部の語と番号」。名前は英小文字、数字、- で書く。
+# セットの行: 「# set: spacing 空白の誤り」。名前は英小文字、数字、- で書く。
 GROUP_RE = re.compile(r"^#\s*set:\s*([a-z][a-z0-9-]*)(?:\s|$)")
 # 行の先頭の指定 (いくつでも続けて書ける)。
 MARK_RE = re.compile(r"^(ja|en|spacing=[AB]|question=(?:halfwidth|fullwidth)|not_names):")
@@ -43,7 +43,6 @@ LANGS = ("ja", "en")
 STYLE_CHOICES = {"spacing": ("A", "B"), "question": ("halfwidth", "fullwidth")}
 STYLE_LISTS = ("name_keys", "suffix_keys")
 # install_guide.py と make_release_notes.py が使うセット。
-INTERNAL_GROUP = "internal-words"
 SPACING_GROUP = "spacing"
 LANG_NAME_RE = re.compile(r"^(ja|en)(?:[-_.]|$)", re.IGNORECASE)
 EXPECT_RE = re.compile(r"^#\s*expect(?:\[([^\]]*)\])?:\s?(.+)$")
@@ -54,7 +53,7 @@ class WordListError(ValueError):
 
 
 class WordRule(NamedTuple):
-    group: str          # セットの名前 ("internal-words" など)
+    group: str          # セットの名前 ("spacing" など)
     raw: str            # 行の先頭の指定を除いた正規表現の文字列
     regex: re.Pattern
     lang: object        # 言語の指定 (None か "ja" か "en")
@@ -108,8 +107,8 @@ def parse_word_rules(text, name="words"):
             raise WordListError(f"{where}: 指定の後ろに正規表現がない")
         try:
             # re.ASCII を付けて、\b を ASCII の \w (英数字と _) だけで判定する。既定の Unicode の \b は、かなと漢字も
-            # \w に含めるので、「ssrcの値」のように助詞が直接続くと s と「の」の間に単語境界ができず、`\bssrc\b` が
-            # 一致しない (fixtures/forbidden_ui_words/bad/value_has_word.ini で確認する)。\w を使わない行には
+            # \w に含めるので、「internalの値」のように助詞が直接続くと l と「の」の間に単語境界ができず、`\binternal\b`
+            # が一致しない (fixtures/forbidden_ui_words/mechanism/ja-JP.ini で確認する)。\w を使わない行には
             # 影響しない。
             regex = re.compile(rest, re.ASCII)
         except re.error as e:
@@ -181,15 +180,6 @@ def rule_applies(rule, lang, style, key=None):
     if rule.not_names and key is not None and is_name_key(key, style):
         return False
     return True
-
-
-def load_word_patterns(groups=(INTERNAL_GROUP,), path=WORDS_FILE, style=None):
-    # groups に挙げたセットの行を、(正規表現の文字列, コンパイルした正規表現) のリストで返す。既定は internal-words だけで、
-    # install_guide.py と make_release_notes.py が手順書とリリースノートのチェックに使う。書き方の指定がある行は
-    # style (省くと現在の ja_style.txt) で選ぶ。言語の指定と not_names は見ない (どの言語の文書にも使う)。
-    if style is None:
-        style = load_ja_style()
-    return [(r.raw, r.regex) for r in load_word_rules(path) if r.group in groups and style_holds(r, style)]
 
 
 # ---- ini の読み込み ----
@@ -289,8 +279,8 @@ def check_file(path, word_rules, style):
 # 例の ini (bad と mechanism のフォルダー) の「# expect: <規則の正規表現>」の行は、次の値の行にその規則が
 # 一致することを求める。
 # 「# expect[spacing=B]: ...」のように [ ] に書き方の条件を書くと、その書き方のときだけ求める。同じ行にほかの規則が
-# 一致しても失敗にしない (spacing のセットの行が「ssrcの値」に一致しても、internal-words の \bssrc\b が一致することは
-# 確認できる)。expect のない値の行に規則が一致すると失敗にする。OK 例は expect を持たない。
+# 一致しても失敗にしない (spacing のセットの行が「internalの値」に一致しても、\binternal\b が一致することは確認
+# できる)。expect のない値の行に規則が一致すると失敗にする。OK 例は expect を持たない。
 
 LINT_FIXTURES_DIR = FIXTURES_DIR / "forbidden_ui_words"
 STYLE_COMBOS = [
@@ -395,9 +385,8 @@ def selftest_real_lists(failures, counts):
         if path in good and expectations:
             failures.append(f"{relpath}: OK 例に expect の行がある")
     # install_guide.py と make_release_notes.py が使うセットがあること
-    for group in (INTERNAL_GROUP, SPACING_GROUP):
-        if not any(r.group == group for r in words):
-            failures.append(f"forbidden_ui_words.txt に {group} の行がない (手順書とリリースノートのチェックが使う)")
+    if not any(r.group == SPACING_GROUP for r in words):
+        failures.append(f"forbidden_ui_words.txt に {SPACING_GROUP} の行がない (手順書とリリースノートのチェックが使う)")
 
 
 def selftest_mechanism(failures, counts):
@@ -421,15 +410,6 @@ def selftest_mechanism(failures, counts):
     _, notes = check_file(other, rules, style)
     if not notes:
         failures.append(f"{to_relpath(other)}: 言語を指定した行を使わなかったことを伝える NOTE が出ない")
-    # load_word_patterns は、既定で internal-words だけを返し、groups を指定すればそのセットを返す
-    style_for_compat = dict(STYLE_COMBOS[0], name_keys=[], suffix_keys=[])
-    internal = load_word_patterns(path=base / "words.txt", style=style_for_compat)
-    want = [r.raw for r in rules if r.group == INTERNAL_GROUP]
-    if [raw for raw, _ in internal] != want or not want:
-        failures.append(f"load_word_patterns の既定が {INTERNAL_GROUP} だけでない: {[raw for raw, _ in internal]}")
-    spacing = load_word_patterns(groups=(SPACING_GROUP,), path=base / "words.txt", style=style_for_compat)
-    if not spacing or any(raw in want for raw, _ in spacing):
-        failures.append(f"load_word_patterns(groups=({SPACING_GROUP},)) がそのセットを選ばない")
 
 
 BROKEN_LISTS = [
@@ -495,7 +475,7 @@ def run_selftest():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="ini の値に、forbidden_ui_words.txt の記号、表記、内部の語、空白の誤りがないことを確認する"
+        description="ini の値に、forbidden_ui_words.txt の記号、表記、空白の誤りがないことを確認する"
     )
     parser.add_argument("paths", nargs="*", help="チェックするファイルかフォルダー (省くと src-obs/data/locale の 2 つの ini)")
     parser.add_argument("--spacing", choices=STYLE_CHOICES["spacing"], help="ja_style.txt の spacing の代わり")

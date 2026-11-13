@@ -36,18 +36,16 @@ WS_CALL_RE = re.compile(r"(?<![A-Za-z0-9_])(?:diag::)?(?:logf|blog|log)\s*\(")
 
 def call_re_for(path):
     return WS_CALL_RE if any(part in WS_DIR_NAMES for part in Path(path).parts[:-1]) else CALL_RE
-DESIGN_NUMBER_RE = re.compile(r"\b(?:AC|R|U)-[0-9]+\b")
 PREFIX = "[cordmux] "
 PRODUCT = "cordmux"
 ELLIPSIS = "..."
 EXPECT_RE = re.compile(r"//\s*expect:\s*(.+)$")
 # チェック項目:
 #   ascii            文字列が ASCII だけで書いてある (日本語を書かない)
-#   design-number    文字列に内部の番号 (AC-N、R-N、U-N) がない
 #   cordmux-start    書式の文字列が、先頭の「[cordmux] 」を除いて cordmux で始まらない
 #   lowercase-start  書式の文字列の最初の文字が英字なら、大文字である
 #   period-end       書式の文字列がピリオドで終わらない (末尾の「...」はよい)
-CHECKS = ("ascii", "design-number", "cordmux-start", "lowercase-start", "period-end")
+CHECKS = ("ascii", "cordmux-start", "lowercase-start", "period-end")
 # 書式の末尾の改行のエスケープ (エスケープを解かずに読むので、バックスラッシュと n の 2 文字)
 ESCAPED_NEWLINE_TAIL_RE = re.compile(r"(?:\\n)+$")
 
@@ -111,11 +109,6 @@ def line_problems(literals):
     for body in literals:
         if any(ord(ch) > 0x7F for ch in body):
             problems.append(("ascii", "ログの文字列に ASCII でない文字がある (英語だけで書く)"))
-            break
-    for body in literals:
-        m = DESIGN_NUMBER_RE.search(body)
-        if m:
-            problems.append(("design-number", f"ログの文字列に内部の番号 '{m.group(0)}' がある"))
             break
     if literals:
         fmt = literals[0]

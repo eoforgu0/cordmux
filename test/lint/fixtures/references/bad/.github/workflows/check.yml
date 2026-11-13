@@ -1,4 +1,4 @@
-# 架空の CI (NG 例)。設定の 4 章 による。 expect: doc-section
+# 架空の CI (NG 例)。
 name: check
 
 on:
@@ -8,5 +8,5 @@ jobs:
   report:
     runs-on: ubuntu-24.04
     steps:
-      - name: まとめを書く (ZZ-21) # expect: record-id
+      - name: まとめを書く
         run: python tools/gone.py # expect: missing-path

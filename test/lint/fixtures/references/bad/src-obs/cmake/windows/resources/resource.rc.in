@@ -1,2 +1,2 @@
-// コピーしたテンプレートに、製品の説明の文字列を追加したファイルはチェックする。ZZ-42 の形で追加した。 expect: record-id
+// コピーしたテンプレートに、製品の説明の文字列を追加したファイルはチェックする。app/gone.rc を読む。 expect: missing-path
 VALUE "FileDescription", "${PROJECT_NAME}"

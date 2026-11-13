@@ -1,1 +1,1 @@
-# Copied from the upstream template as is (ZZ-41 and 2031-02-03 are not ours to change), so the lint skips it.
+# Copied from the upstream template as is (it points to app/gone.cmake, which is not ours to change), so the lint skips it.

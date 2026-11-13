@@ -29,7 +29,7 @@ MECHANISM_WORDS_FILE = SCRIPT_DIR / "fixtures" / "forbidden_ui_words" / "mechani
 
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-import forbidden_ui_words  # noqa: E402  (内部の語の一覧 forbidden_ui_words.txt の読み方を 1 か所に保つ)
+import forbidden_ui_words  # noqa: E402  (forbidden_ui_words.txt の spacing のセットの読み方を 1 か所に保つ)
 
 # ---- Markdown の行 ----
 #
@@ -39,7 +39,7 @@ import forbidden_ui_words  # noqa: E402  (内部の語の一覧 forbidden_ui_wor
 #   ### 項目          節の中の項目。「インストール」の手順は ### 1. の形
 #   - 項目            箇条書き。下に 2 つの空白で字下げした - を 1 段置いてよい
 #   1. 項目           番号付きの項目 (入れ子にしない)。下に 3 つの空白で字下げした - を 1 段置いてよい
-#   段落              1 段落を 1 行で書く (手で折り返さない)
+#   段落              地の文
 #   <!-- zip:source_url -->   zip のテキストで、このバージョンのソースコードの URL に置き換える印 (1 つだけ)
 # 行の中では、インラインのコード `...` (パスとファイル名)、リンク [テキスト](リンク先) を使ってよい。
 
@@ -56,7 +56,7 @@ LINE_PATTERNS = (
 HEADING_KINDS = ("title", "section", "subsection")
 HEADING_PREFIXES = {"title": "# ", "section": "## ", "subsection": "### "}
 ITEM_KINDS = ("bullet", "bullet_sub", "number_sub", "number")
-# 段落と同じに扱う行 (前後に空行が要る)
+# 段落と同じに扱う行 (項目との間に空行が要る)
 PARAGRAPH_KINDS = ("paragraph", "marker")
 # ### の見出しの先頭の手順の番号 (「### 1. Vesktopをインストールする」)
 STEP_HEADING_RE = re.compile(r"^([0-9]+)\. ")
@@ -260,7 +260,6 @@ INLINE_SYNTAX = (
     (re.compile(r"\]\(|\]\["), "リンクの形が違う ([テキスト](リンク先) の形で、テキストに [ ] と ` を入れない)"),
     (re.compile(r"\{\{"), "差し込みの {{ は書かない (GitHub の表示にそのまま出る)"),
 )
-FOLDED_MESSAGE = "空行を挟まずに続く地の文の行 (1 段落を 1 行で書き、手で折り返さない)"
 
 
 def link_problem(target, doc, base_dir):
@@ -286,8 +285,7 @@ def syntax_problems(doc, base_dir=None, quote=None):
     #     番号、区切り線、下線の形の見出し、リンクの定義、タスクリスト、使ってはいけない字下げ (入れ子の番号、2 段の入れ子、
     #     4 つ以上の空白のコードブロック) がない
     #   - 2 つの空白の - は - の項目の下に、3 つの空白の - は番号付きの項目の下にだけある
-    #   - 段落が空行を挟まずに続かない (手で折り返した段落)。項目の直後に、空行なしで段落が続かない (前の項目の続きに
-    #     なる)。段落の直後に、空行なしで項目が続かない
+    #   - 項目の直後に、空行なしで段落が続かない (前の項目の続きになる)。段落の直後に、空行なしで項目が続かない
     #   - 行の中に、太字と斜体、取り消し線、画像、HTML、文字参照、バックスラッシュのエスケープ、形の違うリンク、{{ がない。
     #     対のない ` がない。行末に空白とタブがない
     #   - リンク先が、実在する見出しのアンカー、https の URL、実在するファイルへの相対パスのどれか (base_dir は相対パスを
@@ -326,9 +324,7 @@ def syntax_problems(doc, base_dir=None, quote=None):
                 where = "- の項目" if kind == "bullet_sub" else "番号付きの項目"
                 problems.append((line.no, f"{len(line.prefix) - 2} つの空白で字下げした - は、{where}の下にだけ置く"))
         if previous is not None:
-            if kind in PARAGRAPH_KINDS and previous.kind in PARAGRAPH_KINDS:
-                problems.append((line.no, FOLDED_MESSAGE))
-            elif kind in PARAGRAPH_KINDS and previous.kind in ITEM_KINDS:
+            if kind in PARAGRAPH_KINDS and previous.kind in ITEM_KINDS:
                 problems.append((line.no, "項目の直後に空行がない (前の項目の続きになる。項目は 1 項目 1 行で書く)"))
             elif kind in ("bullet", "number") and previous.kind in PARAGRAPH_KINDS:
                 problems.append((line.no, "段落の直後に空行なしで項目がある (間に空行を入れる)"))
@@ -404,7 +400,7 @@ ARG_TOKEN_RE = re.compile(r"%\d+")
 WHITESPACE_RE = re.compile(r"[\s\u3000]+")
 # [ ] で囲んだ名前 (1 行の中で閉じるもの)。
 BUTTON_RE = re.compile(r"\[([^\[\]\n]+)\]")
-# 内部の語のうち、forbidden_ui_words.txt にない、作業の中だけで通じる番号 (AC-<数字> の形)。
+# 作業の中だけで通じる番号 (AC-<数字> の形)。手順書の全体で探す (大文字と小文字を区別する)。
 INTERNAL_ID_SOURCE = r"\bAC-[0-9]+\b"
 INTERNAL_ID_RE = re.compile(INTERNAL_ID_SOURCE, re.ASCII)
 # placeholder の外側の括弧 (半角と全角)。placeholder の中の文字列を取り出すときに外す。
@@ -683,8 +679,7 @@ def contains_copied(section_text, value):
 def mask_buttons(text):
     # [ ] の中の文字を同じ数の空白に置き換える。[ ] の中は ini と照合したボタンの名前なので、禁止語と forbidden_all の
     # チェックでは見ない。括弧を残して同じ数の空白にするのは、伏せた所から行頭の > や $ が新しくできないようにするため。
-    # 内部の語のチェックは伏せない文字列を見る ([ ] の中は ini の値で、forbidden_ui_words.py が同じ語で ini をチェック
-    # しているので、伏せなくても一致しない)。
+    # 内部の番号のチェックは伏せない文字列を見る。
     return BUTTON_RE.sub(lambda m: "[" + " " * len(m.group(1)) + "]", text)
 
 
@@ -709,16 +704,10 @@ def find_words(text, patterns):
     return found
 
 
-def internal_word_patterns():
-    # 内部の語のチェックの語: AC-<数字> の形の番号と、forbidden_ui_words.txt の internal-words のセットの行 (ini と同じく、
-    # 大文字と小文字を区別する)。ほかのセット (symbols、notation) は手順書をチェックしない。手順書は、ほかのアプリの
-    # 文字列を引用するため。spacing のセットは spacing_word_patterns で別にチェックする。
-    return [(INTERNAL_ID_SOURCE, INTERNAL_ID_RE)] + forbidden_ui_words.load_word_patterns()
-
-
 def spacing_word_patterns(rules, word_rules=None, style=None):
     # 空白のチェックの語: forbidden_ui_words.txt の spacing のセットの行のうち、rules のセットの言語と ja_style.txt の
-    # 書き方で使う行。word_rules と style は、セルフテストがテスト用の一覧で実行するための引数 (省けば実際の一覧と
+    # 書き方で使う行。ほかのセット (symbols、notation) は手順書をチェックしない。手順書は、ほかのアプリの文字列を
+    # 引用するため。word_rules と style は、セルフテストがテスト用の一覧で実行するための引数 (省けば実際の一覧と
     # ja_style.txt)。
     if word_rules is None:
         word_rules = forbidden_ui_words.load_word_rules()
@@ -895,7 +884,7 @@ def check_guide(label, guide_text, ini_entries, rules, base_dir=None, spacing_pa
     #   - [ ] の名前が、ini のボタン、メニューの項目、選択肢の名前 (後ろに component_word が続くときは、その種類の名前)
     #     か outside_button のどれか。1 行の中で閉じない [ か ] も問題にする
     #   - copied の節に ini の値が、contains の節に定型の文がある (%N の所は何でもよく、空白は比べない)
-    #   - ファイル全体に、内部の語 (AC-<数字> の形の番号と、forbidden_ui_words.txt の internal-words のセット) がない
+    #   - ファイル全体に、作業の中だけで通じる番号 (AC-<数字> の形) がない
     #   - placeholder の中の文字列が、placeholder のまま書いた所のほかにない
     #   - [ ]、「」とインラインのコードの外に、forbidden_ui_words.txt の spacing のセットに一致する書き方がない
     #   - ini の値が手順書を指す所 (ini_ref) の見出しと手順の番号が、手順書にある (ini_reference_problems)
@@ -1014,10 +1003,10 @@ def check_guide(label, guide_text, ini_entries, rules, base_dir=None, spacing_pa
         if section_name in found_names and WHITESPACE_RE.sub("", sentence) not in WHITESPACE_RE.sub("", section_text(section_name)):
             violations.append(f"{label}: 節 '{section_name}' に定型の文がない: {sentence}")
 
-    # 内部の語 (ファイル全体。[ ] も伏せない)
-    for start, source, word in find_words(guide_text, internal_word_patterns()):
+    # 内部の番号 (ファイル全体。[ ] も伏せない)
+    for start, source, word in find_words(guide_text, [(INTERNAL_ID_SOURCE, INTERNAL_ID_RE)]):
         line_no = 1 + guide_text.count("\n", 0, start)
-        violations.append(f"{label}:{line_no}: 内部の語: '{word.strip()}' (規則 {source})")
+        violations.append(f"{label}:{line_no}: 内部の番号: '{word.strip()}' (規則 {source})")
 
     # placeholder の書き換え。リリースのツールは placeholder を探すので、括弧を全角にした placeholder を見落とす。
     # placeholder の括弧の中の文字列 (空白を除く) が、placeholder のまま書いた所のほかにあれば問題にする。
@@ -1194,8 +1183,8 @@ def find_sample_in_lines(lines, pattern, rules):
     return next((line for line in lines if pattern.search(mask_for_words(line, rules))), None)
 
 
-# AC-<数字> の形の番号のテストデータ。references.py が、このファイルの番号の形の文字列として検出しないよう、分けて書く。
-SAMPLE_INTERNAL_ID = "AC" + "-61"
+# AC-<数字> の形の番号のテストデータ。
+SAMPLE_INTERNAL_ID = "AC-61"
 
 
 def markdown_mutations(good_text, rules, ins, install, after, stats):
@@ -1246,7 +1235,6 @@ def markdown_mutations(good_text, rules, ins, install, after, stats):
         ("md_trailing_space", ins(good_text, after, "a "), "行末に空白"),
         ("md_tab", ins(good_text, after, "a\tb"), "タブ"),
         ("md_backtick", ins(good_text, after, "a ` b"), "対のない `"),
-        ("md_folded_paragraph", ins(good_text, after, "a\nb"), "空行を挟まずに続く"),
         ("md_item_then_text", ins(good_text, after, "- a\nb"), "項目の直後に空行がない"),
         ("md_text_then_item", ins(good_text, after, "a\n- b"), "段落の直後に空行なしで項目"),
         ("md_numbers_out_of_order", ins(good_text, after, "1. a\n3. b"), "1 から順でない"),
@@ -1266,7 +1254,6 @@ def markdown_mutations(good_text, rules, ins, install, after, stats):
         ("md_marker_missing", "\n".join(lines[:marker_index] + lines[marker_index + 1:]), "差し込みの印"),
         ("md_marker_twice", ins(good_text, after, MARKER_LINE), "差し込みの印"),
         ("md_marker_inline", ins(good_text, after, "a " + MARKER_LINE), "HTML は使わない"),
-        ("md_marker_folded", ins(good_text, after, "a\n" + MARKER_LINE), "空行を挟まずに続く"),
     ]
     # 手順の番号の見出し (### N.) の番号の並び
     for name in rules.headings:
@@ -1324,9 +1311,9 @@ def build_mutations(good_text, ini_entries, rules, stats, spacing_patterns=()):
         ("mut_unknown_button_in_heading", ins(good_text, after, "### [NoSuchButton] x"), "ボタンの名前でない"),
         ("mut_link_is_not_button", ins(good_text, install, "[NoSuchButton](https://example.com/)"), None),
         ("mut_button_in_code_ignored", ins(good_text, install, "`[NoSuchButton]`"), None),
-        # 内部の語 (全体)
-        ("mut_internal_id_in_last", ins(good_text, after, f"See {SAMPLE_INTERNAL_ID}."), "内部の語"),
-        ("mut_internal_id_in_title", ins_title(good_text, f"See {SAMPLE_INTERNAL_ID}."), "内部の語"),
+        # 内部の番号 (全体)
+        ("mut_internal_id_in_last", ins(good_text, after, f"See {SAMPLE_INTERNAL_ID}."), "内部の番号"),
+        ("mut_internal_id_in_title", ins_title(good_text, f"See {SAMPLE_INTERNAL_ID}."), "内部の番号"),
         # placeholder: そのままの形なら手順の部分でも問題にならず、括弧を全角にしたものは問題になる
         ("mut_placeholder_in_steps", ins(good_text, install, rules.placeholder), None),
         # 本文で見出しの名前を指しても、依頼の語や禁止語に数えない (見出しが依頼の形の文字列を含むことがある)
@@ -1392,14 +1379,6 @@ def build_mutations(good_text, ini_entries, rules, stats, spacing_patterns=()):
             stats["masked"] += 1
             cases.append((f"mut_button_masked[{label}]", ins(good_text, install, f"Press [{label}]."), None))
             cases.append((f"mut_button_unmasked[{label}]", ins(good_text, install, f"Press {label}."), "手順の部分の禁止語"))
-
-    # forbidden_ui_words.txt の語: 規則の文字列から \b を除いた文字列がその規則に一致するものをサンプルにし、タイトルの
-    # 後ろに追加すると問題になる
-    for source, pattern in forbidden_ui_words.load_word_patterns():
-        sample = source.replace("\\b", "")
-        if sample and pattern.search(sample):
-            stats["internal_samples"] += 1
-            cases.append((f"mut_internal_word[{source}]", ins_title(good_text, f"x {sample} x"), f"(規則 {source})"))
 
     cases += new_mechanism_mutations(good_text, ini_entries, rules, stats, ins, install, after, spacing_patterns)
     cases += markdown_mutations(good_text, rules, ins, install, after, stats)
@@ -1855,7 +1834,7 @@ def run_selftest():
     failures += select_selftest(blocks)
     failures += judge_selftest()
     failures += anchor_selftest()
-    stats = {"fixtures": 0, "mutations": 0, "targets": 0, "masked": 0, "internal_samples": 0, "ellipsis": 0,
+    stats = {"fixtures": 0, "mutations": 0, "targets": 0, "masked": 0, "ellipsis": 0,
              "component": 0, "quote": 0, "nested_quote": 0, "ranges": 0, "spacing": 0, "item_titles": 0,
              "max_steps": 0, "ini_refs": 0, "ini_terms": 0, "anchors": 0, "step_headings": 0, "parity": 0}
     for rules in blocks:
@@ -1878,7 +1857,6 @@ def run_selftest():
     # 成功するため)
     for key, what in (
         ("masked", "禁止語に一致するボタンの名前 ([ ] を伏せる処理)"),
-        ("internal_samples", "サンプルに使える forbidden_ui_words.txt の語"),
         ("ellipsis", "末尾が「...」のボタンの値"),
         ("component", "[ ] の後ろの UI 要素の種類の語"),
         ("quote", "quote_check"),

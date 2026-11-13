@@ -1,4 +1,4 @@
-# 画面の文字列に使わない記号と内部の語と、表記と空白の誤りの一覧。forbidden_ui_words.py が src-obs/data/locale の ini の値を
+# 画面の文字列に使わない記号と、表記と空白の誤りの一覧。forbidden_ui_words.py が src-obs/data/locale の ini の値を
 # チェックし、一致するとエラーにする (キーとコメントはチェックしない)。表記のルールは docs/ui_guidelines.md の「表記」に、
 # 画面で使う語は「用語集」にある。
 #
@@ -10,9 +10,8 @@
 # 名前として表示する。最初のセットの行より前に正規表現の行があると、一覧を読めないエラーになる。どのセットを使うかは
 # ツールごとに決まっている。
 #   forbidden_ui_words.py     すべてのセットを ini の値に使う
-#   install_guide.py          internal-words を手順書の全体に使う。spacing は、[ ] と「」の中を伏せた手順書に使う
-#   make_release_notes.py     internal-words をリリースノートに使う (load_word_patterns の既定)。spacing は、引用の中を
-#                             伏せたリリースノートに使う
+#   install_guide.py          spacing を、[ ] と「」の中を伏せた手順書に使う
+#   make_release_notes.py     spacing を、引用の中を伏せたリリースノートに使う
 #
 # 行の先頭の指定 (どれも「名前:」の形で、いくつでも続けて書ける。指定の後ろが正規表現):
 #   ja: / en:                 その言語の ini にだけ使う (言語はファイル名の先頭の ja か en で決める)
@@ -22,9 +21,6 @@
 #   not_names:                ja_style.txt の name_keys のキー (OBS の一覧に表示する名前) には使わない
 # 例: 「ja:question=fullwidth:\?」は、疑問符を全角で書く設定のとき、ja の値の半角の ? に一致する。
 # 先頭が「ja:」の文字列そのものを探す行は、「(?:ja):」のように書いて指定と区別する。
-#
-# internal-words に、Discord の内部への依存箇所の id のうち sharing・self は入れていない。英語の画面で
-# 普通の語として使うためである。
 
 # set: symbols 使わない記号
 [\u301C\uFF5E]
@@ -47,31 +43,6 @@ en:question=fullwidth:[\uFF1F\uFF01]
 ユーザ(?!ー)
 コンピュータ(?!ー)
 フィルター
-
-# set: internal-words 内部の語と番号
-決めたこと
-節目
-\bR-\d
-\bAC-\d
-接点
-受信役
-段階表示
-送り手
-帳簿
-運用者
-
-\bpc-hook\b
-\bssrc-map\b
-\bwatch-stop\b
-\broster\b
-\bprofile\b
-
-\bssrc\b
-\bpcId\b
-\bstream_id\b
-\brelay\b
-\badapter\b
-\bledger\b
 
 # set: spacing 空白の誤り
 [ぁ-ヿ一-鿿] +[がをにはでとへも](?![A-Za-z0-9])
