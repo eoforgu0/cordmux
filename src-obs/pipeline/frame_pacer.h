@@ -40,20 +40,28 @@ inline std::size_t frame_pacer_capacity(std::int64_t delay_us, std::int64_t fram
 // 描く予定の時刻が届く時刻より 100 ms 以上先にあることがある (docs/architecture.md の「送信側: 送信側の時計への換算」)。
 // その先の時刻まで待たないと、映像はタイムスタンプ + D より早く出て、同じタイムスタンプで置く画面の音とずれる。
 // 上限は、受信を始めた直後の先の長さより十分大きく、待ち行列に持つフレームの数を抑える値にした。目安の値で、測って
-// 決めたものではない。これより先のタイムスタンプは、時計の飛び (送信側の時計が受信側より進んだ) とみなし、この長さ
-// だけ先にあるものとして扱う。
+// 決めたものではない。これより先のタイムスタンプは、この長さだけ先にあるものとして扱う (映像は超えた分だけ画面の音より
+// 早く出る)。描く予定の時刻の先行は 10 秒まででありうる (送信側は 10 秒より小さい先行を描く予定の時刻とみなす。
+// src-vencord/encode/video_time.ts の VIDEO_EXACT_LEAD_MAX_US) が、受信を始めた直後などに限られる。
 inline constexpr std::int64_t kFramePacerMaxAheadUs = 500000;
 
 // 統計の 1 周期分の数 (FramePacer::take_stats)。
 struct FramePacerStats {
 	std::uint64_t on_time = 0; // 時刻が来るまで待ってから渡した数
 	std::uint64_t late = 0;    // 積んだ時点でもう表示の時刻 r を過ぎていて、すぐ渡した数 (格子の有無に依らない)
-	std::uint64_t dropped = 0; // 渡さずに捨てた数 (同時に時刻が来た古いフレーム、上限超過、破棄)
+	// 渡さずに捨てた数 (同時に時刻が来た古いフレーム、上限超過 (早く渡す指定なら、早く渡すと決めて渡る前に次を早く
+	// 渡すと決めたフレーム)、破棄)
+	std::uint64_t dropped = 0;
 	std::size_t max_queued = 0; // 周期の間の待ち行列の長さの最大
 	// 周期の間の、タイムスタンプが積んだ時点の今より先にあった長さの最大 (マイクロ秒。先になければ 0)。
 	std::int64_t max_ahead_us = 0;
 	// 先の長さが kFramePacerMaxAheadUs を超え、その長さに頭打ちにした数。
 	std::uint64_t ahead_capped = 0;
+	// 上限 (数かバイト数) を超えたときに、捨てる代わりに、早めなければ渡した時刻より早く渡した数 (下の「上限を
+	// 超えたとき」)。on_time と late には数えない。
+	std::uint64_t early = 0;
+	// early に数えたフレームの、早めなければ渡した時刻より早く渡した長さの最大 (マイクロ秒。数えたものがなければ 0)。
+	std::int64_t early_max_us = 0;
 };
 
 // FramePacer::take の結果。
@@ -85,25 +93,46 @@ template <typename T> struct PacedTake {
 // 時計の飛びへの備え。待つ長さは積んだ時点から最長でも D + kFramePacerMaxAheadUs である (age_us を
 // -kFramePacerMaxAheadUs 以上に丸めるため)。送信側の時計が受信側より大きく進んでいても、フレームがそれより長く
 // 止まったり、待ち行列が上限まで伸びたりしない。遅れて届いたフレームは age_us が D 以上になり、すぐ渡す側に倒れる。
+//
+// 上限を超えたとき。積んで上限 (数かバイト数) を超えたら、古いほうから捨てる (既定)。configure で
+// release_early_on_overflow を指定すると、捨てる代わりに、まだ渡していない最も古いフレームを、今すぐ渡すフレームに
+// する (r より早く出す)。解像度が大きいストリームでは、先の長さ + D の間に届くフレームがバイト数の上限を超え
+// (4K60 で D = 100 ms なら先の長さ約 250 ms から)、捨てると時刻の来ていないフレームばかりを捨てて映像が止まる。
+// 早く出せば、映像はその分だけ画面の音より早く出るが途切れない (kFramePacerMaxAheadUs の頭打ちと同じ)。
+//   - 上限に届かない間は何も変わらない。上限を超えたときに残るフレーム (捨てる場合に残るフレームと同じ) の時刻も
+//     変わらず、捨てる場合に渡るフレームはすべて同じ時刻に渡る。違いは、捨てる場合に捨てるフレームが早く渡ることだけ
+//     である。
+//   - 早く渡すフレームは常にまだ渡していない最も古いフレームで、渡す時刻は積んだ今なので、それより古いフレームを後から
+//     渡すことはない (並びの約束)。
+//   - 早く渡すと決めたフレームが、次に早く渡すフレームを決めるときにまだ残っていれば (取り出すスレッドが遅れているか、
+//     1 回の push で 2 つ以上を早く出すとき)、そのフレームは捨てる。新しいほうの時刻がもう来ているので、取り出しても
+//     新しいほうだけが渡り、古いほうは捨てられるからである (上の並びの約束)。そのため、早く渡すと決めたフレームは
+//     多くて 1 つで、待ち行列が持つのは上限 + 1 フレームまでである。
+//   - 早く渡すフレームを渡す時刻は、決めたときの今 (格子にも D にもよらない) である。D を縮めて早めない時刻のほうが
+//     早くなれば、そちらにする。
 template <typename T> class FramePacer {
 public:
 	FramePacer() = default;
 
 	// delay_us が 0 未満なら 0 にする。max_items と max_bytes が 0 のときは 1 として扱う。呼び出し元の計算を
-	// 誤ったときに、積んだフレームをすぐ全部捨てる待ち行列にしないためである。
-	FramePacer(std::int64_t delay_us, std::size_t max_items, std::size_t max_bytes)
+	// 誤ったときに、積んだフレームをすぐ全部捨てる待ち行列にしないためである。release_early_on_overflow は、上限を
+	// 超えたときに捨てる代わりに早く渡すか (上の「上限を超えたとき」)。
+	FramePacer(std::int64_t delay_us, std::size_t max_items, std::size_t max_bytes,
+		   bool release_early_on_overflow = false)
 	{
-		configure(delay_us, max_items, max_bytes);
+		configure(delay_us, max_items, max_bytes, release_early_on_overflow);
 	}
 
 	// D と上限を替える。積んであるフレームの時刻も、新しい D で決め直す (D を縮めると、すぐ渡す側に倒れて
 	// 溜まりが解ける。伸ばすと、積んであるフレームもその分だけ待つ)。上限が小さくなっても、積んであるフレームは
-	// 次の push で古いほうから捨てる。
-	void configure(std::int64_t delay_us, std::size_t max_items, std::size_t max_bytes)
+	// 次の push で古いほうから捨てる (早く渡す指定なら、古いほうから早く渡す)。
+	void configure(std::int64_t delay_us, std::size_t max_items, std::size_t max_bytes,
+		       bool release_early_on_overflow = false)
 	{
 		delay_us_ = delay_us > 0 ? delay_us : 0;
 		max_items_ = max_items > 0 ? max_items : 1;
 		max_bytes_ = max_bytes > 0 ? max_bytes : 1;
+		release_early_ = release_early_on_overflow;
 	}
 
 	// 刻みの格子を設定する。
@@ -123,7 +152,9 @@ public:
 	//             小さければ、その値として扱う
 	//   bytes     フレームの大きさ (バイト数の上限の判定に使う)
 	// 上限 (数かバイト数) を超えたら、古いほうから捨てる。新しいほうを捨てると、取り出す側が詰まっている間、
-	// 古い映像を出し続ける。ただし積んだフレーム自身は捨てない。捨てた数を返す。
+	// 古い映像を出し続ける。ただし積んだフレーム自身は捨てない。早く渡す指定なら、捨てる代わりに古いほうから早く
+	// 渡すフレームにする (上の「上限を超えたとき」。上限と比べるのは、早く渡すと決めたフレームを除いた数とバイト数)。
+	// 捨てた数を返す。
 	std::size_t push(std::int64_t now_us, std::int64_t age_us, std::size_t bytes, T item)
 	{
 		const std::int64_t age = age_us > -kFramePacerMaxAheadUs ? age_us : -kFramePacerMaxAheadUs;
@@ -141,10 +172,35 @@ public:
 		entries_.push_back(std::move(entry));
 
 		std::size_t dropped = 0;
-		while (entries_.size() > 1 && (entries_.size() > max_items_ || bytes_ > max_bytes_)) {
-			bytes_ -= entries_.front().bytes;
-			entries_.pop_front();
-			++dropped;
+		if (!release_early_) {
+			while (entries_.size() > 1 && (entries_.size() > max_items_ || bytes_ > max_bytes_)) {
+				bytes_ -= entries_.front().bytes;
+				entries_.pop_front();
+				++dropped;
+			}
+		} else {
+			for (;;) {
+				// 早く渡すと決めたフレームは先頭に並ぶ (いつも残りのうち最も古いものを選ぶため)。
+				std::size_t early_count = 0;
+				std::size_t early_bytes = 0;
+				while (early_count < entries_.size() && entries_[early_count].early) {
+					early_bytes += entries_[early_count].bytes;
+					++early_count;
+				}
+				const std::size_t waiting = entries_.size() - early_count;
+				if (waiting <= 1 || (waiting <= max_items_ && bytes_ - early_bytes <= max_bytes_))
+					break;
+				// 前に早く渡すと決めて残っているフレームは、これから決めるフレームより古く、これから決めるフレームの
+				// 時刻 (今) はもう来ているので、取り出しても渡らない。
+				for (std::size_t i = 0; i < early_count; ++i) {
+					bytes_ -= entries_.front().bytes;
+					entries_.pop_front();
+					++dropped;
+				}
+				Entry &oldest = entries_.front();
+				oldest.early = true;
+				oldest.early_us = now_us;
+			}
 		}
 		stats_.dropped += dropped;
 		if (entries_.size() > stats_.max_queued)
@@ -158,7 +214,7 @@ public:
 	{
 		std::optional<std::int64_t> earliest;
 		for (const Entry &entry : entries_) {
-			const std::int64_t release_us = release_time_us(entry.sent_us);
+			const std::int64_t release_us = release_time_us(entry);
 			if (!earliest || release_us < *earliest)
 				earliest = release_us;
 		}
@@ -173,7 +229,7 @@ public:
 		PacedTake<T> result;
 		std::size_t newest_due = entries_.size();
 		for (std::size_t i = 0; i < entries_.size(); ++i) {
-			if (release_time_us(entries_[i].sent_us) <= now_us)
+			if (release_time_us(entries_[i]) <= now_us)
 				newest_due = i;
 		}
 		if (newest_due == entries_.size())
@@ -187,14 +243,22 @@ public:
 		stats_.dropped += newest_due;
 
 		Entry &entry = entries_.front();
+		// 早く渡すと決めたフレームのうち、早めなければ渡したはずの時刻がまだ来ていないものを、早く渡した数に数える。
+		const std::int64_t usual_us = usual_release_us(entry.sent_us);
+		const bool early = entry.early && entry.early_us < usual_us;
 		result.item = std::move(entry.item);
 		result.late = entry.late;
 		bytes_ -= entry.bytes;
 		entries_.pop_front();
-		if (result.late)
+		if (early) {
+			++stats_.early;
+			if (usual_us - entry.early_us > stats_.early_max_us)
+				stats_.early_max_us = usual_us - entry.early_us;
+		} else if (result.late) {
 			++stats_.late;
-		else
+		} else {
 			++stats_.on_time;
+		}
 		return result;
 	}
 
@@ -224,9 +288,26 @@ public:
 	std::int64_t tick_interval_us() const { return tick_interval_us_; }
 
 private:
-	// 送信側の時刻 sent_us (受信側の時計の上) のフレームを渡す時刻。格子がなければ sent_us + D、あれば、その時刻
-	// 以後の最初の刻み (ちょうど刻みの上ならその刻み) の半刻み前である。
-	std::int64_t release_time_us(std::int64_t sent_us) const
+	struct Entry {
+		std::int64_t sent_us = 0; // フレームのタイムスタンプを受信側の単調な時計に置き換えた値
+		std::size_t bytes = 0;
+		bool late = false;
+		// 上限を超えて早く渡すと決めたか (上の「上限を超えたとき」) と、決めた時刻 (受信側の単調な時計)。
+		bool early = false;
+		std::int64_t early_us = 0;
+		T item{};
+	};
+
+	// フレームを渡す時刻。usual_release_us の時刻と、早く渡すと決めていればその時刻の、早いほうである。
+	std::int64_t release_time_us(const Entry &entry) const
+	{
+		const std::int64_t usual_us = usual_release_us(entry.sent_us);
+		return entry.early && entry.early_us < usual_us ? entry.early_us : usual_us;
+	}
+
+	// 送信側の時刻 sent_us (受信側の時計の上) のフレームを、早く渡すと決めていなければ渡す時刻。格子がなければ
+	// sent_us + D、あれば、その時刻以後の最初の刻み (ちょうど刻みの上ならその刻み) の半刻み前である。
+	std::int64_t usual_release_us(std::int64_t sent_us) const
 	{
 		const std::int64_t shown_us = sent_us + delay_us_;
 		if (tick_interval_us_ <= 0)
@@ -238,18 +319,12 @@ private:
 		return tick_phase_us_ + ticks * tick_interval_us_ - tick_interval_us_ / 2;
 	}
 
-	struct Entry {
-		std::int64_t sent_us = 0; // フレームのタイムスタンプを受信側の単調な時計に置き換えた値
-		std::size_t bytes = 0;
-		bool late = false;
-		T item{};
-	};
-
 	std::int64_t delay_us_ = 0;
 	std::int64_t tick_phase_us_ = 0;
 	std::int64_t tick_interval_us_ = 0;
 	std::size_t max_items_ = 1;
 	std::size_t max_bytes_ = 1;
+	bool release_early_ = false;
 	std::size_t bytes_ = 0;
 	std::deque<Entry> entries_;
 	FramePacerStats stats_;

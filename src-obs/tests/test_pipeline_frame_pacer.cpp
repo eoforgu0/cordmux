@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 using cordmux::pipeline::frame_pacer_capacity;
@@ -571,4 +572,490 @@ TEST_CASE("遅れて届いたかどうかは格子に依らず、刻みに合わ
 	REQUIRE(taken.item.has_value());
 	CHECK_FALSE(taken.late);
 	CHECK(pacer.take_stats().on_time == 1);
+}
+
+// ---------------------------------------------------------------------------
+// 上限を超えたときに早く渡す (release_early_on_overflow)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// pipeline.cpp の configure_frame_pacer と同じ設定の値 (60 fps とみなすフレームの間隔、余裕の 6 フレーム、
+// 1 ストリームあたり 256 MiB)。
+constexpr std::int64_t kPipelineIntervalUs = 16667;
+constexpr std::size_t kPipelineHeadroomFrames = 6;
+constexpr std::size_t kPipelineMaxBytes = 256ull * 1024 * 1024;
+
+// デコードしたフレーム 1 つの大きさ (I420 か NV12 で 1 ピクセル 1.5 バイト)。
+constexpr std::size_t kBytes4k = 3840 * 2160 * 3 / 2;    // 12441600。256 MiB に 21 フレーム
+constexpr std::size_t kBytes1440p = 2560 * 1440 * 3 / 2; // 5529600。48 フレーム
+constexpr std::size_t kBytes1080p = 1920 * 1080 * 3 / 2; // 3110400。86 フレーム
+
+// pipeline.cpp の configure_frame_pacer と同じ形で、D に合わせて上限を設定する。release_early が false なら、
+// 直す前の pipeline.cpp と同じ (上限を超えたら捨てる)。
+void configure_like_pipeline(FramePacer<Frame> &pacer, std::int64_t delay_us, bool release_early)
+{
+	pacer.configure(delay_us,
+			frame_pacer_capacity(delay_us + kFramePacerMaxAheadUs, kPipelineIntervalUs, kPipelineHeadroomFrames),
+			kPipelineMaxBytes, release_early);
+}
+
+FramePacer<Frame> make_pipeline_pacer(std::int64_t delay_us, bool release_early)
+{
+	FramePacer<Frame> pacer;
+	configure_like_pipeline(pacer, delay_us, release_early);
+	return pacer;
+}
+
+// 積むフレーム 1 つ。lead_us はタイムスタンプが積んだ時点の今より先にある長さ (age_us = -lead_us)。
+struct LeadFrame {
+	std::int64_t lead_us = 0;
+	std::size_t bytes = 0;
+};
+
+struct LeadSimResult {
+	std::size_t dropped_on_push = 0;   // push が捨てた数
+	std::size_t skipped = 0;           // take が、新しいフレームの時刻が来て渡さずに捨てた数
+	std::size_t max_bytes = 0;         // 待ち行列のバイト数の最大
+	std::vector<int> shown;            // 渡したフレームの通し番号 (渡した順)
+	std::vector<std::int64_t> wait_us; // 渡したフレームの、積んでから渡すまでの長さ (shown と同じ順)
+	std::vector<std::int64_t> at_us;   // 渡した時刻 (shown と同じ順)
+	std::vector<std::int64_t> tick_us; // 表示される刻み (格子がなければ渡した時刻。shown と同じ順)
+};
+
+// 待ち行列の模型の条件。
+struct SimOptions {
+	std::int64_t grid_phase_us = 0;    // 刻みの格子 (set_tick_grid)。間隔が 0 なら格子なし
+	std::int64_t grid_interval_us = 0;
+	std::int64_t take_lag_max_us = 0; // 取り出すスレッドが時刻から遅れて起きる長さの最大
+};
+
+// 時刻 release_us に起きるはずの取り出しの遅れ (0 以上 max_us 以下)。同じ時刻には同じ遅れを返すので、比べる 2 つの
+// 待ち行列で、同じ時刻の取り出しは同じだけ遅れる。
+std::int64_t take_lag_us(std::int64_t release_us, std::int64_t max_us)
+{
+	if (max_us <= 0)
+		return 0;
+	const std::uint64_t mixed = std::uint64_t(release_us) * 0x9E3779B97F4A7C15ULL;
+	return std::int64_t((mixed >> 33) % std::uint64_t(max_us + 1));
+}
+
+// 60 fps (kTick ごと) でフレームを積み、取り出すスレッドは次の時刻から take_lag_us だけ遅れて起きて take する
+// (時刻がもう過ぎていれば、その今に take する)。before_push(n, pacer) は n 番目のフレームを積む直前に呼ぶ (D の変更
+// などを差し込む)。
+template <typename BeforePush>
+LeadSimResult simulate_leads(FramePacer<Frame> &pacer, const std::vector<LeadFrame> &frames, BeforePush before_push,
+			     const SimOptions &options = SimOptions{})
+{
+	constexpr std::int64_t kStartUs = 1000000;
+	LeadSimResult result;
+	std::vector<std::int64_t> pushed_at(frames.size(), 0);
+	std::int64_t clock_us = kStartUs;
+	if (options.grid_interval_us > 0)
+		pacer.set_tick_grid(options.grid_phase_us, options.grid_interval_us);
+	auto drain = [&](std::int64_t until_us) {
+		for (;;) {
+			const auto release = pacer.next_release_us();
+			if (!release)
+				return;
+			const std::int64_t wake_us = *release + take_lag_us(*release, options.take_lag_max_us);
+			if (wake_us > until_us)
+				return;
+			if (wake_us > clock_us)
+				clock_us = wake_us;
+			PacedTake<Frame> taken = pacer.take(clock_us);
+			if (!taken.item)
+				continue;
+			result.skipped += taken.skipped;
+			result.shown.push_back(taken.item->serial);
+			result.wait_us.push_back(clock_us - pushed_at[std::size_t(taken.item->serial)]);
+			result.at_us.push_back(clock_us);
+			result.tick_us.push_back(options.grid_interval_us > 0
+							 ? first_tick_at_or_after(options.grid_phase_us,
+										  options.grid_interval_us, clock_us)
+							 : clock_us);
+		}
+	};
+	for (std::size_t n = 0; n < frames.size(); ++n) {
+		const std::int64_t now = kStartUs + std::int64_t(n) * kTick;
+		drain(now);
+		clock_us = now;
+		before_push(n, pacer);
+		pushed_at[n] = now;
+		result.dropped_on_push += pacer.push(now, -frames[n].lead_us, frames[n].bytes, Frame{int(n)});
+		if (pacer.bytes() > result.max_bytes)
+			result.max_bytes = pacer.bytes();
+	}
+	drain(INT64_MAX / 2);
+	return result;
+}
+
+LeadSimResult simulate_leads(FramePacer<Frame> &pacer, const std::vector<LeadFrame> &frames,
+			     const SimOptions &options = SimOptions{})
+{
+	return simulate_leads(pacer, frames, [](std::size_t, FramePacer<Frame> &) {}, options);
+}
+
+// 比べる試験で回す模型の条件: 遅れなし、刻みの格子、取り出しの遅れ (最大 5 ms。半刻み 8.3 ms より短い)、両方。
+const SimOptions kSimVariants[] = {
+	{0, 0, 0},
+	{5000, 16667, 0},
+	{0, 0, 5000},
+	{5000, 16667, 5000},
+};
+
+std::vector<LeadFrame> same_frames(std::size_t count, std::int64_t lead_us, std::size_t bytes)
+{
+	return std::vector<LeadFrame>(count, LeadFrame{lead_us, bytes});
+}
+
+std::vector<LeadFrame> joined(std::vector<LeadFrame> first, const std::vector<LeadFrame> &second)
+{
+	first.insert(first.end(), second.begin(), second.end());
+	return first;
+}
+
+// 渡したフレームの並びが逆にならないこと (通し番号が増え、渡した時刻が戻らない)。
+void check_order(const LeadSimResult &result)
+{
+	for (std::size_t i = 1; i < result.shown.size(); ++i) {
+		CHECK(result.shown[i] > result.shown[i - 1]);
+		CHECK(result.at_us[i] >= result.at_us[i - 1]);
+	}
+}
+
+} // namespace
+
+TEST_CASE("直す前の動き: 4K のフレームで先の長さが大きいと、上限を超えて時刻の来ていないフレームばかりを捨てる")
+{
+	// 4K60 で D = 100 ms、400 ms 先のフレームが続く (受信を始めた直後)。待ち行列は約 30 フレーム、約 373 MB に
+	// なろうとするが、256 MiB (21 フレーム) で古いほうから捨てる。どのフレームも時刻 (積んでから 500 ms) が来る前に
+	// 押し出され、渡るのは最後に残った 21 フレームだけで、その間映像は止まる。
+	FramePacer<Frame> pacer = make_pipeline_pacer(100000, false);
+	const LeadSimResult result = simulate_leads(pacer, same_frames(300, 400000, kBytes4k));
+	CHECK(result.dropped_on_push == 279);
+	CHECK(result.shown.size() == 21);
+}
+
+TEST_CASE("4K のフレームで先の長さが大きくても、捨てずに古いほうから早く渡し、映像は途切れない")
+{
+	FramePacer<Frame> pacer = make_pipeline_pacer(100000, true);
+	const LeadSimResult result = simulate_leads(pacer, same_frames(300, 400000, kBytes4k));
+	CHECK(result.dropped_on_push == 0);
+	CHECK(result.skipped == 0);
+	REQUIRE(result.shown.size() == 300);
+	check_order(result);
+	// 待ち行列が持つのは上限 + 早く渡すフレーム 1 つまで。
+	CHECK(result.max_bytes <= kPipelineMaxBytes + kBytes4k);
+	// n 番目のフレームは、n + 21 番目を積んだとき (上限の 21 フレームを超えたとき) に早く渡す。最後の 21 フレームは
+	// 後に積むフレームがないので、時刻 (積んでから 500 ms) に渡す。
+	for (std::size_t i = 0; i < result.shown.size(); ++i) {
+		CAPTURE(i);
+		CHECK(result.shown[i] == int(i));
+		CHECK(result.wait_us[i] == (i + 21 < 300 ? 21 * kTick : 500000));
+	}
+	const FramePacerStats stats = pacer.take_stats();
+	CHECK(stats.early == 279);
+	CHECK(stats.early_max_us == 500000 - 21 * kTick);
+	CHECK(stats.on_time == 21);
+	CHECK(stats.late == 0);
+	CHECK(stats.dropped == 0);
+	CHECK(stats.ahead_capped == 0);
+}
+
+TEST_CASE("上限に届かない場面では、渡す時刻は直す前と 1 us も変わらない")
+{
+	// 直す前 (上限を超えたら捨てる) の待ち行列が 1 つも捨てない場面。4K60 で D = 100 ms なら、先の長さ 250 ms までは
+	// 待ち行列が 21 フレームに収まる。上限を決めない待ち行列とも比べる。
+	struct Scene {
+		std::int64_t delay_us;
+		std::size_t bytes;
+		std::int64_t lead_us;
+	};
+	const Scene scenes[] = {
+		{100000, kBytes1080p, 0},       {100000, kBytes1080p, 14000},  {100000, kBytes1080p, 160000},
+		{100000, kBytes1080p, 400000},  {100000, kBytes1080p, 499999}, {100000, kBytes1080p, 500000},
+		{100000, kBytes1080p, 600000},  {1000000, kBytes1080p, 0},     {1000000, kBytes1080p, 300000},
+		{100000, kBytes1440p, 500000},  {100000, kBytes4k, 0},         {100000, kBytes4k, 100000},
+		{100000, kBytes4k, 150000},     {100000, kBytes4k, 200000},    {100000, kBytes4k, 250000},
+		{0, kBytes4k, 340000},          {300000, kBytes4k, 0},
+	};
+	// 刻みの格子を通すときと、取り出しが遅れるときも比べる。取り出しが遅れると、待ち行列に残る長さが延びて、上限の
+	// ちょうど手前の場面 (4K で先 250 ms) は直す前の形でも上限を超える。その場面は「上限に届かない場面」ではないので
+	// 比べず (下の上限を超える場面の試験の主張が当てはまる)、数だけ確かめる。
+	std::size_t compared = 0;
+	std::size_t over_limit = 0;
+	for (const SimOptions &options : kSimVariants) {
+		CAPTURE(options.grid_interval_us);
+		CAPTURE(options.take_lag_max_us);
+		for (const Scene &scene : scenes) {
+			CAPTURE(scene.delay_us);
+			CAPTURE(scene.bytes);
+			CAPTURE(scene.lead_us);
+			FramePacer<Frame> fixed = make_pipeline_pacer(scene.delay_us, true);
+			FramePacer<Frame> before = make_pipeline_pacer(scene.delay_us, false);
+			FramePacer<Frame> unbounded(scene.delay_us, 1000, kBigBytes);
+			const std::vector<LeadFrame> frames = same_frames(120, scene.lead_us, scene.bytes);
+			const LeadSimResult a = simulate_leads(fixed, frames, options);
+			const LeadSimResult b = simulate_leads(before, frames, options);
+			const LeadSimResult c = simulate_leads(unbounded, frames, options);
+			if (b.dropped_on_push > 0) {
+				// 取り出しが遅れるときだけ起きる。
+				CHECK(options.take_lag_max_us > 0);
+				MESSAGE("取り出しの遅れで上限を超えた: D " << scene.delay_us << " 大きさ " << scene.bytes << " 先 "
+									    << scene.lead_us << " 格子 " << options.grid_interval_us);
+				++over_limit;
+				continue;
+			}
+			++compared;
+			CHECK(a.dropped_on_push == 0);
+			CHECK(a.shown == b.shown);
+			CHECK(a.at_us == b.at_us);
+			CHECK(a.shown == c.shown);
+			CHECK(a.at_us == c.at_us);
+			CHECK(fixed.take_stats().early == 0);
+		}
+	}
+	MESSAGE("上限に届かない場面: 比べた " << compared << " / 取り出しの遅れで上限を超えた " << over_limit);
+	CHECK(compared + over_limit == 4 * (sizeof(scenes) / sizeof(scenes[0])));
+	CHECK(over_limit <= 4);
+}
+
+TEST_CASE("上限を超える場面でも、直す前に渡ったフレームはすべて同じ時刻に渡り、ほかに早く渡すフレームが増えるだけ")
+{
+	struct Scene {
+		std::string name;
+		std::int64_t delay_us;
+		std::vector<LeadFrame> frames;
+		std::int64_t change_at; // この番号のフレームを積む前に D を change_to_us にする (負なら変えない)
+		std::int64_t change_to_us;
+	};
+	const std::vector<Scene> scenes = {
+		{"4K 先 260 ms", 100000, same_frames(300, 260000, kBytes4k), -1, 0},
+		{"4K 先 500 ms", 100000, same_frames(300, 500000, kBytes4k), -1, 0},
+		{"4K 時計の飛び 5 秒", 100000, same_frames(300, 5000000, kBytes4k), -1, 0},
+		{"4K D 400 ms (D だけで上限を超える)", 400000, same_frames(300, 50000, kBytes4k), -1, 0},
+		{"4K D 1000 ms 先 0", 1000000, same_frames(300, 0, kBytes4k), -1, 0},
+		{"1080p D 1000 ms 先 500 ms", 1000000, same_frames(300, 500000, kBytes1080p), -1, 0},
+		{"1080p から 4K", 100000, joined(same_frames(150, 400000, kBytes1080p), same_frames(150, 400000, kBytes4k)), -1, 0},
+		{"1440p から 4K", 100000, joined(same_frames(150, 400000, kBytes1440p), same_frames(150, 400000, kBytes4k)), -1, 0},
+		{"4K から 1080p", 100000, joined(same_frames(150, 400000, kBytes4k), same_frames(150, 400000, kBytes1080p)), -1, 0},
+		{"4K 先 200 ms のまま D を 100 から 200 ms", 100000, same_frames(300, 200000, kBytes4k), 100, 200000},
+		{"4K D を 100 から 400 ms", 100000, same_frames(300, 400000, kBytes4k), 100, 400000},
+		{"4K D を 200 から 100 ms", 200000, same_frames(300, 400000, kBytes4k), 100, 100000},
+		{"4K 先へ 300 ms 飛ぶ", 100000, joined(same_frames(100, 400000, kBytes4k), same_frames(100, 700000, kBytes4k)), -1, 0},
+		{"4K 後ろへ 600 ms 飛ぶ", 100000, joined(same_frames(100, 400000, kBytes4k), same_frames(100, -200000, kBytes4k)), -1, 0},
+	};
+	// 刻みの格子を通すときと、取り出しが遅れるときも回す。取り出しが遅れるときは、早く渡すフレームのために起きた
+	// 取り出しが、時刻の来た待つフレームを (遅れの範囲の内で) 先に渡すことがあるので、渡した時刻ではなく表示される
+	// 刻みで比べる (遅れは半刻みより短いので、刻みは変わらない)。格子がなく遅れるときは表示される刻みがないので、
+	// 渡した時刻が遅れの最大より大きくずれないことを確かめる。
+	for (const SimOptions &options : kSimVariants) {
+		CAPTURE(options.grid_interval_us);
+		CAPTURE(options.take_lag_max_us);
+		for (const Scene &scene : scenes) {
+			CAPTURE(scene.name);
+			auto change = [&](std::size_t n, FramePacer<Frame> &p, bool early) {
+				if (scene.change_at >= 0 && n == std::size_t(scene.change_at))
+					configure_like_pipeline(p, scene.change_to_us, early);
+			};
+			FramePacer<Frame> fixed = make_pipeline_pacer(scene.delay_us, true);
+			FramePacer<Frame> before = make_pipeline_pacer(scene.delay_us, false);
+			const LeadSimResult a = simulate_leads(
+				fixed, scene.frames, [&](std::size_t n, FramePacer<Frame> &p) { change(n, p, true); }, options);
+			const LeadSimResult b = simulate_leads(
+				before, scene.frames, [&](std::size_t n, FramePacer<Frame> &p) { change(n, p, false); }, options);
+			check_order(a);
+			CHECK(a.shown.size() >= b.shown.size());
+			CHECK(a.shown.size() + a.skipped + a.dropped_on_push == scene.frames.size());
+			CHECK(a.max_bytes <= kPipelineMaxBytes + kBytes4k);
+			// 直す前に渡ったフレームは、直した後も同じ時刻に渡る。
+			std::size_t j = 0;
+			for (std::size_t i = 0; i < b.shown.size(); ++i) {
+				while (j < a.shown.size() && a.shown[j] < b.shown[i])
+					++j;
+				REQUIRE(j < a.shown.size());
+				CHECK(a.shown[j] == b.shown[i]);
+				if (options.take_lag_max_us == 0) {
+					CHECK(a.at_us[j] == b.at_us[i]);
+				} else if (options.grid_interval_us > 0) {
+					CHECK(a.tick_us[j] == b.tick_us[i]);
+				} else {
+					CHECK(a.at_us[j] - b.at_us[i] <= options.take_lag_max_us);
+					CHECK(b.at_us[i] - a.at_us[j] <= options.take_lag_max_us);
+				}
+			}
+			MESSAGE(scene.name << " (格子 " << options.grid_interval_us << " 遅れ " << options.take_lag_max_us
+					   << "): 直す前 渡す " << b.shown.size() << " 捨てる " << b.dropped_on_push << " 飛ばす "
+					   << b.skipped << " / 直した後 渡す " << a.shown.size() << " 捨てる " << a.dropped_on_push
+					   << " 飛ばす " << a.skipped);
+		}
+	}
+}
+
+TEST_CASE("D だけで上限を超えても (4K60 で D = 400 ms)、捨てずに早く渡し、映像は途切れない")
+{
+	// D の間に届く 24 フレームだけで 256 MiB (21 フレーム) を超える。直す前は、時刻の来ていないフレームばかりを
+	// 捨てて映像が止まる。直した後は、どのフレームも積んでから 21 フレーム分で渡る (時刻より約 100 ms 早い)。
+	FramePacer<Frame> pacer = make_pipeline_pacer(400000, true);
+	const LeadSimResult result = simulate_leads(pacer, same_frames(300, 50000, kBytes4k));
+	CHECK(result.dropped_on_push == 0);
+	CHECK(result.skipped == 0);
+	REQUIRE(result.shown.size() == 300);
+	for (std::size_t i = 0; i + 21 < result.shown.size(); ++i)
+		CHECK(result.wait_us[i] == 21 * kTick);
+	CHECK(pacer.take_stats().early_max_us == 450000 - 21 * kTick);
+}
+
+TEST_CASE("数の上限を超えたら、捨てずに最も古いフレームを今の時刻で渡すフレームにする")
+{
+	FramePacer<Frame> pacer(1000000, 3, kBigBytes, true);
+	CHECK(pacer.push(1000000, 0, 100, Frame{1}) == 0);
+	CHECK(pacer.push(1016700, 0, 100, Frame{2}) == 0);
+	CHECK(pacer.push(1033400, 0, 100, Frame{3}) == 0);
+	CHECK(pacer.next_release_us().value() == 2000000);
+	// 4 つ目で上限を超える。1 を今 (1050100) に渡すフレームにし、残りの 3 つは上限の内。
+	CHECK(pacer.push(1050100, 0, 100, Frame{4}) == 0);
+	CHECK(pacer.size() == 4);
+	CHECK(pacer.bytes() == 400);
+	CHECK(pacer.next_release_us().value() == 1050100);
+	CHECK_FALSE(pacer.take(1050099).item.has_value());
+	const PacedTake<Frame> taken = pacer.take(1050100);
+	REQUIRE(taken.item.has_value());
+	CHECK(taken.item->serial == 1);
+	CHECK(taken.skipped == 0);
+	CHECK_FALSE(taken.late);
+	CHECK(pacer.next_release_us().value() == 2016700);
+	const FramePacerStats stats = pacer.take_stats();
+	CHECK(stats.early == 1);
+	CHECK(stats.early_max_us == 2000000 - 1050100);
+	CHECK(stats.on_time == 0);
+	CHECK(stats.dropped == 0);
+}
+
+TEST_CASE("早く渡すフレームを取り出す前に次を早く渡すと決めたら、前のほうは渡らないので捨てて数える")
+{
+	FramePacer<Frame> pacer(1000000, 3, kBigBytes, true);
+	pacer.push(1000000, 0, 100, Frame{1});
+	pacer.push(1016700, 0, 100, Frame{2});
+	pacer.push(1033400, 0, 100, Frame{3});
+	CHECK(pacer.push(1050100, 0, 100, Frame{4}) == 0); // 1 を早く渡す
+	// 取り出すスレッドが遅れていて、1 がまだ残っている。5 を積むと 2 を早く渡すことになり、1 は捨てる (取り出しても
+	// 時刻の来た新しいほう (2) だけが渡るため)。
+	CHECK(pacer.push(1066800, 0, 100, Frame{5}) == 1);
+	CHECK(pacer.size() == 4); // 早く渡す 2 と、待つ 3、4、5
+	CHECK(pacer.bytes() == 400);
+	const PacedTake<Frame> taken = pacer.take(1066800);
+	REQUIRE(taken.item.has_value());
+	CHECK(taken.item->serial == 2);
+	CHECK(taken.skipped == 0);
+	const FramePacerStats stats = pacer.take_stats();
+	CHECK(stats.early == 1);
+	CHECK(stats.dropped == 1);
+}
+
+TEST_CASE("取り出すスレッドが止まっていても、待ち行列は上限 + 1 フレームを超えない")
+{
+	FramePacer<Frame> pacer(1000000, 3, 1000, true); // 100 バイトのフレームを 3 つ、バイト数は 10 フレーム分
+	std::size_t dropped = 0;
+	for (int n = 0; n < 100; ++n) {
+		dropped += pacer.push(1000000 + n * 16667, 0, 100, Frame{n});
+		CHECK(pacer.size() <= 4);
+		CHECK(pacer.bytes() <= 400);
+	}
+	// 早く渡すと決めたのは 0 から 96 で、最後の 96 だけが残る。
+	CHECK(dropped == 96);
+	const PacedTake<Frame> taken = pacer.take(1000000 + 99 * 16667);
+	REQUIRE(taken.item.has_value());
+	CHECK(taken.item->serial == 96);
+	CHECK(pacer.size() == 3);
+}
+
+TEST_CASE("バイト数の上限を超えたら、捨てずに古いほうから早く渡すフレームにする (1 回の push で 2 つ以上でも)")
+{
+	FramePacer<Frame> pacer(1000000, 100, 2500, true); // 1000 バイトのフレームを 2 つまで
+	CHECK(pacer.push(1000000, 0, 1000, Frame{1}) == 0);
+	CHECK(pacer.push(1016700, 0, 1000, Frame{2}) == 0);
+	CHECK(pacer.push(1033400, 0, 1000, Frame{3}) == 0); // 1 を早く渡す
+	CHECK(pacer.bytes() == 3000);
+	CHECK(pacer.next_release_us().value() == 1033400);
+	// 1 つで上限を超える大きなフレーム。2 と 3 を順に早く渡すことにし、前に決めた 1 と 2 は捨てる。積んだフレーム
+	// 自身は残る。
+	CHECK(pacer.push(1050100, 0, 9000, Frame{4}) == 2);
+	CHECK(pacer.size() == 2);
+	CHECK(pacer.bytes() == 10000);
+	const PacedTake<Frame> taken = pacer.take(1050100);
+	REQUIRE(taken.item.has_value());
+	CHECK(taken.item->serial == 3);
+	CHECK(taken.skipped == 0);
+	CHECK(pacer.size() == 1);
+}
+
+TEST_CASE("上限が 0 でも 1 として扱い、早く渡す指定でも積んだフレーム自身は残る")
+{
+	FramePacer<Frame> pacer(-5, 0, 0, true);
+	CHECK(pacer.delay_us() == 0);
+	CHECK(pacer.push(1000, 0, 1, Frame{1}) == 0);
+	CHECK(pacer.push(2000, 0, 1, Frame{2}) == 0); // 1 を早く渡す
+	CHECK(pacer.size() == 2);
+	// D = 0 なので 2 の時刻も来ている。新しいほうだけを渡す。
+	const PacedTake<Frame> taken = pacer.take(2000);
+	REQUIRE(taken.item.has_value());
+	CHECK(taken.item->serial == 2);
+	CHECK(taken.skipped == 1);
+}
+
+TEST_CASE("早く渡すフレームの時刻は、格子にも D にもよらず、決めたときの今。D を縮めて元の時刻が早くなればそちら")
+{
+	FramePacer<Frame> pacer(1000000, 1, kBigBytes, true);
+	pacer.set_tick_grid(5000, 16000);
+	pacer.push(1000000, 0, 100, Frame{1});
+	pacer.push(1016700, 0, 100, Frame{2}); // 1 を 1016700 に早く渡す
+	CHECK(pacer.next_release_us().value() == 1016700);
+	pacer.configure(2000000, 1, kBigBytes, true);
+	CHECK(pacer.next_release_us().value() == 1016700);
+	pacer.set_tick_grid(0, 33333);
+	CHECK(pacer.next_release_us().value() == 1016700);
+	// D = 0、格子なしなら、1 の元の時刻 1000000 のほうが早い。早めたことにはならないので、早く渡した数に数えない。
+	pacer.set_tick_grid(0, 0);
+	pacer.configure(0, 1, kBigBytes, true);
+	CHECK(pacer.next_release_us().value() == 1000000);
+	const PacedTake<Frame> first = pacer.take(1000000);
+	REQUIRE(first.item.has_value());
+	CHECK(first.item->serial == 1);
+	const FramePacerStats stats = pacer.take_stats();
+	CHECK(stats.early == 0);
+	CHECK(stats.on_time == 1);
+}
+
+TEST_CASE("早く渡した数と長さは統計を取り出すと 0 に戻り、すべて捨てると早く渡すフレームも捨てる")
+{
+	FramePacer<Frame> pacer(1000000, 1, kBigBytes, true);
+	pacer.push(1000000, 0, 100, Frame{1});
+	pacer.push(1016700, 0, 100, Frame{2});
+	REQUIRE(pacer.take(1016700).item.has_value());
+	CHECK(pacer.take_stats().early == 1);
+	const FramePacerStats again = pacer.take_stats();
+	CHECK(again.early == 0);
+	CHECK(again.early_max_us == 0);
+	pacer.push(1033400, 0, 100, Frame{3}); // 2 を早く渡す
+	CHECK(pacer.discard_all() == 2);
+	CHECK(pacer.empty());
+	CHECK(pacer.bytes() == 0);
+	CHECK_FALSE(pacer.next_release_us().has_value());
+}
+
+TEST_CASE("ストリームごとの待ち行列は、それぞれの上限で早く渡す")
+{
+	FramePacer<Frame> big = make_pipeline_pacer(100000, true);
+	FramePacer<Frame> small = make_pipeline_pacer(100000, true);
+	const LeadSimResult a = simulate_leads(big, same_frames(200, 400000, kBytes4k));
+	const LeadSimResult b = simulate_leads(small, same_frames(200, 400000, kBytes1080p));
+	CHECK(a.dropped_on_push + b.dropped_on_push == 0);
+	CHECK(a.shown.size() == 200);
+	CHECK(b.shown.size() == 200);
+	for (const std::int64_t wait : b.wait_us)
+		CHECK(wait == 500000);
+	CHECK(big.take_stats().early == 179);
+	CHECK(small.take_stats().early == 0);
 }

@@ -108,7 +108,10 @@ constexpr std::chrono::milliseconds kMixerLagResetLimit{50};
 //     1080p の NV12 は 1 フレーム約 3.1 MB で、実際に待つフレームは D と先の長さの間に届く分なので、D が上限の
 //     1000 ms で先の長さが 20 ms なら約 61 フレーム、約 190 MB になる。4 ストリームが同時にこの大きさで約 760 MB で
 //     ある。数の上限 ((1000 + 500) / 16.7 = 90) + 6 = 96 フレームまで待つ (先の長さが上限の 500 ms) と、1080p でも
-//     256 MiB が先にかかる。256 MiB を超える分は古いフレームを捨て、捨てた数は統計の行の paced_dropped に出る。
+//     256 MiB が先にかかる。4K60 なら D が 100 ms でも、先の長さ約 250 ms で先にかかる。上限を超えたら、古い
+//     フレームを捨てる代わりに、まだ渡していない最も古いフレームを今すぐ渡す (frame_pacer.h の「上限を超えたとき」)。
+//     捨てると時刻の来ていないフレームばかりを捨てて映像が止まるが、早く出せば途切れない。上限に届かない間の渡す
+//     時刻は変わらない。早く渡した数は統計の行の paced_early に出る。
 constexpr std::int64_t kPacerFrameIntervalUs = 16667;
 constexpr std::size_t kPacerHeadroomFrames = 6;
 constexpr std::size_t kPacerMaxBytes = 256ull * 1024 * 1024;
@@ -118,7 +121,7 @@ template <typename Pacer> void configure_frame_pacer(Pacer &pacer, std::int64_t 
 {
 	pacer.configure(delay_us,
 			frame_pacer_capacity(delay_us + kFramePacerMaxAheadUs, kPacerFrameIntervalUs, kPacerHeadroomFrames),
-			kPacerMaxBytes);
+			kPacerMaxBytes, true);
 }
 
 // 録画の保存先の候補が使えるかを調べるときの、空き容量の問い合わせのタイムアウト (ミリ秒)。目安の値で、測って
@@ -780,6 +783,11 @@ struct Pipeline::Impl {
 		// 積むときの届くまでの遅れ (age) の分布 (arrival_stats.h)。待ち行列と同じ寿命で、pacer_mu の下で足し、
 		// 取り出す。
 		ArrivalDelayStats arrival;
+		// 直前の統計の周期に、先の長さを kFramePacerMaxAheadUs で頭打ちにしたか (ahead_capped) と、上限を超えて早く
+		// 渡したか (early)。状態が変わった周期にだけ出来事の行を書くために持つ (stats_loop が pacer_mu の下で読み書き
+		// する)。
+		bool ahead_capped_noted = false;
+		bool early_noted = false;
 	};
 	std::thread pacer_thread;
 	std::mutex pacer_mu;
@@ -2616,44 +2624,78 @@ void Pipeline::Impl::stats_loop()
 			// 表示の緩衝 (frame_pacer.h) の、その周期の数。paced_tick_us は渡す時刻を合わせている OBS の描く刻みの
 			// 間隔 (0 なら刻みに合わせず、タイムスタンプ + D の時刻に渡している)。paced_on_time は時刻まで待ってから
 			// 渡した数、paced_late は届いた時点でもう時刻を過ぎていてすぐ渡した数 (D が受信までの遅れより短いと
-			// 増える)、paced_dropped は渡さずに捨てた数 (同時に時刻が来た古いフレーム、上限超過、破棄)、
+			// 増える)、paced_dropped は渡さずに捨てた数 (同時に時刻が来た古いフレーム、待ち行列の上限で早く渡すと決めて
+			// 渡る前に次を早く渡すと決めたフレーム、ストリームの終わりの破棄)、
 			// paced_queue_max は待ち行列の長さの最大、paced_ahead_max_ms はタイムスタンプが積んだ時点の今より先にあった長さの
 			// 最大 (描く予定の時刻のまま送られたフレーム)、paced_ahead_capped はその長さが kFramePacerMaxAheadUs を超えて
-			// 頭打ちにした数である。キーの名前は、ほかの行のキー (dropped= など) で終わらない
+			// 頭打ちにした数、paced_early は上限 (数かバイト数) を超えたときに捨てる代わりに早く渡した数、
+			// paced_early_max_ms はそのとき早めた長さの最大 (数えたものがなければ 0) である。paced_on_time と
+			// paced_late に paced_early は含まない。キーの名前は、ほかの行のキー (dropped= など) で終わらない
 			// 形にしてある。合成のソースがない (または D が 0 の) とき、その周期に何も起きなかったストリームの行は書かない。
 			// 合成のソースがない間は待ち行列に積まない (frame_delivery_plan.h)。
 			// D そのものの動作は、上の video_latency の shown_ (OBS が表示に選んだフレームの遅れ) で確認する。
+			// paced_ahead_capped と paced_early は、上限を超え続ける間 (4K60 で D が長いときなど) 周期ごとに 0 でなく
+			// なりうるので、出来事の行は、0 から 0 でなくなった周期と、0 に戻った周期にだけ書く (ストリームごと)。
+			// ストリームが終わって待ち行列がなくなったときは、戻った行を書かない。
 			const bool composite_now = sources::composite_present();
 			for (auto &kv : screen_streams) {
 				FramePacerStats paced;
 				std::int64_t delay_us = 0;
 				std::int64_t tick_us = 0;
+				bool ahead_capped_started = false;
+				bool ahead_capped_ended = false;
+				bool early_started = false;
+				bool early_ended = false;
 				{
 					std::lock_guard<std::mutex> pacer_lock(pacer_mu);
 					delay_us = display_buffer_us.load();
 					const auto it = pacers.find(kv.first);
 					if (it != pacers.end()) {
-						paced = it->second.pacer.take_stats();
-						tick_us = it->second.pacer.tick_interval_us();
+						PacerSlot &slot = it->second;
+						paced = slot.pacer.take_stats();
+						tick_us = slot.pacer.tick_interval_us();
+						const bool ahead_capped_now = paced.ahead_capped > 0;
+						ahead_capped_started = ahead_capped_now && !slot.ahead_capped_noted;
+						ahead_capped_ended = !ahead_capped_now && slot.ahead_capped_noted;
+						slot.ahead_capped_noted = ahead_capped_now;
+						const bool early_now = paced.early > 0;
+						early_started = early_now && !slot.early_noted;
+						early_ended = !early_now && slot.early_noted;
+						slot.early_noted = early_now;
 					}
 				}
-				if (!(composite_now && delay_us > 0) && paced.on_time + paced.late + paced.dropped == 0)
+				if (ahead_capped_started)
+					diag::logf(LOG_WARNING,
+						   "Video timestamps were more than %lld ms ahead of the OBS clock (stream=%u frames=%llu)",
+						   static_cast<long long>(kFramePacerMaxAheadUs / 1000), static_cast<unsigned>(kv.first),
+						   static_cast<unsigned long long>(paced.ahead_capped));
+				if (ahead_capped_ended)
+					diag::logf(LOG_INFO,
+						   "Video timestamps are no longer more than %lld ms ahead of the OBS clock (stream=%u)",
+						   static_cast<long long>(kFramePacerMaxAheadUs / 1000), static_cast<unsigned>(kv.first));
+				if (early_started)
+					diag::logf(LOG_WARNING,
+						   "Video frames were shown up to %lld ms early because the display queue was full "
+						   "(stream=%u frames=%llu)",
+						   static_cast<long long>(paced.early_max_us / 1000), static_cast<unsigned>(kv.first),
+						   static_cast<unsigned long long>(paced.early));
+				if (early_ended)
+					diag::logf(LOG_INFO, "Video frames are no longer shown early (stream=%u)",
+						   static_cast<unsigned>(kv.first));
+				if (!(composite_now && delay_us > 0) && paced.on_time + paced.late + paced.early + paced.dropped == 0)
 					continue;
 				diag::logf(diag::LineKind::Stats, LOG_DEBUG,
 				           "Stats stream=%u video_pacer paced_delay_ms=%lld paced_tick_us=%lld paced_on_time=%llu "
 				           "paced_late=%llu paced_dropped=%llu paced_queue_max=%zu paced_ahead_max_ms=%lld "
-				           "paced_ahead_capped=%llu",
+				           "paced_ahead_capped=%llu paced_early=%llu paced_early_max_ms=%lld",
 				           static_cast<unsigned>(kv.first), static_cast<long long>(delay_us / 1000),
 				           static_cast<long long>(tick_us),
 				           static_cast<unsigned long long>(paced.on_time), static_cast<unsigned long long>(paced.late),
 				           static_cast<unsigned long long>(paced.dropped), paced.max_queued,
 				           static_cast<long long>(paced.max_ahead_us / 1000),
-				           static_cast<unsigned long long>(paced.ahead_capped));
-				if (paced.ahead_capped > 0)
-					diag::logf(LOG_WARNING,
-						   "Video timestamps were more than %lld ms ahead of the OBS clock (stream=%u frames=%llu)",
-						   static_cast<long long>(kFramePacerMaxAheadUs / 1000), static_cast<unsigned>(kv.first),
-						   static_cast<unsigned long long>(paced.ahead_capped));
+				           static_cast<unsigned long long>(paced.ahead_capped),
+				           static_cast<unsigned long long>(paced.early),
+				           static_cast<long long>(paced.early_max_us / 1000));
 			}
 			// ストリームごとの、届くまでの遅れ (表示の緩衝の待ち行列に積むときの、OBS の時計 - 換算した送信側の
 			// タイムスタンプ) の分布 (arrival_stats.h)。arrival_p50_ms、arrival_p95_ms、arrival_p99_ms、
