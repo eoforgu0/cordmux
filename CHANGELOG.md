@@ -1,5 +1,27 @@
 # 変更履歴 (Changelog)
 
+## 1.0.2
+
+### ja
+
+#### 変更点
+
+- 画面共有の映像と音のずれを小さくしました。映像と音の時刻を、届いた時刻からの見積もりではなく、Discordが再生に使う時刻に合わせます。
+
+#### 不具合の修正
+
+- 枠に載せられずに「空いている枠がありません。」と出た後、しばらくして別の理由で枠が埋まったときに、前に押した人の行にまた同じ文が出ることがある問題を修正しました。
+
+### en
+
+#### Changes
+
+- Reduced the offset between screen share video and audio by timing them with the times Discord uses for playback instead of estimating from arrival times
+
+#### Bug Fixes
+
+- Fixed an issue where, after "No free slots." was shown because a person couldn't be added to a slot, the same text could appear again in that person's row later when the slots filled up for another reason
+
 ## 1.0.1
 
 ### ja
