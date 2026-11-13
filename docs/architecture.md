@@ -173,6 +173,8 @@ io_thread が WebSocket のメッセージを `Pipeline` のコールバック (
 
 送信側は、画面共有のストリームごとに、60 秒ごとの `playout` の行の後に `clock lag stream N:` の行を書く (`encode/clock_lag.ts`)。映像と音声の「受け取った時刻 - 換算した時刻」の 5、50、95 パーセンタイルである。映像を正確に換算している間は、映像の値は負で、WebRTC がフレームを描く予定の時刻よりどれだけ前に渡したか (先行) を表す。見積もりの換算では、定数が正しければ取り出しの遅れ (数 ms) になり、定数が低いまま残るとその分だけ大きくなる。読み方は `src-vencord/encode/README.md` の「遅れの行」と「時計の行」にある。
 
+その後に `av diag stream N:` の行を書く (`encode/av_diag.ts`)。測るだけで、動作は変えない。確立している間、ストリームごとに 1 秒に 1 回、音声と映像のレシーバーの `getStats()` を読み (`playout` の行もこの値を使い、自分では読まない)、1 秒を 1 区間として、受け取る側の待ちの差 (届いてから音声を取り出すまでと、届いてから映像の描く予定の時刻までの差)、音声の出力の遅れ (取り出してから音の装置まで。`media-playout`)、読み出しの欠落 (`MediaStreamTrackProcessor` が捨てた数、音声の断片のタイムスタンプの飛び、読む間隔の最大) を集めて、60 秒ごとにまとめる。読み方は `src-vencord/encode/README.md` の「受け取りの行」にある。
+
 #### 送信側の時計と OBS の時計
 
 送信側の時計が qpc の接続 (hello の `clock_base` が "qpc") では、受信側は送信側の時計をそのまま OBS の時計 (`os_gettime_ns` / 1000) として使い、差を 0 にする (`pipeline/sender_clock.h` の `use_shared_clock`)。hello と pong の `clock_us` は差に使わず、受け取ったときの OBS の時計との差 (届くまでの遅れ) の最小値を統計の行 (`Sender clock delay`) に書く監視にだけ使う。最小値が -1.101 ms (送信側の誤差の上限。ページの原点の TimeTicks の誤差の上限 1 ms、`performance.now()` の丸め 100 us、切り捨ての違い 1 us の和) より小さいか、組が 12 個 (hello と 1 分ぶんの pong) そろった後に 1 秒より大きければ、同じ時計という前提が崩れているとして、差をそれまでの最小値 (page の接続と同じ見積もり) に戻し、警告の行 (`Sender clock is not the OBS clock ...`) を書く (`pipeline/sender_clock.h` の `shared_clock_verdict`)。1 秒は、重い負荷 (ゲームの配信) で pong が映像の送信の後ろに並んだり、受信側でバイナリーのメッセージの後に読まれたりして届くまでの遅れが増えても届かず、時計の取り違え (秒の桁以上ずれる) なら必ず超える値である。届くまでの遅れの大きさは、統計の行 `Sender clock delay` で読む。接続ごとに、どちらの時計かを出来事の行 (`Sender clock: ...`) に書く。
@@ -756,7 +758,7 @@ Vesktop には映像が届いているのに、枠の映像が止まったまま
 
 ログのリングバッファーは、上限を超えて捨てた行があれば、そのことを示す 1 行を先頭に書く。途中から始まるログを、そうと分からないまま渡さないためである。manifest.json にも、4 つのリングバッファーの捨てた行の数を別々に書く (`plugin_log_dropped`、`plugin_stats_log_dropped`、`discord_log_dropped`、`discord_stats_log_dropped`)。
 
-ログの行は、出来事の行と統計の行に分けて保つ。出来事の行は、状態が変わったときの行 (接続、切断、トラックの追加と終了と mute、ゲートの開閉、エンコードの段階の変更、送信側の `clock origin` の最初の行と映像と音声の原点の差の大きな変化、送信側の時計の行 (`clock: base=...`) と映像と音声の換算の方法の行 (`video time stream N:`、`audio time stream N:`)、受信側の `Sender clock: ...`、映像が届かないことと受信のやり直し、枠の割り当て、メッセージの表示と解消など) で、通話の全体を残す。統計の行は、数秒から 60 秒ごとの行 (受信側の `Stats ...`、届くたびに書く `Facts`、`Profiles`、`Avatar`、合成のソースの画像の用意の行、送信側の `clock origin` の細かい変化、`playout`、`latency`、`clock lag`) で、直近の分だけを残す。受信側は、統計の行を `diag::logf(diag::LineKind::Stats, ...)` で書く。送信側は 3 種類に分け (`src-vencord/core/logbook.ts`)、異常に関わる出来事の行 (alerts) は、受信側が OBS のログに LOG_WARNING で書く (docs/wire_format.md の「メッセージの種類」の log の扱い)。出来事の行の既定の 5000 行は、4 時間の通話を残せる大きさとして決めた (`src-obs/config/settings.h` の `kEventLogDefaultLines`)。
+ログの行は、出来事の行と統計の行に分けて保つ。出来事の行は、状態が変わったときの行 (接続、切断、トラックの追加と終了と mute、ゲートの開閉、エンコードの段階の変更、送信側の `clock origin` の最初の行と映像と音声の原点の差の大きな変化、送信側の時計の行 (`clock: base=...`) と映像と音声の換算の方法の行 (`video time stream N:`、`audio time stream N:`)、受信側の `Sender clock: ...`、映像が届かないことと受信のやり直し、枠の割り当て、メッセージの表示と解消など) で、通話の全体を残す。統計の行は、数秒から 60 秒ごとの行 (受信側の `Stats ...`、届くたびに書く `Facts`、`Profiles`、`Avatar`、合成のソースの画像の用意の行、送信側の `clock origin` の細かい変化、`playout`、`latency`、`clock lag`、`av diag`) で、直近の分だけを残す。受信側は、統計の行を `diag::logf(diag::LineKind::Stats, ...)` で書く。送信側は 3 種類に分け (`src-vencord/core/logbook.ts`)、異常に関わる出来事の行 (alerts) は、受信側が OBS のログに LOG_WARNING で書く (docs/wire_format.md の「メッセージの種類」の log の扱い)。出来事の行の既定の 5000 行は、4 時間の通話を残せる大きさとして決めた (`src-obs/config/settings.h` の `kEventLogDefaultLines`)。
 
 10 秒ごとの統計の行 (`Stats stream=N video_latency` など) は `LOG_DEBUG` で書く。OBS は `--verbose` で起動したときだけ、この行をログに書く。読み方は `src-obs/pipeline/README.md` にある。
 
