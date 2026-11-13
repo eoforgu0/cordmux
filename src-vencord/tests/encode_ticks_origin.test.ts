@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
     TICKS_ORIGIN_ERROR_MAX_US,
+    ticksOriginRetryable,
     measureTicksOrigin,
     originFromBrackets,
     ticksOriginLogLine,
@@ -203,5 +204,15 @@ describe("measureTicksOrigin", () => {
         });
         expect(result.ok).toBe(false);
         if (!result.ok) expect(result.reason).toBe("inconsistent");
+    });
+});
+
+describe("ticksOriginRetryable", () => {
+    it("too-wide と call-failed は測り直し、coarse-ticks と inconsistent と成功は測り直さない", () => {
+        const base = { brackets: undefined, ticks: undefined, clampUs: 100 } as const;
+        expect(ticksOriginRetryable({ ok: false, reason: "too-wide", ...base })).toBe(true);
+        expect(ticksOriginRetryable({ ok: false, reason: "call-failed", ...base, detail: "timeout" })).toBe(true);
+        expect(ticksOriginRetryable({ ok: false, reason: "coarse-ticks", ...base })).toBe(false);
+        expect(ticksOriginRetryable({ ok: false, reason: "inconsistent", ...base })).toBe(false);
     });
 });

@@ -21,8 +21,8 @@
 // - 取り込みの時刻なら、フレームは取り込みの後に届くので、先行はどのフレームも負である (同じ試しの両方向の接続で
 //   -35.5 ms から -16.2 ms)。
 // - 経過やほかの時計の値なら、先行は秒の桁より大きく外れる。
-// そこで、先行が VIDEO_EXACT_LEAD_MIN_US より大きく VIDEO_EXACT_LEAD_MAX_US より小さいフレームを、描く予定の時刻の
-// 証拠にする。取り込みの時刻と経過のフレームは証拠にならないので、証拠のフレームが 1 つ来れば正確な換算に入る。
+// そこで、先行が VIDEO_EXACT_LEAD_MIN_US より大きく VIDEO_EXACT_LEAD_EVIDENCE_MAX_US 以下のフレームを、描く予定の時刻の
+// 証拠にする (上限は受信側の表示の待ち行列が待つ長さ)。取り込みの時刻と経過のフレームは証拠にならないので、証拠のフレームが 1 つ来れば正確な換算に入る。
 // 先行が秒の桁より外れるフレーム (経過かほかの時計の値) が来たら、すぐに今までの換算に戻る。そうでなくても、
 // 正確な換算の間に、証拠のないフレームが VIDEO_EXACT_EXIT_FRAMES 個以上、読んだ時刻で VIDEO_EXACT_EXIT_US 以上続いたら、
 // 描く予定の時刻でなくなったとみなして今までの換算に戻る。読むのが遅れただけなら、その間に証拠のフレームが来る。
@@ -46,11 +46,20 @@ import { fromTicksUs, type SenderTimebase } from "./sender_clock";
 export const VIDEO_EXACT_LEAD_MIN_US = 2_000n;
 
 /**
- * 描く予定の時刻の証拠にする先行の上限 (us)。受信を始めた直後の描く予定の時刻は、届く時刻より 100 ms 以上先に出る
- * ことがある (docs/architecture.md の「送信側: 送信側の時計への換算」)。それより十分大きく、ほかの時計の値 (起動からの
- * 時間の桁で離れる) とは分けられる値にした。目安の値で、測って決めたものではない。
+ * ほかの時計の値とみなす先行の大きさ (us)。先行がこれ以上 (正でも負でも) のフレームは、描く予定の時刻でも取り込みの
+ * 時刻でもない (経過かほかの時計の値。起動からの時間の桁で離れる) とみなし、正確な換算の間でも 1 フレームで今までの換算に
+ * 戻る。受信を始めた直後の描く予定の時刻は、届く時刻より 100 ms 以上先に出ることがある (docs/architecture.md の「送信側:
+ * 送信側の時計への換算」) ので、それより十分大きくした。目安の値で、測って決めたものではない。
  */
 export const VIDEO_EXACT_LEAD_MAX_US = 10_000_000n;
+
+/**
+ * 描く予定の時刻の証拠にする先行の上限 (us)。受信側の表示の待ち行列は、タイムスタンプが今より先にあるフレームを、この長さ
+ * までしか待たない (src-obs/pipeline/frame_pacer.h の kFramePacerMaxAheadUs と同じ値。src-vencord/tests/
+ * encode_shared_constants.test.ts が比べる)。これより先のフレームで正確な換算に入ると、受信側で超えた分だけ映像が早く出る
+ * ので、入る証拠にしない。正確な換算の間に来たときは、証拠のないフレームとして数える。
+ */
+export const VIDEO_EXACT_LEAD_EVIDENCE_MAX_US = 500_000n;
 
 /**
  * 正確な換算をやめるのに要る、証拠のないフレームの続いた数。画面が止まっていてフレームが少ないときに、間を空けて
@@ -74,9 +83,10 @@ export type VideoTimeMode = "exact" | "estimated";
  * - render-time: 描く予定の時刻の証拠のフレームが来た。
  * - no-ticks-origin: 送信側の時計が page で、TimeTicks の値を送信側の時計にできない。
  * - not-render-time: 先行が描く予定の時刻の範囲にない (取り込みの時刻か、読むのが遅れ続けている)。
- * - other-clock: 先行が秒の桁より外れる (経過かほかの時計の値)。
+ * - too-far-ahead: 先行が、受信側が待つ長さ (VIDEO_EXACT_LEAD_EVIDENCE_MAX_US) を超え、10 秒より小さい。
+ * - other-clock: 先行が 10 秒以上外れる (経過かほかの時計の値)。
  */
-export type VideoTimeReason = "render-time" | "no-ticks-origin" | "not-render-time" | "other-clock";
+export type VideoTimeReason = "render-time" | "no-ticks-origin" | "not-render-time" | "too-far-ahead" | "other-clock";
 
 export interface VideoTimeChange {
     readonly mode: VideoTimeMode;
@@ -114,7 +124,8 @@ export function createVideoTime(): VideoTimeState {
 
 /** 証拠のないフレームの理由。 */
 function missReason(leadUs: bigint): VideoTimeReason {
-    return leadUs <= -VIDEO_EXACT_LEAD_MAX_US || leadUs >= VIDEO_EXACT_LEAD_MAX_US ? "other-clock" : "not-render-time";
+    if (leadUs <= -VIDEO_EXACT_LEAD_MAX_US || leadUs >= VIDEO_EXACT_LEAD_MAX_US) return "other-clock";
+    return leadUs > VIDEO_EXACT_LEAD_EVIDENCE_MAX_US ? "too-far-ahead" : "not-render-time";
 }
 
 /**
@@ -140,7 +151,7 @@ export function mapVideoTime(
     }
 
     const leadUs = exactUs - arrivalUs;
-    if (leadUs > VIDEO_EXACT_LEAD_MIN_US && leadUs < VIDEO_EXACT_LEAD_MAX_US) {
+    if (leadUs > VIDEO_EXACT_LEAD_MIN_US && leadUs <= VIDEO_EXACT_LEAD_EVIDENCE_MAX_US) {
         const entering = state.mode !== "exact";
         return {
             state: {
@@ -203,4 +214,52 @@ export function videoTimeOriginUs(state: VideoTimeState): bigint | undefined {
 export function videoTimeChangeText(change: VideoTimeChange): string {
     const lead = change.leadUs === undefined ? "" : ` lead=${(Number(change.leadUs) / 1000).toFixed(1)}ms`;
     return `time=${change.mode} reason=${change.reason}${lead}`;
+}
+
+/** 方法を替えたことを 1 行ずつ書く回数 (ストリームごと)。これを超えた分は、VIDEO_TIME_LOG_SUMMARY_MS ごとにまとめて書く。 */
+export const VIDEO_TIME_LOG_FIRST_SWITCHES = 3;
+
+/**
+ * 方法を替えたことをまとめて書く間隔 (ms)。重い負荷で正確な換算を抜けて戻ることを繰り返しても、長い配信でログの行
+ * (出来事の行は 5000 行まで) を押し出さないようにする。目安の値で、測って決めたものではない。
+ */
+export const VIDEO_TIME_LOG_SUMMARY_MS = 60_000;
+
+/** 方法の行を書くかの、ストリームごとの状態。 */
+export interface VideoTimeLogState {
+    /** 方法を替えた回数 (最初に決めた分は数えない)。 */
+    readonly switches: number;
+    /** 前の行から、書かずに数えた替えた回数。 */
+    readonly unlogged: number;
+    /** まとめた行を前に書いた時刻 (ms)。 */
+    readonly lastSummaryMs: number | undefined;
+}
+
+export function createVideoTimeLogState(): VideoTimeLogState {
+    return { switches: 0, unlogged: 0, lastSummaryMs: undefined };
+}
+
+/**
+ * 方法を決めたか替えたときに、ログの行を書くかを決める。最初に決めたときと、替えた最初の VIDEO_TIME_LOG_FIRST_SWITCHES 回は
+ * 毎回書く。その後は、前にまとめた行から VIDEO_TIME_LOG_SUMMARY_MS たったときだけ、書かずに数えた回数を添えて書く。
+ */
+export function videoTimeLogLine(
+    state: VideoTimeLogState,
+    streamId: number,
+    change: VideoTimeChange,
+    switched: boolean,
+    nowMs: number,
+): { state: VideoTimeLogState; line: string | undefined } {
+    const head = `video time stream ${streamId}: ${videoTimeChangeText(change)}`;
+    if (!switched) return { state, line: head };
+    const switches = state.switches + 1;
+    if (switches <= VIDEO_TIME_LOG_FIRST_SWITCHES) return { state: { ...state, switches }, line: head };
+    const unlogged = state.unlogged + 1;
+    if (state.lastSummaryMs !== undefined && nowMs - state.lastSummaryMs < VIDEO_TIME_LOG_SUMMARY_MS) {
+        return { state: { ...state, switches, unlogged }, line: undefined };
+    }
+    return {
+        state: { switches, unlogged: 0, lastSummaryMs: nowMs },
+        line: `${head} switches=${switches} (${unlogged} since the last line)`,
+    };
 }

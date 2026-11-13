@@ -638,8 +638,15 @@ export function createEncodeSession(
 
             const mappedUs = pendingTimestamps.get(chunk.timestamp);
             pendingTimestamps.delete(chunk.timestamp);
-            // 表にない (想定外の) ときだけ、その時点の送信側の時計で代える。
-            const timestampUs = mappedUs ?? deps.nowUs();
+            // 表にない (想定外の。encoder-teardown の flush で出る実際のフレームなど) ときだけ、その時点の送信側の時計と、
+            // これまでに換算した実際のフレームの後のうち遅いほうで代える (描く予定の時刻は今より先にあり、今の時計だけでは
+            // 送った映像より前に戻りうる)。
+            const nowForMissingUs = mappedUs === undefined ? deps.nowUs() : undefined;
+            const timestampUs =
+                mappedUs ??
+                (lastMappedUs !== undefined && nowForMissingUs !== undefined && lastMappedUs >= nowForMissingUs
+                    ? lastMappedUs + 1n
+                    : (nowForMissingUs as bigint));
             const header: FrameHeader = {
                 type: FrameType.Video,
                 streamId: params.streamId,

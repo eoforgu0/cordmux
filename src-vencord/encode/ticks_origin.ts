@@ -192,6 +192,23 @@ export async function measureTicksOrigin(deps: TicksOriginDeps, count = TICKS_OR
     return { ok: true, originUs: BigInt(origin.originUs), errorUs: origin.errorUs, brackets: origin, ticks, clampUs };
 }
 
+/**
+ * 求められなかった理由が、測り直せば変わりうるものか。too-wide (往復の時間がどれも長かった) と call-failed (メインの
+ * プロセスが答えなかった、2 秒で答えがなかった) は、ページを読み込んでいる最中の長い処理と重なったときに起きうるので、
+ * 測り直す。coarse-ticks (QueryPerformanceCounter を使わない経路) と inconsistent (組どうしが食い違う。別の時計) は、
+ * 測り直しても変わらない。
+ */
+export function ticksOriginRetryable(result: TicksOriginResult): boolean {
+    return !result.ok && (result.reason === "too-wide" || result.reason === "call-failed");
+}
+
+/**
+ * 測り直せる理由で求められなかったときに、測る回数の上限。これで求められなければ page に決める。呼び出し元は接続を試す
+ * たびに 1 回測るので、接続の再試行の間隔 (transport/backoff.ts) が空くにつれて、ページの読み込みの後で測ることになる。
+ * 目安の値で、測って決めたものではない。
+ */
+export const TICKS_ORIGIN_MAX_ATTEMPTS = 5;
+
 /** 結果を、ログの 1 行 (英語) にする。 */
 export function ticksOriginLogLine(result: TicksOriginResult): string {
     const b = result.brackets;

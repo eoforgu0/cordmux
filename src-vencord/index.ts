@@ -96,8 +96,14 @@ import {
     type PlayoutDiagState,
 } from "./encode/playout_diag";
 import { pageTimebase, qpcTimebase, timebaseNowUs, type SenderTimebase } from "./encode/sender_clock";
-import { measureTicksOrigin, ticksOriginLogLine, type TicksOriginResult } from "./encode/ticks_origin";
-import { videoTimeChangeText } from "./encode/video_time";
+import {
+    measureTicksOrigin,
+    TICKS_ORIGIN_MAX_ATTEMPTS,
+    ticksOriginLogLine,
+    ticksOriginRetryable,
+    type TicksOriginResult,
+} from "./encode/ticks_origin";
+import { createVideoTimeLogState, videoTimeLogLine } from "./encode/video_time";
 import { SerialGate } from "./encode/serial";
 import { createVideoTrackSource, type VideoMediaStreamTrack } from "./encode/track_source";
 import type {
@@ -241,15 +247,21 @@ let socketHandle: SocketHandle | null = null;
 let encodeDeps: EncodeSessionDeps | null = null;
 
 /**
- * 送信側の時計の決め方 (encode/sender_clock.ts)。最初の start() で、受信側と接続を始める前にページの原点の TimeTicks を
- * 求め (encode/ticks_origin.ts)、求められたら qpc、求められなければ page に決める。決めた後は、プラグインを起動し直しても
- * ページが続く間は変えない。ページの原点の TimeTicks はページの間変わらず、stop() の後に続く前の世代の後片付け (黒埋め用の
- * フレーム、閉じる途中のソケットの pong) も同じ時計で値を出すためである。受信側は hello の clock_base で接続ごとに時計を
- * 決める。
+ * 送信側の時計の決め方 (encode/sender_clock.ts)。受信側と接続を試す直前 (ensureTimebase) にページの原点の TimeTicks を
+ * 求め (encode/ticks_origin.ts)、求められたら qpc、求められなければ page に決める。プラグインは Discord の画面のコードを
+ * 読み込む前に動き始める (StartAt.Init) ので、その長い処理と重なって測れなかったとき (too-wide、call-failed) は決めずに
+ * 接続を見送り、次に接続を試す前に測り直す (TICKS_ORIGIN_MAX_ATTEMPTS 回まで)。決めるまでは 1 度も接続しないので、
+ * 映像も音声も送らない。決めた後は、プラグインを起動し直してもページが続く間は変えない。ページの原点の TimeTicks は
+ * ページの間変わらず、stop() の後に続く前の世代の後片付け (黒埋め用のフレーム、閉じる途中のソケットの pong) も同じ時計で
+ * 値を出すためである。受信側は hello の clock_base で接続ごとに時計を決める。
  */
 let timebase: SenderTimebase = pageTimebase(performance);
 /** timebase を決め終えたか。 */
 let timebaseDecided = false;
+/** 測り直せる理由で求められなかった回数。 */
+let timebaseAttempts = 0;
+/** 今測っている途中の処理 (同じ時に 2 つ測らない)。 */
+let timebaseDeciding: Promise<boolean> | null = null;
 /** 送信側の時計を決めたときのログの行。接続するたびに書く (受信側の診断情報に、接続ごとに残すため)。 */
 let timebaseLogLine: string | null = null;
 
@@ -567,7 +579,7 @@ function nowUs(): bigint {
 /**
  * ページの原点の TimeTicks を求め、送信側の時計の決め方と、そのログの行を返す。求められなければ page にする。reject しない。
  */
-async function decideTimebase(): Promise<{ timebase: SenderTimebase; line: string }> {
+async function decideTimebase(): Promise<{ timebase: SenderTimebase; line: string; retryable: boolean }> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<TicksOriginResult>((resolve) => {
         timer = setTimeout(
@@ -594,7 +606,38 @@ async function decideTimebase(): Promise<{ timebase: SenderTimebase; line: strin
     return {
         timebase: result.ok ? qpcTimebase(result.originUs) : pageTimebase(performance),
         line: `${ticksOriginLogLine(result)} coi=${self.crossOriginIsolated === true}`,
+        retryable: ticksOriginRetryable(result),
     };
+}
+
+/**
+ * 接続を試す前に呼ぶ。送信側の時計を決め終えていれば true、測り直すために今回の接続を見送るなら false を返す。reject
+ * しない (想定外の例外では page に決めて、接続できなくならないようにする)。
+ */
+function ensureTimebase(): Promise<boolean> {
+    if (timebaseDecided) return Promise.resolve(true);
+    if (timebaseDeciding !== null) return timebaseDeciding;
+    timebaseDeciding = (async (): Promise<boolean> => {
+        try {
+            const decided = await decideTimebase();
+            timebaseAttempts++;
+            if (decided.retryable && timebaseAttempts < TICKS_ORIGIN_MAX_ATTEMPTS) {
+                log(`${decided.line} attempt=${timebaseAttempts}; measuring again before the next connection`);
+                return false;
+            }
+            timebase = decided.timebase;
+            timebaseLogLine = `${decided.line} attempts=${timebaseAttempts}`;
+        } catch (e) {
+            timebase = pageTimebase(performance);
+            timebaseLogLine = `clock: base=page reason=error (${String(e)})`;
+        }
+        timebaseDecided = true;
+        if (encodeDeps !== null) encodeDeps = { ...encodeDeps, timebase };
+        return true;
+    })().finally(() => {
+        timebaseDeciding = null;
+    });
+    return timebaseDeciding;
 }
 
 function concatHeaderPayload(header: FrameHeader, payload: Uint8Array): Uint8Array {
@@ -736,6 +779,8 @@ function videoSink(entry: ScreenEntry, choice: EncodeChoice): EncodeSessionSink 
     // 前に送ったフレームの原点。セッションごとに作るクロージャーに持つので、別のセッションの原点とは比べない。
     // videoClockOriginByStreamId から前の値を読むと、トラックが替わった直後に、関係のない 2 つの原点の差を数える。
     let previousOriginUs: bigint | undefined;
+    // 映像の換算の方法の行を書くかの状態 (セッションごと)。
+    let timeLogState = createVideoTimeLogState();
     return {
         sendVideo(header, payload): void {
             socket?.sendBinary(concatHeaderPayload(header, payload), "video");
@@ -778,10 +823,13 @@ function videoSink(entry: ScreenEntry, choice: EncodeChoice): EncodeSessionSink 
         onTimeMode(change, switched): void {
             // 描く予定の時刻から今までの換算に戻ったときは、前提 (受けた画面共有のタイムスタンプは描く予定の時刻) が
             // ストリームの途中で崩れたので、異常に関わる行にする。最初に決めたときと、描く予定の時刻に入ったときは、
-            // 出来事の行にする。
-            const line = `video time stream ${streamId}: ${videoTimeChangeText(change)}`;
-            if (switched && change.mode === "estimated") logAlert(line);
-            else log(line);
+            // 出来事の行にする。重い負荷で行き来を繰り返しても行が積み上がらないよう、替えた最初の数回の後は間隔を空けて
+            // まとめて書く (encode/video_time.ts の videoTimeLogLine)。
+            const decided = videoTimeLogLine(timeLogState, streamId, change, switched, Date.now());
+            timeLogState = decided.state;
+            if (decided.line === undefined) return;
+            if (switched && change.mode === "estimated") logAlert(decided.line);
+            else log(decided.line);
         },
         onStage(stage, format): void {
             log(stageLogLine(streamId, stage, format, choice));
@@ -2115,7 +2163,17 @@ function startTransport(): void {
     socketHandle = createSocket(
         {
             makeWebSocket: wrapWebSocket,
-            readSession: () => Native.readSession(),
+            // 接続を試すたびに、まず送信側の時計を決め終えているかを確かめる (ensureTimebase)。測り直すときは、
+            // トークンファイルが読めなかったときと同じく今回の接続を見送り、再試行の間隔の後にもう一度試す。
+            readSession: async () => {
+                try {
+                    if (!(await ensureTimebase())) return null;
+                } catch (e) {
+                    log(`clock: deciding the sender clock failed (${String(e)})`);
+                    return null;
+                }
+                return Native.readSession();
+            },
             setTimer: (fn, ms) => setTimeout(fn, ms),
             clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
             version: WIRE_CLIENT_VERSION,
@@ -2126,7 +2184,7 @@ function startTransport(): void {
             // hello と pong に載せる送信側の時計。受信側が、送信側の時計と OBS の時計の差を決めるのに使う。
             clockUs: () => Number(nowUs()),
             // 送信側の時計が OBS の時計と同じ QueryPerformanceCounter の us なら、hello で伝える (受信側は差を 0 にする)。
-            clockBase: timebase.base === "qpc" ? "qpc" : undefined,
+            clockBase: () => (timebase.base === "qpc" ? "qpc" : undefined),
         },
         {
             onEstablished: handleEstablished,
@@ -2223,19 +2281,12 @@ export default definePlugin({
 
         // 送信側の時計を決めてから、受信側と接続する (hello の clock_base と、すべてのタイムスタンプが同じ時計の上に
         // あるように)。映像と音声の読み出しは接続した後に始まる (core/gate.ts) ので、それまでに決まっている。
-        if (timebaseDecided) {
-            startTransport(); // ページの原点の TimeTicks は、前の start() で決めたものを使い続ける。
-            return;
-        }
-        const startedEpoch = epoch;
-        void decideTimebase().then((decided) => {
-            if (epoch !== startedEpoch) return; // 待つ間に stop() か、次の start() が呼ばれた。次の start() が求め直す。
-            timebase = decided.timebase;
-            timebaseLogLine = decided.line;
-            timebaseDecided = true;
-            if (encodeDeps !== null) encodeDeps = { ...encodeDeps, timebase };
+        // 時計は、接続を試す直前に決める (startTransport の readSession の ensureTimebase)。
+        try {
             startTransport();
-        });
+        } catch (e) {
+            log(`transport: could not start (${String(e)})`);
+        }
     },
 
     stop() {

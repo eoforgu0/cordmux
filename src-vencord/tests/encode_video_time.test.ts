@@ -10,6 +10,10 @@ import { createClockMap, mapMediaTime } from "../encode/clock_map";
 import { pageTimebase, qpcTimebase } from "../encode/sender_clock";
 import {
     VIDEO_EXACT_EXIT_FRAMES,
+    VIDEO_TIME_LOG_FIRST_SWITCHES,
+    VIDEO_TIME_LOG_SUMMARY_MS,
+    createVideoTimeLogState,
+    videoTimeLogLine,
     createVideoTime,
     mapVideoTime,
     videoTimeChangeText,
@@ -205,6 +209,54 @@ describe("videoTimeChangeText", () => {
         );
         expect(videoTimeChangeText({ mode: "estimated", reason: "no-ticks-origin", leadUs: undefined })).toBe(
             "time=estimated reason=no-ticks-origin",
+        );
+    });
+});
+
+describe("mapVideoTime: 受信側が待つ長さ (500 ms) より先のフレーム", () => {
+    it("先行が 500 ms を超えるフレームでは、正確な換算に入らない (too-far-ahead)", () => {
+        const steps = renderTimeSteps(5, 300_000_000_000n, () => 600_000n);
+        const { state, changes } = run(steps);
+        expect(changes).toEqual([{ index: 0, change: { mode: "estimated", reason: "too-far-ahead", leadUs: 600_000n } }]);
+        expect(state.mode).toBe("estimated");
+    });
+
+    it("先行がちょうど 500 ms のフレームは証拠にする", () => {
+        const { changes } = run(renderTimeSteps(1, 300_000_000_000n, () => 500_000n));
+        expect(changes[0]?.change.mode).toBe("exact");
+    });
+
+    it("正確な換算の間に 500 ms を超えるフレームが来ても、すぐには戻らず、証拠のないフレームとして数える", () => {
+        const steps = renderTimeSteps(20, 300_000_000_000n, () => 12_000n);
+        steps.push(...renderTimeSteps(3, 300_000_000_000n + 20n * FRAME_US, () => 800_000n));
+        const { state, times } = run(steps);
+        expect(state.mode).toBe("exact");
+        expect(state.missFrames).toBe(3);
+        expect(times).toEqual(steps.map((s) => s.mediaUs));
+    });
+});
+
+describe("videoTimeLogLine", () => {
+    const exit = { mode: "estimated" as const, reason: "not-render-time" as const, leadUs: -3_000n };
+
+    it("最初に決めたときと、替えた最初の数回は毎回書き、その後は間隔を空けて回数をまとめて書く", () => {
+        let state = createVideoTimeLogState();
+        const lines: Array<string | undefined> = [];
+        const first = videoTimeLogLine(state, 2, { mode: "exact", reason: "render-time", leadUs: 12_000n }, false, 0);
+        state = first.state;
+        lines.push(first.line);
+        for (let i = 1; i <= 10; i++) {
+            const r = videoTimeLogLine(state, 2, exit, true, i * 1000);
+            state = r.state;
+            lines.push(r.line);
+        }
+        // 最初の決定 + 替えた最初の 3 回 + まとめの 1 行 (4 回目。まだまとめた行がない)。
+        expect(lines.filter((l) => l !== undefined)).toHaveLength(1 + VIDEO_TIME_LOG_FIRST_SWITCHES + 1);
+        expect(lines[4]).toBe("video time stream 2: time=estimated reason=not-render-time lead=-3.0ms switches=4 (1 since the last line)");
+        // 間隔の内の 5 回目から 10 回目は書かない。間隔がたったら、数えた回数を添えて書く。
+        const later = videoTimeLogLine(state, 2, exit, true, 4000 + VIDEO_TIME_LOG_SUMMARY_MS);
+        expect(later.line).toBe(
+            "video time stream 2: time=estimated reason=not-render-time lead=-3.0ms switches=11 (7 since the last line)",
         );
     });
 });

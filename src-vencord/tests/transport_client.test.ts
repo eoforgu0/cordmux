@@ -110,7 +110,7 @@ describe("established: ping に pong を返す", () => {
     });
 
     it("clockBase を渡すと hello に clock_base を入れ、pong には入れない", () => {
-        const config: ClientConfig = { ...CONFIG, clockUs: () => 264_017_591_900, clockBase: "qpc" };
+        const config: ClientConfig = { ...CONFIG, clockUs: () => 264_017_591_900, clockBase: () => "qpc" };
         const connecting: ClientState = { phase: "connecting", failureCount: 0 };
         const hello = transition(config, connecting, { kind: "connected", session: { secret: SECRET } });
         expect(decodeSentText(hello.effects)).toEqual({

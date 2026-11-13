@@ -1588,7 +1588,7 @@ async function runProduct(params: HarnessRunParams): Promise<HarnessRunResult> {
             wireVersion: WIRE_VERSION,
             // hello と pong に載せる送信側の時計 (製品の index.ts と同じく、タイムスタンプと同じ時計を渡す)。
             clockUs: () => Number(clock.nowUs()),
-            clockBase: clock.timebase?.base === "qpc" ? "qpc" : undefined,
+            clockBase: () => (clock.timebase?.base === "qpc" ? "qpc" : undefined),
         },
         {
             onEstablished(): void {
