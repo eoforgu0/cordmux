@@ -12,4 +12,4 @@
  * 動いていないかを確認する。テスト用の送信側 (test/tools/harness/sender.ts) も、hello の version にこの値を入れる。
  * build_info.py は export const CORDMUX_BUILD_ID = "..."; の形の行を探して書き換えるので、この行の形を変えない。
  */
-export const CORDMUX_BUILD_ID = "1.0.1+dev";
+export const CORDMUX_BUILD_ID = "1.0.2+dev";
