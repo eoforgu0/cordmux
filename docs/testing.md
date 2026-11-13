@@ -66,6 +66,7 @@ C++ の単体テストは doctest で書き、実行ファイルを 2 つ作る�
 | 確認する部分 | テスト |
 |---|---|
 | 周期ごとに、Pipeline の状態、OS への問い合わせの結果、ドックの設定から、表示の規則の入力 (Observation) を作る (`src-obs/dock/build_observation.h`) | `test_dock_build_observation.cpp` |
+| 自分の行のチェックを Pipeline に渡して答えを受ける所: Pipeline が自分の枠を使い始めることを断ったときに、チェックと配置の入力から自分の枠を外して settings.json に残すこと、[自分の枠に映す映像] を替えたときの引き継ぎ (`self_frame_check.h`)。Pipeline の代わりに、割り当て表と同じロックの中で呼ぶ関数を挟む | `test_dock_self_frame_check.cpp` |
 | [Vesktopに追加] で、ほかの Vencord から切り替える確認のダイアログを表示する条件、[再インストール] のコピー、[Vesktopから削除] の結果をドックに残す失敗に変える表、アンインストールの結果と残ったものの並び、確認と結果のダイアログの中身 (`install_flow.h`、`install_dialog_plan.h`) | `test_dock_install_flow.cpp` |
 | 参加者の一覧の行: 名前の見分け方、2 行目に残す部分、状態のテキストと解像度を表示する幅の境目、名前と状態のテキストの幅の分け方、クリックを無視する時間 (`name_check.h`) | `test_dock_rows_calc.cpp` |
 | settings.json のキーごとに、値を変更できる場所 (設定ウィンドウ、ドックなど) を決めた表が、すべてのキーを持つこと。設定ウィンドウがどの値をどのページに置き、どの値の変更に再起動が必要か (`settings_fields.h`) | `test_dock_settings_fields.cpp` |
@@ -177,17 +178,16 @@ python test/lint/<lint>.py --selftest   # セルフテスト
 | `forbidden_qt_usage.py` | 使わないと決めた Qt と Windows の名前 (`forbidden_qt_names.txt`。音の出るメッセージボックスなど) と、スタイルシートの書き方 |
 | `locale_ids.py` | コードの文字列の ini のキー (`cordmux.` で始まるもの) と、2 つの ini (`src-obs/data/locale`) のキーの過不足。空の値、重なったキー、言語によって違う `%N` |
 | `locale_shapes.py` | ini のキーの最後の部分 (`.button`、`.status` などの種類) と、値の形 (句点、疑問符、「...」) の食い違い |
-| `forbidden_ui_words.py` | ini の値の、使わない記号、長音と OBS が表示する名前の表記の誤り、内部の語、空白の誤り (`forbidden_ui_words.txt`) |
+| `forbidden_ui_words.py` | ini の値の、使わない記号、長音と OBS が表示する名前の表記の誤り、空白の誤り (`forbidden_ui_words.txt`) |
 | `log_lines.py` | OBS のログに書く行の書式の誤り (CODESTYLE.md の「OBS のログ」) |
 | `install_guide.py` | 手順書 (`guide/ja.md` と `guide/en.md`) の誤り。規則は `install_guide_rules.txt` にある (見出しの並び、使える Markdown の記法、手順の部分の禁止語、番号の数、`[ ]` の名前と ini の照合、ini と同じでなければならない文、決まった文、見出しへのリンク、ini から手順書の見出しへの参照など) |
 | `removal_table.py` | アンインストールで消すものの表 (`src-obs/install/removal_table.h`) を、Python が文字列として読めない形 |
-| `references.py` | リポジトリにないファイルと文書の見出しへの参照、番号の形をした文字列、経緯を示す日付とラベル |
-| `user_paths.py` | ユーザー名の入ったパス |
+| `references.py` | リポジトリにないファイルと文書の見出しへの参照 |
 
 どの lint も、セルフテストの NG 例と OK 例を `test/lint/fixtures/<lint>/` に持つ。`--selftest` は、NG 例が検出され、OK 例が検出されないことを確認する。どちらかが外れたとき、または例が 1 つもないときは、セルフテストが失敗する。検出の仕組みが壊れて、常に成功を返す状態になったことに気付くためである。
 
 - 外部からコピーしたファイルは、`test/lint/vendored.txt` に並べて、一部の lint (`identifiers_english.py`、`comments_japanese.py`、`windows_api_confinement.py`、`forbidden_libobs_usage.py`) の対象から外す。
-- `references.py` と `user_paths.py` は CI では実行しない。
+- `references.py` は CI では実行しない。
 - `commit_messages_japanese.py` に渡すコミットの範囲は、プルリクエストでは `origin/<base>..HEAD`、プッシュでは `<プッシュの前のコミット>..<プッシュしたコミット>` (前のコミットがないときは `HEAD~10..HEAD`) である。
 
 `lint.yml` のジョブ:
@@ -321,13 +321,14 @@ dock_drive.exe --dir <出力先> [--scenario <シナリオ>,...] [--seeds 1,2,3,
 - トークンファイルは、環境変数 `CORDMUX_HANDSHAKE_DIR` のフォルダーから読む。指定がなければ、実際の `%LOCALAPPDATA%\cordmux` を読まずに、接続しない。
 - product モードでは、WebSocket の接続の Origin ヘッダーを `https://discord.com` にする (Vesktop の送信側が、discord.com のページの中で動くことに合わせる)。
 - 結果 (接続できたか、捨てたフレームの数、ストリームごとのエンコードの段階、受信側から届いた recording、media、limits の変化など) を JSON に書く。
-- `npm run build` で、`sender.ts` を esbuild で 1 つのファイルにバンドルする。
+- `npm run build` で、`sender.ts` を esbuild で 1 つのファイルにバンドルする (clock-probe モードの `clock_probe.ts` も、別の 1 つのファイルにバンドルする)。
 
 ほかのモード:
 
 - tests: WebCodecs のハードウェアのエンコーダを同時に何本作れるかと、作れなかったときの失敗の形を測る。
 - sustain: 決めた数のエンコーダで決めた時間エンコードを続け、毎秒の出力の数を測る。
 - send: 製品の送信側のコードを使わずに、エンコードした映像と正弦波の音声を WebSocket で送る。
+- clock-probe: 受けた映像と音声のタイムスタンプが何の時計かを、同じページの中の WebRTC の接続で確かめる。受信側には送らない。Chromium のバージョンが変わったときに使う。
 
 ほかに、次のツールがある。
 
@@ -416,7 +417,8 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 | サブアカウント 3 | Firefox | テストのページを画面共有する。使う声の置き換えと、参加者の一覧のチェックの付け外しを確認する手順で、その対象の人になる |
 
 - サブアカウント 1 は、製品の言うサブアカウント (Vesktop にログインして映像と声を受け取るアカウント) である。サブアカウント 2 と 3 は、通話のほかの参加者の代わりに使う。
-- Chrome は `test/tools/obs-run/launch-chrome-fake-mic.ps1` で起動し、テスト用の音のファイルをマイクの代わりに入力する。
+- Chrome は `test/tools/obs-run/launch-chrome-fake-mic.ps1` で起動し、テスト用の音のファイルをマイクの代わりに入力する。テスト用の音を使うのは声の確認 (使う声の置き換えと声のミュートの往復) だけなので、声の確認のない `call-1 --recheck` では、テスト動画のページを開いた Chrome でよい。
+- 通話に入るときは、テスト用の音を送る Chrome のほかは、マイクをミュートにする (`--recheck` は 4 つともミュート)。同じ PC のスピーカーから出たテスト動画の音をマイクが拾うと、声として配信の音に入り、映像と音のずれの測定の組が別の音と組になるため。
 - ボイスチャンネルの名前とメインアカウントのユーザー ID は、ツールに書かず、実行するときに `--voice-channel` と `--broadcaster-id` で渡す。
 
 ## 確認する項目
@@ -495,8 +497,9 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 | Vesktop のアカウントの画面共有は、選び方が「自動」でも、[自動で枠に載せる] でも、手動でも枠に載らず、ほかの人が上限まで載る (メインアカウントだけの構成と、サブアカウントの構成の両方) | 単体テスト (`test_pipeline_stream_router.cpp` の `receiver_user_id`) |
 | 画面共有をやめた人と通話から抜けた人の枠が空く。Vesktop のアカウントが通話を抜けたときは全員の枠が空き、戻っても手動の人は自動では載らない。声のストリームが生きている間は、roster から一瞬消えても声の枠と経路が残る | 単体テスト (`test_pipeline_slot_release.cpp`) |
 | 自分の枠に OBS の既存のソースかシーンを選ぶと、4 つの枠の 1 つに入り、その映像の画質のまま表示される。選んでいる間は、Discord での自分の画面共有を枠に載せない。cordmux を含むシーンは候補にしない (`test_sources_self_frame_plan.cpp`) | 単体テスト (`test_sources_composite_layout.cpp`、`test_pipeline_stream_router.cpp`)、実際の通話 |
-| 自分の枠は、ドックの自分の行のチェックが付いている間に出る。チェックは、ドックで付けたとき、またはほかの人と同じ規則 (枠に載せる人の選び方が自動、[自動で枠に載せる]) で自分の共有を始めたときに付く。共有の終わりでは外れず、ドックで外した後は始め直すまで付かない。共有の状態が分からない間は変わらない。Discord の人で枠が埋まっていれば、自分の枠を出さない (付けた直後に、同じ瞬間に自動で 4 人目が載っていたときも、チェックを外す) | 単体テスト (`test_sources_self_frame_plan.cpp` の `plan_self_frame`、`test_pipeline_stream_router.cpp` の `accepted_self_frame_in_use`、`test_ledger_actions.cpp`、`test_ledger_dock_rules.cpp`)、ドックを操作するテスト (`selfframe`) |
-| 自分の枠を使っている間は、Discord の人を 3 人まで枠に載せる (手動、「自動」、[自動で枠に載せる] のどれでも)。ドックが押せると判断した直後に自動で人が載っても、[自分の枠に映す映像] を替えても、描く物は 4 つを超えない | 単体テスト (`test_pipeline_stream_router.cpp` の「競合」と「どの経路を通っても」、`test_ledger_actions.cpp`)、ドックを操作するテスト (`selfframe`。競合は Pipeline を組み込めないので単体テストだけ) |
+| 自分の枠は、ドックの自分の行のチェックが付いている間に出る。チェックは、ドックで付けたとき、またはほかの人と同じ規則 (枠に載せる人の選び方が自動、[自動で枠に載せる]) で自分の共有を始めたときに付く。共有の終わりでは外れず、ドックで外した後は始め直すまで付かない。共有の状態が分からない間は変わらない。Discord の人で枠が埋まっていれば、自分の枠を出さない (付けた直後に、同じ瞬間に自動で 4 人目が載っていたときも、チェックを外す) | 単体テスト (`test_sources_self_frame_plan.cpp` の `plan_self_frame`、`test_pipeline_stream_router.cpp` の `accepted_self_frame_in_use`、`test_dock_self_frame_check.cpp`、`test_ledger_actions.cpp`、`test_ledger_dock_rules.cpp`)、ドックを操作するテスト (`selfframe`) |
+| 自分の枠を使っている間は、Discord の人を 3 人まで枠に載せる (手動、「自動」、[自動で枠に載せる] のどれでも)。ドックが押せると判断した直後に自動で人が載っても、[自分の枠に映す映像] を替えても、描く物は 4 つを超えない | 単体テスト (`test_pipeline_stream_router.cpp` の「競合」と「どの経路を通っても」、`test_dock_self_frame_check.cpp` の「競合」、`test_ledger_actions.cpp`)、ドックを操作するテスト (`selfframe`。競合は Pipeline を組み込めないので単体テストだけ) |
+| 枠のチェックを押した直後に枠が埋まって載せられなかったときは、その人の行に「空いている枠がありません。」と出し、その人が載るか、枠が空くか、その人が画面共有をやめるか通話を抜けるか、接続が切れたら消える。消えた後に枠がまた埋まっても出ない | 単体テスト (`test_ledger_dock_rules.cpp`) |
 | 自分の枠のチェックの状態が、次に OBS を起動したときに残る (付いたり外れたりするたびに書く) | 単体テスト (`test_config_settings.cpp`、`test_dock_settings_fields.cpp`)、ドックを操作するテスト (`selfframe`) |
 | 自分の枠に映す映像を OBS から選んでいる間、メインアカウントの Discord の画面共有を枠に載せない。声と録画は変わらない。選択を外したら、ほかの人と同じに扱う | 単体テスト (`test_pipeline_stream_router.cpp` の `self_frame_selected`) |
 | 画質の上限を下げると、出力の解像度か fps が実際に下がる。画質を上げる操作はどこにもない | 単体テスト (`encode_limits.test.ts`、`encode_session.test.ts`)、実機テスト (`dock-view` の `degraded`) |
