@@ -99,6 +99,11 @@ jobs:
       - name: removal_table.py --selftest
         run: python3 test/lint/removal_table.py --selftest
 
+      - name: references.py (リポジトリ全体)
+        run: python3 test/lint/references.py
+      - name: references.py --selftest
+        run: python3 test/lint/references.py --selftest
+
       # dist.yml から呼ばれたときの github のコンテキストは、呼び出し元のタグのプッシュのものになる。タグのプッシュと、
       # 新しいブランチの最初のプッシュでは event.before がすべて 0 なので、範囲は HEAD~10..HEAD になる。コミットが 10 個に
       # 満たないときは HEAD~10 がないので、範囲を付けずに全部のコミットを見る。
