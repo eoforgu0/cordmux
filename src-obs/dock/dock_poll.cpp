@@ -1355,11 +1355,13 @@ void DockPoll::set_slot(const ledger::ActionArgs &args)
 	case pipeline::Pipeline::SlotChange::Outcome::Released:
 	case pipeline::Pipeline::SlotChange::Outcome::NotAssigned:
 		diag::logf(LOG_WARNING, "Couldn't add the person to a slot: no slot is free");
-		// 押した直後に空きがなくなって、載せられなかった (競合。自分の枠を使っている間に、自動で載せる経路 (選び方が「自動」の
-		// とき、[自動で枠に載せる] の人) が 3 人目を載せていたときも含む。Pipeline::assign_slot)。押した所の近く (その人の行) に
-		// 表示するために記録する。別の人が載せられなかったときは、その人に替わる。押した操作への返事なので、その人が載るか、空いて
-		// いる枠ができるか、その人の行のチェックの意味が変わるか、接続が切れたら、tick が忘れる (ledger/observation.h の
-		// slot_refusal_finished と settle_operation_facts)。忘れた後に枠がまた埋まっても、行には出ない。
+		// 押した直後に枠が埋まって、載せられなかった (競合)。押した操作への返事として記録する。別の人が載せられなかったときは、
+		// その人に替わる。押した所の近く (その人の行) に出すかは、次の tick が決める (ledger/observation.h の slot_refusal_finished
+		// と settle_operation_facts)。行に出るのは、枠が 4 つとも埋まっていたときだけである。自分の枠を使っている間に、自動で載せる
+		// 経路 (選び方が「自動」のとき、[自動で枠に載せる] の人) が 3 人目を載せていたときも、同じ Insufficient で断られるので
+		// 記録する (Pipeline::assign_slot) が、そのときは 4 つ目の枠が空いているので、次の tick が表示する前に忘れ、行には出ない。
+		// 出した返事は、その人が載るか、空いている枠ができるか、その人の行のチェックの意味が変わるか、接続が切れたら、tick が
+		// 忘れる。忘れた後に枠がまた埋まっても、行には出ない。
 		ops_.last_slot_refused_user_id = args.user_id;
 		break;
 	}

@@ -875,8 +875,8 @@ struct OperationFacts {
 	std::optional<ExportResultFact> export_result;
 	// 押した直後に空きがなくて枠に載せられなかった人の userId。空 = いない。押した結果は、押した所のそば (その人の行) で伝える。
 	// 別の人が載せられなかったときは、その人に替わる。その人が載るか、空いている枠ができるか、その人の行のチェックの意味が
-	// 変わるか、接続が切れると消える (slot_refusal_finished と settle_operation_facts。DockPoll)。消えた後に枠がまた埋まっても、
-	// 行には出ない。
+	// 変わったと分かるか、接続が切れると消える (slot_refusal_finished と settle_operation_facts。DockPoll)。消えた後に枠がまた
+	// 埋まっても、行には出ない。
 	std::string last_slot_refused_user_id;
 	// 押して、結果をまだ見ていない [移動] か [退出]。持たない = ない。もう一度押すと押し直した時刻に替わり、結果が出るか、
 	// 接続が切れると消える (call_action_finished と settle_operation_facts。DockPoll)。
@@ -1093,6 +1093,21 @@ inline bool person_known_not_sharing(const Observation &obs, const std::string &
 	return false;
 }
 
+// この人が通話の参加者の一覧にいないと分かっているか。一覧を読めていて (Call::roster_count)、そこにいない (in_roster が偽か、
+// people に行がない) ときだけ真。一覧を読めていない間は、people に行がなくても分からない (people の行は、一覧のほかに、枠、
+// 画面共有の事実、届いたフレームからも作るので、一覧を読めない間は、通話にいる人も行を持たないことがある)。Vesktop の
+// アカウントが通話にいない間は、一覧が空なので真になる。person_known_not_sharing と同じく、分からないことを「いない」と扱わない。
+inline bool person_known_not_in_roster(const Observation &obs, const std::string &user_id)
+{
+	if (!obs.call.roster_count.has_value())
+		return false;
+	for (const PersonFact &person : obs.people) {
+		if (person.user_id == user_id)
+			return !person.in_roster;
+	}
+	return true;
+}
+
 // この人を全画面にできるか (合成のソースのタイルに今描かれているか、画面共有しているか)。
 inline bool focus_candidate(const Observation &obs, const std::string &user_id)
 {
@@ -1256,8 +1271,12 @@ inline bool call_action_failed(const Observation &obs)
 // 1 つもない) が途切れずに続き、その人の行のチェックが押したときと同じ意味の間だけ出す。次のどれかで終える。
 //   - その人が枠に載った (どの経路でも。押した操作の結果が出た)
 //   - 空いている枠ができた (「空いている枠がありません」が事実でなくなった)
-//   - その人が画面共有していないと分かったか、参加者の一覧にいない (チェックを押せない理由が別のものになった)
+//   - その人が画面共有していないと分かったか、参加者の一覧にいないと分かった (チェックを押せない理由が別のものになった。
+//     Vesktop のアカウントが通話を抜けたときも、一覧が空になるので終える)
 //   - 接続が切れた (結果を見られない。[移動] と [退出] と同じ)
+// 分からない間は終えない。画面共有の事実も参加者の一覧も読めない間は、people にその人の行がないことがあるが、それは通話を
+// 抜けたことを表さない (person_known_not_sharing と person_known_not_in_roster)。読めるようになって、まだ枠が埋まっていれば
+// 返事を出し続ける。
 // 終えた返事は DockPoll が忘れる (settle_operation_facts) ので、後でまた枠が埋まっても出さない。後で埋まったことは、押した操作と
 // 関係がない。行に出すか (rules_dock.cpp の refused_note) も、この関数で決める。押していなければ false。
 inline bool slot_refusal_finished(const Observation &obs)
@@ -1267,14 +1286,8 @@ inline bool slot_refusal_finished(const Observation &obs)
 		return false;
 	if (obs.link.state != LinkState::Connected)
 		return true;
-	const PersonFact *person = nullptr;
-	for (const PersonFact &p : obs.people) {
-		if (p.user_id == user_id) {
-			person = &p;
-			break;
-		}
-	}
-	if (person == nullptr || person->slot.has_value() || person_known_not_sharing(obs, user_id))
+	if (screen_slot_of(obs, user_id) != 0 || person_known_not_in_roster(obs, user_id) ||
+	    person_known_not_sharing(obs, user_id))
 		return true;
 	return free_screen_slot(obs) != 0;
 }

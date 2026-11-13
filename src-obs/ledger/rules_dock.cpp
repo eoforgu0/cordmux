@@ -213,12 +213,6 @@ std::string voice_source_name(const Observation &obs, const std::string &user_id
 	return user_id;
 }
 
-bool in_roster(const Observation &obs, const std::string &user_id)
-{
-	const PersonFact *person = find_person(obs, user_id);
-	return person != nullptr && person->in_roster;
-}
-
 // 「配信中で、枠に人を載せている」は observation.h の streaming_with_slotted_person() を使う (primary の表の
 // ConnectedThenDropped の行と同じ関数)。
 
@@ -2016,8 +2010,8 @@ dockview::PersonRow make_person_row(const Observation &obs, const PersonFact &pe
 		if (linked != voice_links.end()) {
 			const std::string source_name = voice_source_name(obs, linked->second);
 			// 「声: %1 (通話に参加していません)」の形は、通話の参加者の一覧を読めていて、そこにいないときだけにする
-			// (読めていないことを、参加していないと扱わない)。
-			const bool absent = obs.call.roster_count.has_value() && !in_roster(obs, linked->second);
+			// (読めていないことを、参加していないと扱わない。observation.h の person_known_not_in_roster)。
+			const bool absent = person_known_not_in_roster(obs, linked->second);
 			row.line2_parts.push_back(
 				ref(absent ? keys::kDockRowVoiceAbsentStatus : keys::kDockRowVoiceStatus, {source_name}));
 		}

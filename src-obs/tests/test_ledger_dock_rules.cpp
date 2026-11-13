@@ -1468,6 +1468,82 @@ TEST_CASE("載せられなかった返事は、その人が載った、画面共
 	}
 }
 
+TEST_CASE("載せられなかった返事は、参加者の一覧も画面共有の事実も読めない間は、その人の行がなくても終えない")
+{
+	// 接続したまま、送信側が参加者の一覧と画面共有の事実を読めなかった (facts の roster と sharing のキーがない)。枠に載って
+	// いる 4 人は枠から行ができるが、hanako (200) は枠にも一覧にもいないので、行がない。通話を抜けたとは分からない。
+	Observation obs = refused_with_full_slots();
+	obs.people.erase(obs.people.begin() + 1);
+	obs.call.roster_count.reset();
+	obs.call.presence = Presence::Unknown;
+	for (PersonFact &person : obs.people) {
+		person.in_roster = false;
+		person.sharing = false;
+		person.sharing_known = false;
+	}
+	REQUIRE(free_screen_slot(obs) == 0);
+	CHECK_FALSE(person_known_not_in_roster(obs, "200"));
+	CHECK_FALSE(person_known_not_sharing(obs, "200"));
+	for (int i = 0; i < 3; ++i) {
+		CHECK_FALSE(slot_refusal_finished(obs));
+		CHECK(settle_ops(&obs).last_slot_refused_user_id == "200");
+	}
+
+	SUBCASE("また読めるようになって、hanako がいて枠がまだ埋まっていれば、返事を出し続ける")
+	{
+		Observation back = refused_with_full_slots();
+		back.ops = obs.ops;
+		CHECK_FALSE(slot_refusal_finished(back));
+		CHECK(refused_note_shown(back, "200"));
+		CHECK(settle_ops(&back).last_slot_refused_user_id == "200");
+	}
+	SUBCASE("また読めるようになって、hanako が一覧にいなければ、通話を抜けたので終える")
+	{
+		Observation back = refused_with_full_slots();
+		back.people.erase(back.people.begin() + 1);
+		back.call.roster_count = 4;
+		back.ops = obs.ops;
+		CHECK(person_known_not_in_roster(back, "200"));
+		CHECK(slot_refusal_finished(back));
+		CHECK(settle_ops(&back).last_slot_refused_user_id.empty());
+	}
+	SUBCASE("読めない間でも、空いている枠ができれば終える (返事の文が事実でなくなった)")
+	{
+		Observation freed = obs;
+		freed.people.pop_back();
+		CHECK(slot_refusal_finished(freed));
+		CHECK(settle_ops(&freed).last_slot_refused_user_id.empty());
+	}
+}
+
+TEST_CASE("載せられなかった返事は、参加者の一覧を読めていてその人がいなければ、行が残っていても終える")
+{
+	SUBCASE("その人は一覧にいないが、前に届いたフレームで行が残っている (通話を抜けた)")
+	{
+		Observation obs = refused_with_full_slots();
+		obs.people[1].in_roster = false;
+		obs.people[1].last_video_frame_at_us = kNow - kSec;
+		obs.call.roster_count = 4;
+		CHECK(person_known_not_in_roster(obs, "200"));
+		CHECK(slot_refusal_finished(obs));
+		CHECK_FALSE(refused_note_shown(obs, "200"));
+		CHECK(settle_ops(&obs).last_slot_refused_user_id.empty());
+	}
+	SUBCASE("Vesktop のアカウントが通話を抜けた (一覧が空。画面共有の事実は分からないことになる)")
+	{
+		Observation obs = refused_with_full_slots();
+		obs.call.presence = Presence::NotInCall;
+		obs.call.roster_count = 0;
+		for (PersonFact &person : obs.people)
+			person.in_roster = false;
+		REQUIRE(free_screen_slot(obs) == 0);
+		CHECK_FALSE(person_known_not_sharing(obs, "200"));
+		CHECK(person_known_not_in_roster(obs, "200"));
+		CHECK(slot_refusal_finished(obs));
+		CHECK(settle_ops(&obs).last_slot_refused_user_id.empty());
+	}
+}
+
 TEST_CASE("返事を終えるかを決めても、終えていない返事と、ほかの操作の結果は変えない")
 {
 	// 別の人が載せられなかったときは、DockPoll がその人に替える。返事を終えるかは、替わった人で決める。
