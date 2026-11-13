@@ -165,6 +165,8 @@ HARNESS_MODE=send HARNESS_SUSTAIN_SEC=30 npx electron .
 
 canvas に描いた映像と、正弦波の音声を、`src-vencord` の実際の送信側のコードに流す。`src-vencord/index.ts` は Vencord の `@utils/types` を import するので、このフォルダーでは使えない。`index.ts` の処理のうち、Vencord に依存しない部分 (WebSocket と VideoEncoder の橋渡し、段階の変更に応じた facts の送信など) を、`sender.ts` に同じ形で持っている。製品のコードには、テスト用の分岐を入れない。
 
+送信側のログの行のうち、受信のレシーバーの `getStats()` を読む行 (`playout`、`av diag`) と `clock lag` の行は、製品の `index.ts` だけが書き、このモードは書かない (WebRTC の受信がない)。これらの行を確かめるのは実際の通話である (読み方は `src-vencord/encode/README.md` の「遅れの行」と「受け取りの行」)。
+
 映像は、動く図形、フレーム番号を表すビットの帯、フレーム番号の数字を描く。下地は、真っ黒ではなく明るさ 48 の灰色 (`#303030`) にする。真っ黒だと、`blackframe` の既定のしきい値 (amount 98、threshold 32) で黒のフレームと判定され、黒埋めのフレームと区別できないためである。ビットの帯の升とマーカーの白は、`#000000` と `#ffffff` で描く。
 
 ビットの帯とマーカーは、判定スクリプト (`test/tools/obs-run` の `frames.py` と `sync.py`) が、録画から読む。マーカーは、`HARNESS_SYNC_EVERY_SEC` ごとに、映像のフレーム 3 つの全面の白と、60 ms の 2 kHz の音である。白は、画面共有のストリームごとに、独立に 3 フレーム出す。

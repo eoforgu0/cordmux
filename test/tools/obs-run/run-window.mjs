@@ -709,6 +709,8 @@ function seedConfigArgv(s, args, where) {
     );
     // 表示のバッファー (製品の display_buffer_ms)。実行計画が持つときだけ渡す (渡さなければ製品の既定のまま)。
     if (s.displayBufferMs != null) argv.push("--display-buffer-ms", String(s.displayBufferMs));
+    // 送信側の統計の行を受信側に残す行数 (製品の js_log_ring_lines)。call-1 の --av-diag だけが持つ。
+    if (s.jsLogRingLines != null) argv.push("--js-log-ring-lines", String(s.jsLogRingLines));
     // 名前ラベルの背景を出して始める。
     if (s.labelPlate) argv.push("--label-plate");
     // --appdata か --real-profile のどちらかを必ず渡す。
@@ -1109,7 +1111,11 @@ function runRecordJudge(scriptPath, judgeArgs) {
 // runRecordJudge と同じく UTF-8 で書かせる。
 function runJudge(tool, recordingPath, extraArgs) {
   const scriptPath = path.join(HERE, tool);
-  const out = execFileSync("python", [scriptPath, recordingPath, ...(extraArgs || [])], { encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
+  // sync.py は組を全部出させる (--all-pairs)。外れた組の時刻を、送信側と受信側のログの時刻と後から突き合わせるため。
+  // 録画は後で消すので、結果 JSON に残る組の並びだけが手がかりになる。
+  const toolArgs = tool === "sync.py" ? ["--all-pairs"] : [];
+  // 組を全部出すと、長い録画では出力が既定の maxBuffer (1 MiB) を超えうる (1 組が約 100 バイト) ので、上限を上げる。
+  const out = execFileSync("python", [scriptPath, recordingPath, ...(extraArgs || []), ...toolArgs], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
   return JSON.parse(out);
 }
 
@@ -3562,13 +3568,15 @@ async function runReal(args, steps, outDir) {
           // 結果に user_id は書かない (ファイル名は表示名から作られる)。gate にしない。
           const recordDirAbs = path.join(windowOutDir, s.recordDirRel || "recordings");
           const sessionDir = state.recordSessionDir || newestRecordSessionDir(recordDirAbs);
+          // recording は --av-desktop の 2 人目 (av1b) だけが持つ。judge-lines の record-sync は recording のない結果だけを見る。
+          const recordingField = s.recording ? { recording: s.recording } : {};
           if (!sessionDir) {
-            record("judge-record-sync", { ok: false, person: s.person || null, error: "cordmux の録画のフォルダがない" });
+            record("judge-record-sync", { ok: false, person: s.person || null, ...recordingField, error: "cordmux の録画のフォルダがない" });
             break;
           }
           const picked = pickPersonScreenOutput({ rows: readLedger(sessionDir), person: s.person });
           if (!picked.file) {
-            record("judge-record-sync", { ok: false, person: s.person || null, sessionDir, error: picked.reason });
+            record("judge-record-sync", { ok: false, person: s.person || null, ...recordingField, sessionDir, error: picked.reason });
             break;
           }
           const file = path.join(sessionDir, picked.file.replace(/\//g, path.sep));
@@ -3576,9 +3584,9 @@ async function runReal(args, steps, outDir) {
             const data = runJudge("sync.py", file, []);
             // メインの手順と同じ基準線で判定する (judgeAvSyncLines。組み合わせが無ければ失敗 = 測れていない)。記録するだけ。
             const lines = judgeAvSyncLines(data);
-            record("judge-record-sync", { ok: lines.ok === true, reason: lines.ok === true ? null : lines.verdict === "no-pairs" ? "no paired events in the recording" : "outside the line (" + lines.verdict + ", trend " + lines.trend.verdict + ")", person: s.person || null, file: picked.file, lines, data });
+            record("judge-record-sync", { ok: lines.ok === true, reason: lines.ok === true ? null : lines.verdict === "no-pairs" ? "no paired events in the recording" : "outside the line (" + lines.verdict + ", trend " + lines.trend.verdict + ")", person: s.person || null, ...recordingField, file: picked.file, lines, data });
           } catch (e) {
-            record("judge-record-sync", { ok: false, person: s.person || null, file: picked.file, error: (e.stdout || "").toString().slice(0, 400) || e.message });
+            record("judge-record-sync", { ok: false, person: s.person || null, ...recordingField, file: picked.file, error: (e.stdout || "").toString().slice(0, 400) || e.message });
           }
           break;
         }

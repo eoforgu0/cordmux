@@ -2,7 +2,9 @@
 # 送信側が「全面の白 3 フレーム」と「同じタイムスタンプから 60 ms だけ 2 kHz」を同時に出すマーカーを、OBS の出力の録画から
 # 拾って組にし、音のマーカーが映像のマーカーに対してどれだけ遅れ (+) / 先行 (-) しているかを ms で出す
 # (値は「音の時刻 - 映像の時刻」)。
-# 使い方: python sync.py <録画> [--x 0 --y 0 --w 1280 --h 720] (白を判定する領域 = その人の枠の位置と大きさ)
+# 使い方: python sync.py <録画> [--x 0 --y 0 --w 1280 --h 720] [--all-pairs] (白を判定する領域 = その人の枠の位置と大きさ)
+#   --all-pairs: 出力の pairs に組を全部入れる (付けなければ先頭の PAIRS_HEAD 組。出力の pairs_all がどちらかを示す)。
+#   長い録画で、外れた組の時刻を送信側と受信側のログの時刻と突き合わせるために使う。
 #
 # 動作 (引数と出力のキーは、キーを足しただけで互換):
 #   - 映像の時刻はフレームごとの pts (video_frames.py)。「フレームの番号 / r_frame_rate」で出すと、cordmux の録画
@@ -72,8 +74,10 @@ ONSET_FRACTION = 0.5
 BURST_MIN_WINDOWS = 4
 BURST_MAX_WINDOWS = 40
 PAIR_MAX_S = 0.5
+# --all-pairs を付けないときに、出力の pairs に入れる組の数 (先頭から)。前からの出力の形のまま。
+PAIRS_HEAD = 50
 # 時間に対するずれの傾き (出力の trend)。cordmux の録画では音の先行が 10 分で 142 ms から
-# 177 ms へ広がることがあり、それを組の並びから読む (pairs は先頭の 50 組しか出さないので、長い録画では後ろが読めない)。
+# 177 ms へ広がることがあり、それを組の並びから読む (pairs は --all-pairs がなければ先頭の PAIRS_HEAD 組しか出さないので、長い録画では後ろが読めない)。
 # 全部の組で最小二乗の傾き (分あたりの ms) と、先頭と末尾の TREND_EDGE_PAIRS 組の平均を出す。判定はしない (読むのは人と実行スクリプト)。
 # 傾きの標準誤差 (slope_se_ms_per_min) と 95% の幅 (slope_ci95_ms_per_min) も出す (t 分布の 2 側 95% の値は自由度 n-2 で引く)。
 # この全部の組の傾きは比べるために残す値で、合否 (run-window-plan.mjs の judgeAvTrend) は、下の段を除いた基準の傾き
@@ -250,6 +254,7 @@ def parse_args(argv):
     for i, a in enumerate(argv):
         if a.startswith("--") and a[2:] in opts:
             opts[a[2:]] = int(argv[i + 1])
+    opts["all_pairs"] = "--all-pairs" in argv
     return opts
 
 
@@ -387,7 +392,8 @@ def main():
         "file": path, "fps": round(fps, 3) if fps else None, "r_frame_rate": info["r_frame_rate"], "time_source": "pts",
         "frames": len(times), "region": {"x": rx, "y": ry, "w": rw, "h": rh},
         "white_events": len(white_events), "tone_events": len(tone_events), "paired": len(pairs),
-        "pairs": pairs[:50],
+        "pairs": pairs if opts["all_pairs"] else pairs[:PAIRS_HEAD],
+        "pairs_all": bool(opts["all_pairs"]),
         "audio_minus_video_ms": {
             "mean": round(float(np.mean(offsets)), 1) if offsets else None,
             "stdev": round(float(np.std(offsets)), 1) if offsets else None,

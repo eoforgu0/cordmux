@@ -10,8 +10,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    AV_DESKTOP_LABEL,
+    AV_DIAG_JS_LOG_RING_LINES,
+    AV_ONLY_LEAVE_AND_QUIT_DIAG_MESSAGE,
     AV_ONLY_LEAVE_AND_QUIT_MESSAGE,
     AV_ONLY_QUIT_SETTLE_MS,
+    avDesktopFrontMessage,
     AV_TREND_DEFECT_MS_PER_MIN,
     CALL_CONTACT_LOST_GUIDANCE,
     LATENCY_RECORDING_LABEL,
@@ -122,6 +126,76 @@ describe("--av-only (映像と音のずれだけを測って終わる)", () => {
         expect(reh.find((s) => s.kind === "judge-call-log")).toMatchObject({ shortRunNotJudged: REHEARSAL_NOT_JUDGED["align-drift"] });
         expect(reh.find((s) => s.kind === "judge-av-sync")).toMatchObject({ person: "harness-screen-1" });
         expect(reh.filter((s) => s.kind === "human").every((s) => s.until === "seconds")).toBe(true);
+    });
+});
+
+describe("--av-diag と --av-desktop (--av-only に足す)", () => {
+    it("--av-only と一緒にだけ受け、--av-desktop はリハーサルとは渡せない", () => {
+        expect(parseArgs([...REAL, "--n-screen", "3", "--broadcaster-id", "1", "--start-with-add", "--recheck", "--av-check", "--av-diag"]).errors.join(" ")).toContain("--av-diag は --av-only と一緒に");
+        expect(parseArgs([...REAL, "--n-screen", "3", "--broadcaster-id", "1", "--start-with-add", "--recheck", "--av-check", "--av-desktop"]).errors.join(" ")).toContain("--av-desktop は --av-only と一緒に");
+        expect(parseArgs([...REAL, ...AV_ONLY, "--av-diag", "--av-desktop"]).errors).toEqual([]);
+        const rehearsal = [...REHEARSAL, ...AV_ONLY.filter((a) => a !== "lobby" && a !== "--voice-channel")];
+        expect(parseArgs([...rehearsal, "--av-desktop"]).errors.join(" ")).toContain("--av-desktop は --rehearsal と一緒に渡せない");
+        expect(parseArgs([...rehearsal, "--av-diag"]).errors).toEqual([]);
+    });
+
+    it("--av-diag: settings.json の js_log_ring_lines を上限にし、終了の後・アンインストールの前に診断情報を書き出す。人の操作は増えない", () => {
+        const plain = plan([...REAL, ...AV_ONLY]).steps;
+        const { steps } = plan([...REAL, ...AV_ONLY, "--av-diag"]);
+        expect(steps.find((s) => s.kind === "seed-config")).toMatchObject({ jsLogRingLines: AV_DIAG_JS_LOG_RING_LINES });
+        expect(plain.find((s) => s.kind === "seed-config")!.jsLogRingLines).toBeUndefined();
+        expect(AV_DIAG_JS_LOG_RING_LINES).toBe(10000);
+        const humans = steps.filter((s) => s.kind === "human");
+        expect(humans.map((s) => s.until)).toEqual(plain.filter((s) => s.kind === "human").map((s) => s.until));
+        const quit = at(steps, (s) => s.kind === "human" && s.quitVesktop === true);
+        expect(steps[quit].message).toBe(AV_ONLY_LEAVE_AND_QUIT_DIAG_MESSAGE);
+        expect(steps[quit].message).toContain("キーボードとマウスに触らないでください");
+        const keys = at(steps, (s) => s.kind === "dialog-sendkeys", quit);
+        const zip = at(steps, (s) => s.kind === "check-bundle-zip", keys);
+        const capture = at(steps, (s) => s.kind === "capture-backup", zip);
+        at(steps, (s) => s.kind === "dialog-click" && s.buttonTextId === TEXT_ID_SETTINGS_UNINSTALL, capture);
+        expect(plain.some((s) => s.kind === "dialog-sendkeys")).toBe(false);
+        // リハーサルでも同じ位置で書き出す (手順を実際の実行の前に通せる)。
+        const reh = plan([...REHEARSAL, ...AV_ONLY.filter((a) => a !== "lobby" && a !== "--voice-channel"), "--av-diag"]).steps;
+        at(reh, (s) => s.kind === "capture-backup", at(reh, (s) => s.kind === "check-bundle-zip"));
+    });
+
+    it("--av-desktop: av1 に続けて main の画面全体の共有を av1b として測り、録画の後に main の枠と録画の中のずれを読む。人の操作は、テスト動画を前に出す 1 つだけ増える", () => {
+        const plain = plan([...REAL, ...AV_ONLY]).steps;
+        const { args, steps } = plan([...REAL, ...AV_ONLY, "--av-desktop"]);
+        const humans = steps.filter((s) => s.kind === "human");
+        expect(humans.length).toBe(plain.filter((s) => s.kind === "human").length + 1);
+        // 前に出してもらうのは av1 の録画を止めた後、av1b の録画を始める前 (遅れと av1 の間は Vesktop のウィンドウを隠さない)。
+        const front = at(steps, (s) => s.kind === "human" && s.message === avDesktopFrontMessage());
+        expect(front).toBeGreaterThan(at(steps, (s) => s.kind === "record-stop" && s.label === "av1"));
+        expect(front).toBeLessThan(at(steps, (s) => s.kind === "record-start" && s.label === AV_DESKTOP_LABEL));
+        expect(steps[front].message).toContain("最小化はしないでください");
+        expect(steps.filter((s) => s.kind === "record-start").map((s) => s.label)).toEqual([LATENCY_RECORDING_LABEL, "av1", AV_DESKTOP_LABEL]);
+        const recStop = at(steps, (s) => s.kind === "dock-click" && s.textId === "cordmux.dock.record_stop.button", at(steps, (s) => s.kind === "record-start" && s.label === AV_DESKTOP_LABEL));
+        expect(steps.slice(recStop).filter((s) => s.kind === "judge-av-sync").map((s) => [s.recording, s.person])).toEqual([["av1", "sub2"], [AV_DESKTOP_LABEL, "main"]]);
+        expect(steps.slice(recStop).filter((s) => s.kind === "judge-record-sync").map((s) => [s.person, s.recording])).toEqual([["sub2", undefined], ["main", AV_DESKTOP_LABEL]]);
+        // av1b の間は main の画面の音だけを鳴らし、Chrome の画面の音はミュートにする。
+        const av1b = at(steps, (s) => s.kind === "record-start" && s.label === AV_DESKTOP_LABEL);
+        const before = steps.slice(at(steps, (s) => s.kind === "record-stop" && s.label === "av1"), av1b);
+        expect(before.some((s) => s.kind === "dock-click" && s.muteOp === true && s.textArgs?.[0] === "sub2" && s.desired === "on")).toBe(true);
+        expect(before.some((s) => s.kind === "dock-click" && s.muteOp === true && s.textArgs?.[0] === "main" && s.desired === "off")).toBe(true);
+        // 参加の文で main に画面全体の共有と、テスト動画の Chrome のウィンドウを前面に出したままにすることを頼む。
+        const join = steps.find((s) => s.kind === "human" && s.until === "call-ready")!;
+        expect(join.message).toBe(callJoinMessage({ vesktopShare: false, voiceChannel: "lobby", recheck: true, avOnly: true, avDesktop: true }));
+        expect(join.message).toContain("デスクトップ版のDiscord (main) の画面共有は「画面全体」を選び、音声も共有してください");
+        expect(join.message).not.toContain("最大化");
+        expect(callJoinMessage({ vesktopShare: false, voiceChannel: "lobby", recheck: true, avOnly: true })).not.toContain("画面全体");
+        expect(recheckJudgeItems(args)).toEqual(recheckJudgeItems(plan([...REAL, ...AV_ONLY]).args));
+    });
+
+    it("judge-lines の record-sync は av1 (recording のない結果) だけを見る", () => {
+        const results = [
+            { name: "judge-record-sync", ok: true, person: "sub2" },
+            { name: "judge-record-sync", ok: false, person: "main", recording: AV_DESKTOP_LABEL },
+        ];
+        const summary = judgeLinesSummary(results, { items: ["record-sync"] }) as { rows: Array<{ item: string; ok: boolean | null }> };
+        expect(summary.rows).toHaveLength(1);
+        expect(summary.rows[0]).toMatchObject({ item: "record-sync", ok: true });
     });
 });
 

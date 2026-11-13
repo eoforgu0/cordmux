@@ -1121,8 +1121,36 @@ export const DEADLINE_MARGIN_FACTOR = 1.15;
 //                         (callAvOnlyBodySteps)。バージョンの表示・画面共有の音・解像度の変化・エンコードの設定・別アカウント方式のメッセージ・
 //                         自分の枠・スピーカーミュートと抜け戻り・実際のアバターの並びは実行しない。締めのアンインストールは実行スクリプトが押す
 //                         (手順書の道を人が押す確認は --recheck の締めにある)。
+//   --av-diag             --av-only に、送信側の `av diag` の行 (src-vencord/encode/av_diag.ts。受け取る側の待ちの差、音声の出力の遅れ、
+//                         読み出しの欠落) を残す準備を足す。送信側の統計の行は OBS のログに出ず、受信側のリングバッファー (settings.json の
+//                         js_log_ring_lines。既定 200 行) にだけ残るので、テスト用の OBS の settings.json に上限 (AV_DIAG_JS_LOG_RING_LINES) を書き、
+//                         Vesktop を終了してもらった後、アンインストールの前に、診断情報を書き出す (exportBundleSteps。discord-stats.log に入る)。
+//                         書き出しはキーを送るので、終了の依頼の文で、その間はキーボードとマウスに触らないでもらう (AV_ONLY_LEAVE_AND_QUIT_DIAG_MESSAGE)。
+//   --av-desktop          --av-only の av1 (Chrome のタブの共有) に続けて、デスクトップ版の Discord (main) の画面全体の共有でも、同じテスト動画で
+//                         映像と音のずれを測る (av1b)。参加の文で、main には画面全体を音声も含めて共有してもらい、av1 の後に 1 回だけ、テスト動画の
+//                         Chrome のウィンドウを最大化して前面に出してもらう (avDesktopFrontMessage。人の操作が 1 つ増える)。参加の時点で前面に出して
+//                         もらわないのは、遅れ (--latency-person) と Vesktop で見たときの録りが Vesktop のウィンドウを録るためで、av1 までは Vesktop の
+//                         ウィンドウを隠さない。cordmux の録画は両方を覆い、録画の後に av1b の合成のソース (main の枠) と
+//                         録画の中の main のずれも読む (judge-record-sync の recording が av1b。judge-lines の record-sync は av1 の物だけを見る)。
+//                         画面全体の共有の音には、Vesktop が鳴らす受けた音も入る (同じ 2 kHz が遅れて重なる) が、sync.py は白に最も近い音を組にする。
+//                         テスト用の送信側にはデスクトップ版の Discord がないので、リハーサルとは一緒に渡せない。
 // 引数の値を取るフラグは CALL_ONE_VALUE_FLAGS。
-export const CALL_ONE_OPTION_FLAGS = ["--start-with-add", "--vesktop-share", "--skip-continuous", "--skip-av2", "--skip-speaker-mute", "--extra-checks", "--skip-export-bundle", "--recheck", "--av-check", "--av-only"];
+export const CALL_ONE_OPTION_FLAGS = ["--start-with-add", "--vesktop-share", "--skip-continuous", "--skip-av2", "--skip-speaker-mute", "--extra-checks", "--skip-export-bundle", "--recheck", "--av-check", "--av-only", "--av-diag", "--av-desktop"];
+// --av-diag で、テスト用の OBS の settings.json に書く js_log_ring_lines (製品の上限 kJsLogRingMaxLines と同じ。src-obs/config/settings.h)。
+// 送信側の統計の行は 1 ストリームあたり 1 分に 4 行ほど (playout、latency、clock lag、av diag) と、原点の細かい変化の行なので、3 ストリームの
+// 30 分の実行でも収まる。
+export const AV_DIAG_JS_LOG_RING_LINES = 10000;
+// --av-desktop の av1b の録画の名前 (callAvSteps の label)。
+export const AV_DESKTOP_LABEL = "av1b";
+// --av-desktop: av1 の後、av1b の前に、テスト動画の Chrome のウィンドウを画面全体の共有に写す依頼。Vesktop のウィンドウは、ウィンドウキャプチャが
+// 最小化されたウィンドウを録れないので、最小化しないでもらう (隠れるのは構わない)。
+export function avDesktopFrontMessage(accounts = DEFAULT_CALL_ACCOUNTS) {
+  return (
+    "続けて、デスクトップ版のDiscord (" + accounts.main + ") の画面全体の共有で、映像と音のずれを測ります。" +
+    "Chrome (" + accounts.chrome + ") の「テスト動画」のウィンドウを最大化して、いちばん前に出してください (再生はそのまま続けてください)。" +
+    "Vesktopのウィンドウは隠れて構いませんが、最小化はしないでください。前に出したら「OK」と書いてください"
+  );
+}
 export const CALL_ONE_VALUE_FLAGS = ["--latency-person", "--voice-channel"];
 // (b) [バージョン情報] の「バージョン」の Vesktop の行の名前 (settings_window.cpp のバージョンの表)。
 export const TEXT_ID_SETTINGS_VERSION_VESKTOP = "cordmux.settings.version_vesktop.label";
@@ -1419,6 +1447,13 @@ export const VESKTOP_START_AFTER_UNINSTALL_MESSAGE = "Vesktopを起動してく�
 // (ウィンドウを押すので、その間はテスト用の OBS に触らないでもらう)。
 // 終了の返事からアンインストールを押すまでの猶予 (callUninstallSteps の --av-only)。
 export const AV_ONLY_QUIT_SETTLE_MS = 10000;
+// --av-diag の締め: AV_ONLY_LEAVE_AND_QUIT_MESSAGE と同じ依頼に、診断情報の書き出し (保存のウィンドウへキーを送る) の間はキーボードとマウスに
+// 触らないでもらう文を足す。キーは前面のウィンドウへ送るので、人が別のウィンドウを使っていると、そこへ入りうる (--skip-export-bundle の説明)。
+export const AV_ONLY_LEAVE_AND_QUIT_DIAG_MESSAGE =
+  "測り終えました。画面共有を止めて、4つのアカウントすべてでボイスチャンネルから抜け、通知領域のVesktopのアイコンを右クリックして [Quit] を選んでください。" +
+  VESKTOP_HIDDEN_ICON_HINT +
+  "。終わったら「OK」と書いてください。その後、こちらがテスト用のOBSで診断情報の書き出しとcordmuxのアンインストールを行います (2分ほど)。" +
+  "書き出しでは保存のウィンドウへキーを送るので、次のお願い (Vesktopの起動) が届くまで、キーボードとマウスに触らないでください";
 export const AV_ONLY_LEAVE_AND_QUIT_MESSAGE =
   "測り終えました。画面共有を止めて、4つのアカウントすべてでボイスチャンネルから抜け、通知領域のVesktopのアイコンを右クリックして [Quit] を選んでください。" +
   VESKTOP_HIDDEN_ICON_HINT +
@@ -1814,6 +1849,10 @@ export function parseArgs(argv) {
     avCheck: false,
     // --recheck --av-check を、映像と音のずれ (と --latency-person の遅れ) だけを測って終わる形にする (callAvOnlyBodySteps)。既定はなし。
     avOnly: false,
+    // --av-only に、送信側の av diag の行を残す準備を足す (CALL_ONE_OPTION_FLAGS の説明)。既定はなし。
+    avDiag: false,
+    // --av-only に、デスクトップ版の Discord の画面全体の共有の測定 (av1b) を足す (CALL_ONE_OPTION_FLAGS の説明)。既定はなし。
+    avDesktop: false,
     latencyPerson: null,
     // 参加の文で入ってもらうボイスチャンネルの名前 (`--voice-channel`)。渡さなければ null で、文は名前を挙げない。
     voiceChannel: null,
@@ -1843,6 +1882,8 @@ export function parseArgs(argv) {
     "--recheck": "recheck",
     "--av-check": "avCheck",
     "--av-only": "avOnly",
+    "--av-diag": "avDiag",
+    "--av-desktop": "avDesktop",
   };
   let i = 0;
   while (i < list.length) {
@@ -2245,6 +2286,10 @@ export function parseArgs(argv) {
   if (args.avCheck && !args.recheck) errors.push("--av-check は --recheck と一緒に (--recheck でない call-1 は、もともと av1 と av2 で A/V を測る)");
   // --av-only は --recheck --av-check の手順表を、測るところと締めだけにする (callAvOnlyBodySteps)。
   if (args.avOnly && !(args.recheck && args.avCheck)) errors.push("--av-only は --recheck --av-check と一緒に (その手順表を、映像と音のずれを測るところと締めだけにする)");
+  // --av-diag と --av-desktop は --av-only の手順表に足すフラグ。
+  if (args.avDiag && !args.avOnly) errors.push("--av-diag は --av-only と一緒に (その締めに診断情報の書き出しを足す)");
+  if (args.avDesktop && !args.avOnly) errors.push("--av-desktop は --av-only と一緒に (その測定に、デスクトップ版の Discord の画面全体の共有を足す)");
+  if (args.avDesktop && args.rehearsal) errors.push("--av-desktop は --rehearsal と一緒に渡せない (テスト用の送信側にはデスクトップ版の Discord の画面全体の共有がない)");
   // Vesktop のウィンドウは Main の 2x2 の空いた象限に置くので、画面の枠は 2 つか 3 つ (1 つなら枠が全面、4 つなら空きがない)。
   if (args.latencyPerson !== null && args.step === "call-1" && latencyFreeCell(callScreens(args)) === null) {
     errors.push("--latency-person は --n-screen 2 か 3 と一緒に (Vesktop のウィンドウを Main の 2x2 の空いた象限に置くため)");
@@ -3112,6 +3157,7 @@ function seedAndPlaceSteps(args) {
         "、--decoder " +
         (args.decoder || DEFAULT_DECODER) +
         (args.displayBufferMs != null ? "、--display-buffer-ms " + args.displayBufferMs : "") +
+        (args.avDiag ? "、--js-log-ring-lines " + AV_DIAG_JS_LOG_RING_LINES : "") +
         (args.labelEmRatioPct != null ? "、--label-em-ratio-pct " + args.labelEmRatioPct.toFixed(1) : "") +
         (allowStateJsonWrite ? "、--allow-state-json-write" : "") +
         "、録画の保存先は " +
@@ -3128,6 +3174,8 @@ function seedAndPlaceSteps(args) {
         assignMode: args.dockAssignMode,
         decoder: args.decoder || DEFAULT_DECODER,
         displayBufferMs: args.displayBufferMs ?? null,
+        // --av-diag: 送信側の統計の行を受信側のリングバッファーに全部残す (seed-config.py の --js-log-ring-lines)。
+        ...(args.avDiag ? { jsLogRingLines: AV_DIAG_JS_LOG_RING_LINES } : {}),
         // 名前ラベルの板を plate_measure.py で測る call-1 は、板を出して始める (既定は板が出ない)。
         ...(args.step === "call-1" ? { labelPlate: true } : {}),
         allowStateJsonWrite,
@@ -4863,17 +4911,21 @@ function callUninstallSteps(args) {
     backupPath: vencordDirBackupPath(args),
     gate: true,
   });
+  // --av-diag: 送信側の統計の行 (discord-stats.log) を、アンインストールの前に診断情報として書き出す。受信側のリングバッファーは接続が切れても
+  // 残るので、Vesktop を終了してもらった後でよい (人がキーボードとマウスを使っていない区間にキーを送る)。
+  const diagExport = args.avDiag ? exportBundleSteps() : [];
   if (args.rehearsal) {
-    return [capture, ...uninstallSteps("rehearsal", REHEARSAL_UNINSTALL_DONE_TIMEOUT_MS, { entry: "settings" })];
+    return [...diagExport, capture, ...uninstallSteps("rehearsal", REHEARSAL_UNINSTALL_DONE_TIMEOUT_MS, { entry: "settings" })];
   }
   // --av-only: 人に頼むのは、通話から抜けて Vesktop を終了することだけ。アンインストールは実行スクリプトが押す (リハーサルと同じ入口)。
   // 手順書の道を人が押す確認は --recheck の締めにあり、ここで確かめたいのは映像と音のずれなので、人の操作を増やさない。
   if (args.avOnly) {
     return [
-      { ...humanStep(AV_ONLY_LEAVE_AND_QUIT_MESSAGE, "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S), quitVesktop: true },
+      { ...humanStep(args.avDiag ? AV_ONLY_LEAVE_AND_QUIT_DIAG_MESSAGE : AV_ONLY_LEAVE_AND_QUIT_MESSAGE, "go-file", HUMAN_TIMEOUT_MS, HUMAN_ALLOWANCE_SHORT_S), quitVesktop: true },
       // 製品は Vesktop が起動している間はアンインストールの確認を開かない。接続が切れている間は Vesktop の終了を毎秒見る
       // (dock_poll.cpp の vesktop_quit_check_due) が、返事の時点で Vesktop のプロセスがまだ終わりきっていないことがあるので、少し待ってから押す。
       step("wait", "Vesktop の終了がドックに届くまでの猶予 (アンインストールを押す前)", { ms: AV_ONLY_QUIT_SETTLE_MS }),
+      ...diagExport,
       capture,
       ...uninstallSteps("av-only", ROUNDTRIP_UNINSTALL_DONE_TIMEOUT_MS, { entry: "settings" }),
     ];
@@ -5380,6 +5432,9 @@ function recheckMeasureSteps(args) {
   ];
   if (args.latencyPerson) steps.push(...callLatencySteps(args, callScreens(args)));
   if (args.avCheck) steps.push(...callAvSteps(args, "av1", null, callScreens(args), avAccount));
+  // --av-desktop: 続けて、デスクトップ版の Discord (main) の画面全体の共有を測る。共有は参加の文で頼んでいるので、人の操作は増えない。
+  const desktopAccount = args.avDesktop ? callAccounts(args).main : null;
+  if (desktopAccount !== null) steps.push(...callAvSteps(args, AV_DESKTOP_LABEL, avDesktopFrontMessage(callAccounts(args)), callScreens(args), desktopAccount));
   steps.push(
     step("dock-click", "ドックの [" + TEXT_ID_RECORD_STOP + "] を押して cordmux の録画を終える", {
       target: "first",
@@ -5402,6 +5457,16 @@ function recheckMeasureSteps(args) {
       step("judge-record-sync", "cordmux の録画の、" + avAccount + " の画面の完成に sync.py を実行する (録画の中の映像と音のずれ)", {
         person: avAccount,
         recordDirRel: RECORD_DIR_REL,
+      }),
+    );
+  }
+  if (desktopAccount !== null) {
+    steps.push(
+      avSyncJudgeStep(AV_DESKTOP_LABEL, desktopAccount),
+      step("judge-record-sync", "cordmux の録画の、" + desktopAccount + " の画面 (デスクトップ版の Discord の画面全体) の完成に sync.py を実行する", {
+        person: desktopAccount,
+        recordDirRel: RECORD_DIR_REL,
+        recording: AV_DESKTOP_LABEL,
       }),
     );
   }
@@ -5709,7 +5774,7 @@ function callExtraAnalysisSteps(args) {
 // recheck が真のとき: Chrome の共有にテスト動画のタブを音声付きで選んでもらう 1 文 (画面共有の音と、映像と音のずれを確かめるため。
 // 後の A/V の録画の前にもう一度は頼まない) と、連絡が途絶えたときの案内を添える。
 // 返事は要らない: 実行スクリプトが OBS の記録で、全員が入って共有を始めたことを見て進む (callJoinStep の until call-ready)。
-export function callJoinMessage({ vesktopShare, voiceChannel, recheck, avOnly, accounts = DEFAULT_CALL_ACCOUNTS } = { vesktopShare: VESKTOP_SHARE_IN_CALL_ONE, voiceChannel: null, recheck: false, avOnly: false, accounts: DEFAULT_CALL_ACCOUNTS }) {
+export function callJoinMessage({ vesktopShare, voiceChannel, recheck, avOnly, avDesktop = false, accounts = DEFAULT_CALL_ACCOUNTS } = { vesktopShare: VESKTOP_SHARE_IN_CALL_ONE, voiceChannel: null, recheck: false, avOnly: false, avDesktop: false, accounts: DEFAULT_CALL_ACCOUNTS }) {
   const channel = voiceChannel ? "ボイスチャンネル「" + voiceChannel + "」" : "指定のボイスチャンネル";
   const base = callJoinBaseMessage(channel, vesktopShare, Boolean(recheck), accounts);
   const ready = "\n全員が入って画面共有を始めると、こちらで確かめて次へ進みます (返事は必要ありません)。";
@@ -5717,6 +5782,9 @@ export function callJoinMessage({ vesktopShare, voiceChannel, recheck, avOnly, a
     ? base +
         "\nChrome (" + accounts.chrome + ") の画面共有は、先に「テスト動画」のタブで「再生する (音が出ます)」のボタンを押し、そのタブを選んで「タブの音声も共有する」のチェックを付けてください " +
         (avOnly ? "(映像と音のずれを確かめるためです)。" : "(画面共有の音が届くかと、映像と音のずれを確かめるためです)。") +
+        (avDesktop
+          ? "\nデスクトップ版のDiscord (" + accounts.main + ") の画面共有は「画面全体」を選び、音声も共有してください (デスクトップ版のDiscordの共有でも、映像と音のずれを確かめるためです)。"
+          : "") +
         ready +
         "\n" +
         CALL_CONTACT_LOST_GUIDANCE
@@ -5742,7 +5810,7 @@ function callJoinBaseMessage(channel, vesktopShare, recheck, accounts) {
 // 実行スクリプトを動かす側は、この手順では通知ファイルを置かない (README の「実際の通話」)。
 function callJoinStep(args) {
   return humanStep(
-    callJoinMessage({ vesktopShare: args.vesktopShare || VESKTOP_SHARE_IN_CALL_ONE, voiceChannel: args.voiceChannel, recheck: Boolean(args.recheck), avOnly: Boolean(args.avOnly), accounts: callAccounts(args) }),
+    callJoinMessage({ vesktopShare: args.vesktopShare || VESKTOP_SHARE_IN_CALL_ONE, voiceChannel: args.voiceChannel, recheck: Boolean(args.recheck), avOnly: Boolean(args.avOnly), avDesktop: Boolean(args.avDesktop), accounts: callAccounts(args) }),
     "call-ready",
     HUMAN_JOIN_TIMEOUT_MS,
     HUMAN_ALLOWANCE_JOIN_S,
@@ -7609,7 +7677,8 @@ export function judgeLinesSummary(results, opts) {
     "av-sync-av1": last((r) => r.name === "judge-av-sync" && r.recording === "av1"),
     "av-sync-av2": last((r) => r.name === "judge-av-sync" && r.recording === "av2"),
     "av-drift": last((r) => r.name === "judge-av-drift"),
-    "record-sync": last((r) => r.name === "judge-record-sync"),
+    // --av-desktop の av1b の録画の中のずれ (recording 付き) は、この行に入れない (結果 JSON の judge-record-sync で読む)。
+    "record-sync": last((r) => r.name === "judge-record-sync" && !r.recording),
     latency: last((r) => r.name === "judge-latency"),
     ac30: last((r) => r.name === "judge-composite-layout"),
     ac31: last((r) => r.name === "judge-ac31"),

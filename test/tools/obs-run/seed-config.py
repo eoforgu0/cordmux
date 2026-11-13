@@ -240,6 +240,8 @@ def parse_args(argv):
                         help="decoder of settings.json (default software, as the product)")
     parser.add_argument("--display-buffer-ms", type=int, default=None,
                         help="display_buffer_ms of settings.json (0 to 1000; omitted = not written, the product default)")
+    parser.add_argument("--js-log-ring-lines", type=int, default=None,
+                        help="js_log_ring_lines of settings.json (0 to 10000; omitted = not written, the product default)")
     parser.add_argument("--label-plate", action="store_true",
                         help="write label_show_plate=true and label_plate_opacity_pct=75 (the premise of plate_measure.py; omitted = the product defaults)")
     parser.add_argument("--allow-state-json-write", action="store_true",
@@ -730,6 +732,12 @@ def cordmux_settings(args, record_dir, state_json_write):
             if not 0 <= args.display_buffer_ms <= 1000:
                 raise SystemExit("--display-buffer-ms must be 0 to 1000")
             settings["display_buffer_ms"] = int(args.display_buffer_ms)
+        # 送信側の統計の行を受信側に残す行数 (src-obs/config/settings.h の js_log_ring_lines)。渡されたときだけ書く (call-1 の --av-diag)。
+        # 範囲は製品の kJsLogRingMinLines と kJsLogRingMaxLines と同じ。
+        if args.js_log_ring_lines is not None:
+            if not 0 <= args.js_log_ring_lines <= 10000:
+                raise SystemExit("--js-log-ring-lines must be 0 to 10000")
+            settings["js_log_ring_lines"] = int(args.js_log_ring_lines)
         # 名前ラベルの板 (plate_measure.py で測る)。既定の板は不透明度 50% (label_show_plate は既定で true) なので、
         # plate_measure.py の前提 (黒の 75%) で出す。渡されたときだけ書く。
         if args.label_plate:
@@ -1241,6 +1249,22 @@ def selftest():
                                                    "--real-profile", "--shape", "user", "--dry-run"]))
         check(guard is None and public_result(plan)["allowStateJsonWrite"] is False and public_result(plan)["settings"] is not None,
               "dry-run of real profile + user shape shows false")
+
+        # (8d) --js-log-ring-lines (call-1 の --av-diag) は test の形の settings.json に書き、渡さなければ書かない。範囲の外は断る。
+        def js_ring_settings(extra):
+            plan_js, guard_js, _ = build_plan(parse_args_t([os.path.join(tmp, "dry-js"), os.path.join(tmp, "dry-js-out"), "--step", "call-1",
+                                                            "--real-profile", "--dry-run"] + extra))
+            return guard_js, (public_result(plan_js)["settings"] or {}) if guard_js is None else {}
+        guard_js, s_js = js_ring_settings(["--js-log-ring-lines", "10000"])
+        check(guard_js is None and s_js.get("js_log_ring_lines") == 10000, "--js-log-ring-lines writes js_log_ring_lines")
+        guard_js, s_js = js_ring_settings([])
+        check(guard_js is None and "js_log_ring_lines" not in s_js, "without --js-log-ring-lines the key is not written")
+        try:
+            js_ring_settings(["--js-log-ring-lines", "10001"])
+            refused = False
+        except SystemExit:
+            refused = True
+        check(refused, "--js-log-ring-lines over 10000 is refused")
 
         # (8c) 前の実行の保存状態 (STALE_STATE_FILES) は実行の始めに消え、バックアップ (vencord_dir_backup.json) は残る。dry-run は消さない。
         obs9c = os.path.join(tmp, "stale")

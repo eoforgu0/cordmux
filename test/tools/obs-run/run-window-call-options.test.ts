@@ -93,11 +93,11 @@ function jaIniKeys(): Set<string> {
 }
 
 describe("call-1 のオプションの引数 (CALL_ONE_OPTION_FLAGS)", () => {
-    it("10 個とも値を取らない真偽のオプションで、既定は全部なし (7 つ目の --skip-export-bundle は書き出しのバンドルの確認を省く、8 つ目の --recheck は短い再確認、9 つ目の --av-check は再確認に A/V の測定を足す、10 個目の --av-only は再確認を A/V の測定と締めだけにする)", () => {
-        expect(CALL_ONE_OPTION_FLAGS).toEqual(["--start-with-add", "--vesktop-share", "--skip-continuous", "--skip-av2", "--skip-speaker-mute", "--extra-checks", "--skip-export-bundle", "--recheck", "--av-check", "--av-only"]);
+    it("12 個とも値を取らない真偽のオプションで、既定は全部なし (7 つ目の --skip-export-bundle は書き出しのバンドルの確認を省く、8 つ目の --recheck は短い再確認、9 つ目の --av-check は再確認に A/V の測定を足す、10 個目の --av-only は再確認を A/V の測定と締めだけにする、11 個目の --av-diag は送信側の av diag の行を残す準備を足す、12 個目の --av-desktop はデスクトップ版の Discord の画面全体の共有の測定を足す)", () => {
+        expect(CALL_ONE_OPTION_FLAGS).toEqual(["--start-with-add", "--vesktop-share", "--skip-continuous", "--skip-av2", "--skip-speaker-mute", "--extra-checks", "--skip-export-bundle", "--recheck", "--av-check", "--av-only", "--av-diag", "--av-desktop"]);
         const keys = ["startWithAdd", "vesktopShare", "skipContinuous", "skipAv2", "skipSpeakerMute", "extraChecks", "skipExportBundle"];
         const plain = parseArgs(REAL).args;
-        for (const key of [...keys, "recheck", "avCheck", "avOnly"]) expect(plain[key]).toBe(false);
+        for (const key of [...keys, "recheck", "avCheck", "avOnly", "avDiag", "avDesktop"]) expect(plain[key]).toBe(false);
         const all = parseArgs([...REAL, ...STAGE, "--skip-av2", "--skip-export-bundle"]);
         expect(all.errors).toEqual([]);
         for (const key of keys) expect(all.args[key]).toBe(true);
