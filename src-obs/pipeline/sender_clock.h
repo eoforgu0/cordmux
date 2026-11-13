@@ -14,18 +14,26 @@
 namespace cordmux::pipeline {
 
 // 送信側の時計が OBS の時計と同じ値のとき (use_shared_clock)、組の値 (受け取った時の OBS の時計 - 送信側の読み) は届くまでの
-// 遅れで、負にならない。ただし送信側の時計は、ページの原点の TimeTicks を求めた値の上にあり、その誤差 (上限 1 ms。
-// src-vencord/encode/ticks_origin.ts の TICKS_ORIGIN_ERROR_MAX_US) の分だけ負になりうる。最小の組がこれより負なら、
-// 同じ時計という前提が崩れている (呼び出し元がログに書く)。
-inline constexpr std::int64_t kSharedClockToleranceUs = 1000;
+// 遅れで、負にならない。ただし送信側の読みは「求めたページの原点の TimeTicks + performance.now()」で、次の誤差の和の分だけ
+// 先に出うる。最小の組がこれより負なら、同じ時計という前提が崩れている。
+//   - ページの原点の TimeTicks の誤差。送信側は上限 1000 us を超えたら使わない (src-vencord/encode/ticks_origin.ts の
+//     TICKS_ORIGIN_ERROR_MAX_US)
+//   - performance.now() の丸め。100 us の格子 (cross-origin isolated でないページ。src-vencord/encode/ticks_origin.ts の
+//     pageClampUs) で、1 つの読みの誤差は 100 us より小さい
+//   - OBS の時計と TimeTicks の切り捨ての違い 1 us
+// 3 つの値は src-vencord/tests/encode_shared_constants.test.ts が送信側の値と比べる。
+inline constexpr std::int64_t kSharedClockToleranceUs = 1000 + 100 + 1;
 
 // 送信側の時計が OBS の時計と同じとき、最小の組がこの値より大きいままなら、送信側の時計が OBS の時計より遅れている
 // (同じ時計という前提が崩れている) とみなす (マイクロ秒)。最小の組は、最も早く届いたメッセージの届くまでの遅れに、送信側の
-// ページの原点の TimeTicks の誤差 (上限 kSharedClockToleranceUs) を足した値である。同じ PC の中の WebSocket で届くまでの
-// 遅れは、今までの差の見積もり (最小値) が接続の初めに数回だけ、合わせて 0.5 ms ほど下がって止まること (2026-11-13 の
-// 2 回の通話のログ) から、1 ms 未満と見込む。それに誤差の上限を足しても 2 ms で、その 2 倍を超える 5 ms を境にした。
-// 境を超えて見積もりに戻っても、今までの差の見積もりの動きになるだけで、映像と音声の関係は崩れない。目安の値を含む。
-inline constexpr std::int64_t kSharedClockBehindUs = 5000;
+// 誤差 (上限 kSharedClockToleranceUs) を足した値である。届くまでの遅れには、送信側で pong が映像の送信の後ろに並ぶ分と、
+// 受信側でバイナリーのメッセージを処理した後に読む分が入るので、重い負荷 (ゲームの配信) の間は、1 分のどの組も数 ms から
+// 数百 ms 遅れうる (推測。測っていない)。ここで見積もりに戻ると、差 0 の正確さを失う。一方、前提が崩れる原因 (送信側の時計が
+// QueryPerformanceCounter でない、ページの原点を取り違えた) では、ずれは秒の桁以上になる (システム時刻を元にした
+// performance.timeOrigin と TimeTicks の差は PC を起動してからの時間の桁。粗い刻みの経路は送信側が使わない)。そこで、
+// いつもの負荷の遅れでは届かず、時計の取り違えなら必ず超える 1 秒を境にした。目安の値で、測って決めたものではない。
+// 遅れの監視は統計の行 (Sender clock delay) で読む。
+inline constexpr std::int64_t kSharedClockBehindUs = 1000000;
 
 // kSharedClockBehindUs で決めるのに要る組の数。hello と、5 秒ごとの ping の pong を 1 分ぶん見る。最初の数組は送信側の
 // JavaScript が忙しい時に届いて遅れることがある (hello は接続の処理の途中に作る) ので、最小が下がりきるまで待つ。

@@ -102,6 +102,10 @@ TEST_CASE("送信側の時計が OBS の時計と同じなら、組がなくて�
 	CHECK(clock.samples() == 3);
 	// 送信側の時計が先に進んでいる (前提が崩れた) と、最小値が負になる。差は 0 のまま。
 	CHECK(clock.note(s + 15'000'000, s + 15'000'000 - 4'000));
+	// 送信側の誤差の上限 (1000 + 100 + 1 us) の内なら、前提は崩れていない。
+	CHECK(cordmux::pipeline::shared_clock_verdict(-1101, 1) == cordmux::pipeline::SharedClockVerdict::Holds);
+	// 重い負荷で、1 分のどの組も数百 ms 遅れても、送信側が遅れているとはみなさない。
+	CHECK(cordmux::pipeline::shared_clock_verdict(400'000, 12) == cordmux::pipeline::SharedClockVerdict::Holds);
 	CHECK(*clock.min_sample_us() < -cordmux::pipeline::kSharedClockToleranceUs);
 	CHECK(clock.offset_us() == std::optional<std::int64_t>(0));
 }
