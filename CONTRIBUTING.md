@@ -196,7 +196,7 @@ python test/lint/<lint の名前>.py --selftest
 
 問題が見つかると、終了コード 1 で終わります。`--selftest` は、その lint が NG 例を検出し、OK 例を検出しないことを確認します。lint の一覧と引数は、docs/testing.md の「lint とセルフテスト」にあります。
 
-コメントや文書を変えたときは、references.py (リポジトリにないファイルや見出しへの参照など) と user_paths.py (ユーザー名の入ったパス) をローカルで実行してください。この 2 つは CI で実行していません。
+コメントや文書を変えたときは、references.py (リポジトリにないファイルや見出しへの参照) をローカルで実行してください。CI では実行していません。
 
 ## CI
 
@@ -210,7 +210,6 @@ OBS と Vesktop を起動して確認する実機テストは、CI では実行�
 
 - 識別子は英語、コメントとテストの名前は日本語で書きます。
 - ファイルは UTF-8 で、改行は LF にします (.editorconfig と .gitattributes)。.ps1 は BOM 付きの UTF-8 にします。
-- 図と、桁をそろえる表とツールの出力には、曖昧幅の文字 (矢印、罫線、丸数字など) を使いません。
 - C++ のコードは、src-obs/.clang-format に合わせて整形します (clang-format 16 以降)。
 
 画面の文言 (src-obs/data/locale の ja-JP.ini と en-US.ini) と手順書 (guide/ja.md と guide/en.md) は、docs/ui_guidelines.md に従って、日本語と英語の両方を書きます。
