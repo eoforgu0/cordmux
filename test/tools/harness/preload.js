@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld('harness', {
   // clock-probe モードが、メインのプロセスの process.hrtime.bigint() (ナノ秒) を 10 進の文字列で受け取る。往復の時間を
   // 短くするため同期の IPC にする (main.js の hrtime-sync)。
   hrtimeNs: () => ipcRenderer.sendSync('hrtime-sync'),
+  // 同じ値を非同期の IPC で受け取る (main.js の hrtime-invoke)。製品の Vencord のプラグインの native の呼び出しと同じ
+  // ipcRenderer.invoke で、contextBridge を通す形も製品の VencordNative と同じ。
+  hrtimeNsAsync: () => ipcRenderer.invoke('hrtime-invoke'),
   // レンダラーは process.env に触れないため、モード切り替えに要る値だけここで渡す。
   env: {
     mode: process.env.HARNESS_MODE || null,
@@ -93,6 +96,9 @@ contextBridge.exposeInMainWorld('harness', {
     // src-vencord/version.ts の CORDMUX_BUILD_ID を使う。CI の zip で実行するときは、実行スクリプトが zip の
     // 同梱の印 (cordmux-build.txt) の build_id を渡すと、バージョンの食い違いの行が出ない。
     helloVersion: process.env.HARNESS_HELLO_VERSION || null,
+    // 送信側の時計 (product モード)。'page' なら、ページの原点の TimeTicks を求めず、起動のときのシステム時刻を原点にする
+    // (受信側が差を決める古い形)。それ以外は、製品と同じく求めて QueryPerformanceCounter の時計にする。
+    clockBase: process.env.HARNESS_CLOCK_BASE || null,
     // clock-probe モードの長さ (秒)。名前は product モードと同じ HARNESS_SECONDS で、既定だけが違う (60 秒)。
     clockProbeSeconds: Number(process.env.HARNESS_SECONDS) || 60,
     // HARNESS_STREAM は運ばない: --stream は OBS 側 (obs-websocket の StartStream/StopStream) と

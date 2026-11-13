@@ -16,7 +16,7 @@ cordmux の受信側 (OBS のプラグイン) に、映像と音声を送るテ�
 
 | ファイル | 役割 |
 |---|---|
-| `main.js` | Electron のメインプロセス。隠しウィンドウを開き、結果の JSON を書き、レンダラーに代わってファイルを読み書きする。clock-probe モードには `process.hrtime` の値を返す |
+| `main.js` | Electron のメインプロセス。隠しウィンドウを開き、結果の JSON を書き、レンダラーに代わってファイルを読み書きする。clock-probe モードには `process.hrtime` の値を、同期と非同期の IPC で返す |
 | `preload.js` | 環境変数と、メインプロセスの機能を、レンダラーに渡す |
 | `index.html` | tests、sustain、send のモードで読み込むページ (`renderer.js` を読む) |
 | `renderer.js` | tests、sustain、send のモードの本体 |
@@ -214,6 +214,7 @@ HARNESS_MODE=product HARNESS_NSCREEN=2 HARNESS_NVOICE=1 CORDMUX_HANDSHAKE_DIR=<�
 | `HARNESS_VOICE_USERS` | 未指定 | 声のストリームごとの userId。カンマで並べ、i 番目の項目が i 番目の声のストリームの持ち主になる。画面共有している人の userId (`harness-screen-2` など) を書くと、その人の声になり、その人の枠に話している人の光が出る。項目がない、空、英数字と `_` と `-` の 64 文字まで以外、同じ userId の 2 本目、ほかの声の既定の userId は、既定の `harness-voice-<番号>` になる (`parseVoiceUsers`) |
 | `HARNESS_FRAMES_PAUSE_FILE` | 未指定 | 映像のフレームを止めるファイルの場所 (下の「フレームを止める」) |
 | `HARNESS_HELLO_VERSION` | `CORDMUX_BUILD_ID` | hello の `version` に載せる文字列。zip で配布するバージョン (`<version>+<短いコミット>`) を使うときは、zip の `cordmux-build.txt` の `build_id` を渡す。空、空白や制御文字を含むもの、64 文字を超えるものは、既定になる (`parseHelloVersion`) |
+| `HARNESS_CLOCK_BASE` | `qpc` | 送信側の時計。`qpc` は製品と同じく、ページの原点の TimeTicks を求めて (`src-vencord/encode/ticks_origin.ts`。主プロセスの `process.hrtime` を非同期の IPC ではさむ)、OBS の時計と同じ時計で送り、hello に `clock_base` を載せる。求められなければ `page` と同じ。`page` は、起動のときのシステム時刻を原点にする古い形 (受信側が差を決める) |
 | `CORDMUX_HANDSHAKE_DIR` | 未指定 | `session.json` があるフォルダー。未指定ならトークンを読めない扱いになる |
 | `CORDMUX_HARNESS_VOICE_TONE_FILE` | 未指定 | 声に音を乗せるファイルの場所 (下の「声に音を乗せる」) |
 | `CORDMUX_HARNESS_AVATAR_DIR` | 未指定 | 送ったアバターの PNG を書き出すフォルダー (下の「アバターを書き出す」) |
@@ -277,6 +278,7 @@ stream id は、画面共有と声を通した 1 つの通し番号である (�
 - `voiceTone`: 声に音を乗せた記録 (`{ file, intervals, ignoredTargets, readErrors }`)。`intervals[]` の形と時刻の意味は `framesPause` と同じ (`framesWithheld` はない)。使わなかったときは `null`。
 - `avatarExport`: 書き出した userId と、書き出せなかった userId。
 - `screenImages`: 画像を渡した画面共有ごとの `{ index, file, state, width?, height?, message? }`。`state` は `loaded`、読めなかった理由 (`absent`、`too-large`、`error`、`rejected`)、`decode-failed` のどれか。画像を 1 枚も渡さなかったときは `null`。
+- `clock`: 送信側の時計を決めたときのログの行 (`clock: base=qpc ticks_origin_us=... error_us=...` か `clock: base=page reason=...`)。受信側にも、確立のたびにログの行として送る。作り物のタイムスタンプ (生成の予定時刻) は、この時計の上に置く。qpc では、音声のタイムスタンプは TimeTicks の値として見積もりなしに送り、映像は先行が負なので見積もりの換算 (`clock_map.ts`) になる。
 - `aborted`、`fatalError`: 想定外の例外で終わったとき。
 
 ## clock-probe モード
@@ -292,7 +294,8 @@ stream id は、画面共有と声を通した 1 つの通し番号である (�
 - 受けた映像は、`MediaStreamTrackProcessor` と、文書に付けた `<video>` の `requestVideoFrameCallback` の 2 か所で読み、RTP のタイムスタンプで同じフレームを組にする。取り込みの時刻が付いたフレームでは、`VideoFrame.timestamp` が Chromium の単調な時計 (TimeTicks) の値で、`captureTime` がページの原点 (`performance.now()` が 0 の時点) からの値なので、2 つの差がページの原点の TimeTicks の値になる。隠しウィンドウでは、`requestVideoFrameCallback` は 1 秒に 1 回ほどしか呼ばれないので、組の数は送った秒数とほぼ同じになる。
 - 受けた音声は `MediaStreamTrackProcessor` で読む。WebRTC は、受けた音声を再生しないと取り出さないので、2 秒たっても音声が届かなければ、ミュートで音量 0 の `<audio>` に付ける。
 - 音を出さない: 送る音声は `AudioContext` の発振器から作り、`MediaStreamAudioDestinationNode` にだけつなぐ。`AudioContext` は、出力の装置を使わない指定 (`sinkId` の `type` が `none`) で作る。`<video>` と `<audio>` はミュートにする。ウィンドウは、ほかのモードと同じく `show: false` で表示されない。
-- 100 ms ごとに、`performance.now()` で、メインプロセスの `process.hrtime.bigint()` の読みをはさむ (同期の IPC)。Node の `process.hrtime` は Windows では QueryPerformanceCounter から作るので、ページの原点の TimeTicks の値の範囲が、WebRTC を使わない別の方法でも出る。
+- 100 ms ごとに、`performance.now()` で、メインプロセスの `process.hrtime.bigint()` の読みをはさむ。同期の IPC と、製品の Vencord のプラグインの native の呼び出しと同じ非同期の IPC (`ipcRenderer.invoke`) の両方で取る。Node の `process.hrtime` は Windows では QueryPerformanceCounter から作るので、ページの原点の TimeTicks の値の範囲が、WebRTC を使わない別の方法でも出る。
+- 製品がページの原点の TimeTicks を求める関数 (`src-vencord/encode/ticks_origin.ts` の `measureTicksOrigin`) を、そのまま 5 回動かす (WebRTC の接続を作る前、送受信の 25%、50%、75% の時点、止めた後)。
 
 ### 起動
 
@@ -312,7 +315,9 @@ HARNESS_MODE=clock-probe HARNESS_SECONDS=120 npx electron .
 - `facts`: `crossOriginIsolated` (偽なら、ページに見せる時刻の丸めは 100 us)、`timeOriginUs` (`performance.timeOrigin` をマイクロ秒にした値)、映像の作り方、`AudioContext` の出力の装置の指定、接続ごとの ICE の候補の数と mDNS の名前を使ったか、映像の RTCP の指定、終わりの接続の状態。候補のアドレスそのものは書かない。
 - `summary.origin`: ページの原点の TimeTicks の値 (`originUs`。組ごとの値の中央値) と、組の数、組ごとの値の幅 (`spreadUs`)、前の 1 割と後ろの 1 割の差 (`driftUs`)。
 - `summary.originCandidatesReceiveOnly`: 受けるだけの組で、取り込みの時刻が付いたフレームの組の数。
-- `summary.hrtime`: `process.hrtime` をはさんだ組から出した、ページの原点の範囲 (`loUs`、`hiUs`) と、往復の時間の分布と、`originUs` との差。
+- `summary.hrtime`: `process.hrtime` を同期の IPC ではさんだ組から出した、ページの原点の範囲 (`loUs`、`hiUs`) と、往復の時間の分布と、`originUs` との差。
+- `summary.asyncHrtime`: 非同期の IPC ではさんだ組の共通部分 (製品の `originFromBrackets`) と、往復の時間の分布 (`rttUs`、100 us ごとの `rttUsHistogram100us`)、`originUs` との差 (`minusWebrtcUs`)。
+- `summary.calibrations[]`: 製品の `measureTicksOrigin` の 5 回の結果。`ok`、使えなかった理由 (`reason`)、値 (`originUs`)、誤差の上限 (`errorUs`)、`originUs` との差 (`minusWebrtcUs`) と、差が誤差の上限 + 100 us の内か (`withinBound`)。
 - `summary.timeOriginMinusOriginUs`: `performance.timeOrigin` と、ページの原点の TimeTicks の値の差。ページを作ったときの「システム時刻 - TimeTicks」で、ページごとに違う。
 - `summary.ticksAtStart`、`summary.ticksAtEnd`: `performance.now()` を 20 ms 続けて読んだときの、1 ms あたりの異なる値の数 (`distinctPerMs`) と刻み。
 - `summary.sendIntervalUs`: 1 つ目の接続の映像を書いた間隔の分布。
@@ -327,6 +332,7 @@ Chromium のバージョンが変わったら、このモードを動かして�
 
 - `summary.origin.spreadUs` が 200 以下で、`driftUs` が 0 に近い。
 - `summary.origin.originUs` が、`summary.hrtime` の範囲から、丸めの 100 us ほどの内にある。外れれば、TimeTicks が QueryPerformanceCounter から作られていない。
+- `summary.calibrations[]` の全部で `ok` と `withinBound` が真。偽なら、製品はページの原点の TimeTicks を使わず、今までの換算に戻る。
 - `summary.ticksAtStart.profile.distinctPerMs` が 10 に近い。1 に近ければ、TimeTicks が 1 ms の分解能の経路を使っている。
 - `summary.video[1].classification.kind` が `render-time` で、`signAgrees` が真。`summary.originCandidatesReceiveOnly` が 0。
 - `summary.video[0].steady.classification.kind` が `capture-time`。

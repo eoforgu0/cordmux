@@ -209,6 +209,11 @@ ipcMain.on('hrtime-sync', (event) => {
   event.returnValue = process.hrtime.bigint().toString();
 });
 
+// 同じ値を非同期の IPC (ipcMain.handle と ipcRenderer.invoke) で返す。製品の Vencord のプラグインの native の呼び出し
+// (src-vencord/native.ts の hrtimeNs。Vencord の VencordNative.pluginHelpers は ipcRenderer.invoke で呼ぶ) と同じ仕組みで、
+// 往復の時間と、ページの原点の TimeTicks の誤差を測る。
+ipcMain.handle('hrtime-invoke', () => process.hrtime.bigint().toString());
+
 ipcMain.handle('result', (event, json) => {
   if (timeoutHandle) clearTimeout(timeoutHandle);
   writeResult(json, 'reported');

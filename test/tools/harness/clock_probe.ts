@@ -37,6 +37,13 @@ import {
     type HrtimeBracket,
     type ProcessorFrame,
 } from "./clock_probe_pure";
+import {
+    measureTicksOrigin,
+    originFromBrackets as productOriginFromBrackets,
+    pageClampUs,
+    type HrtimeBracket as ProductHrtimeBracket,
+    type TicksOriginResult,
+} from "../../../src-vencord/encode/ticks_origin";
 
 /** preload.js が渡す関数と値のうち、このモードが使うもの。 */
 interface ClockProbeBridge {
@@ -44,6 +51,8 @@ interface ClockProbeBridge {
     progress(obj: unknown): void;
     /** メインのプロセスの process.hrtime.bigint() (ナノ秒) を 10 進の文字列で返す。同期の IPC で呼ぶ。 */
     hrtimeNs(): string;
+    /** 同じ値を非同期の IPC (ipcRenderer.invoke) で返す。製品の Vencord のプラグインの native の呼び出しと同じ仕組み。 */
+    hrtimeNsAsync(): Promise<string>;
     env: Record<string, unknown>;
 }
 
@@ -474,6 +483,44 @@ function bracket(): HrtimeBracket {
     return { beforeMs, hrtimeNs, afterMs };
 }
 
+/** 非同期の IPC (製品と同じ ipcRenderer.invoke) で、process.hrtime をはさむ。 */
+async function bracketAsync(): Promise<ProductHrtimeBracket> {
+    const beforeMs = performance.now();
+    const text = await bridge.hrtimeNsAsync();
+    const afterMs = performance.now();
+    return { beforeMs, hrtimeNs: BigInt(text), afterMs };
+}
+
+/** 製品の measureTicksOrigin (src-vencord/encode/ticks_origin.ts) を、製品と同じ非同期の IPC で動かす。 */
+function calibrate(): Promise<TicksOriginResult> {
+    return measureTicksOrigin({
+        nowMs: () => performance.now(),
+        readHrtimeNs: () => bridge.hrtimeNsAsync(),
+        crossOriginIsolated: self.crossOriginIsolated,
+    });
+}
+
+/** 製品の求め方の結果を、両方向の接続で求めた値 (webrtcOriginUs) と比べられる形にする。 */
+function calibrationSummary(label: string, atMs: number, result: TicksOriginResult, webrtcOriginUs: number | null): Record<string, unknown> {
+    const originUs = result.ok ? Number(result.originUs) : null;
+    const diffUs = originUs !== null && webrtcOriginUs !== null ? originUs - webrtcOriginUs : null;
+    return {
+        label,
+        atMs,
+        ok: result.ok,
+        reason: result.ok ? null : result.reason,
+        originUs,
+        errorUs: result.ok ? result.errorUs : null,
+        brackets: result.brackets ?? null,
+        ticksPerMs: result.ticks?.distinctPerMs ?? null,
+        clampUs: result.clampUs,
+        // 製品の値 - 両方向の接続の値。両方向の接続の値も 1 ms の格子の VideoFrame.timestamp と丸めた captureTime の差なので、
+        // 誤差の上限 + 丸めの 1 つ分 (100 us) に収まれば合う。
+        minusWebrtcUs: diffUs,
+        withinBound: diffUs !== null && result.ok ? Math.abs(diffUs) <= result.errorUs + pageClampUs(self.crossOriginIsolated) : null,
+    };
+}
+
 /** getStats() の中から、時刻と遅延に関わる値だけを残す。 */
 function pickStats(report: RTCStatsReport): Array<Record<string, unknown>> {
     const codecs = new Map<string, string>();
@@ -619,6 +666,9 @@ async function run(): Promise<Record<string, unknown>> {
         generatorAvailable: typeof MediaStreamTrackGenerator === "function",
     };
     const ticksAtStart = sampleTicks();
+    // 製品の求め方を、WebRTC の接続を作る前 (レンダラーが空いているとき) に 1 回動かす。
+    const calibrations: Array<{ label: string; atMs: number; result: TicksOriginResult }> = [];
+    calibrations.push({ label: "before-webrtc", atMs: performance.now(), result: await calibrate() });
 
     let stopped = false;
     const isStopped = (): boolean => stopped;
@@ -679,6 +729,7 @@ async function run(): Promise<Record<string, unknown>> {
     const endMs = startMs + seconds * 1000;
     const sentMs: number[] = [];
     const brackets: HrtimeBracket[] = [];
+    const asyncBrackets: ProductHrtimeBracket[] = [];
     const stats: Array<{ atMs: number; pc: string; rows: Array<Record<string, unknown>> }> = [];
     const pcs: Array<[string, RTCPeerConnection]> = [
         ["A", pcA],
@@ -709,6 +760,23 @@ async function run(): Promise<Record<string, unknown>> {
                 await sleep(BRACKET_INTERVAL_MS);
             }
         })(),
+        // 非同期の IPC の組を、同期の組と同じ間隔で取る (往復の時間の分布を、製品と同じ仕組みで測る)。
+        (async () => {
+            await sleep(BRACKET_INTERVAL_MS / 2);
+            while (performance.now() < endMs) {
+                asyncBrackets.push(await bracketAsync());
+                await sleep(BRACKET_INTERVAL_MS);
+            }
+        })(),
+        // 映像と音声を送受信している間 (レンダラーが忙しいとき) に、製品の求め方を動かす。
+        (async () => {
+            for (const fraction of [0.25, 0.5, 0.75]) {
+                const atMs = startMs + (endMs - startMs) * fraction;
+                const waitMs = atMs - performance.now();
+                if (waitMs > 0) await sleep(waitMs);
+                calibrations.push({ label: `during-${Math.round(fraction * 100)}pct`, atMs: performance.now(), result: await calibrate() });
+            }
+        })(),
         (async () => {
             while (performance.now() < endMs) {
                 await sleep(STATS_INTERVAL_MS);
@@ -731,6 +799,7 @@ async function run(): Promise<Record<string, unknown>> {
 
     stopped = true;
     const ticksAtEnd = sampleTicks();
+    calibrations.push({ label: "after-stop", atMs: performance.now(), result: await calibrate() });
     for (const sink of [videoB, videoD]) sink.cancel();
     for (const sink of [audioB, audioD]) sink.cancel();
     await Promise.race([Promise.all(readers), sleep(1000)]);
@@ -754,6 +823,8 @@ async function run(): Promise<Record<string, unknown>> {
     const origin = estimateOrigin(candidatesB);
     const originUs = origin === null ? null : origin.originUs;
     const fromBrackets = originFromBrackets(brackets);
+    const fromAsyncBrackets = productOriginFromBrackets(asyncBrackets, pageClampUs(self.crossOriginIsolated));
+    const asyncRttUs = asyncBrackets.map((b) => Math.round((b.afterMs - b.beforeMs) * 1000));
     const timeOriginUs = facts.timeOriginUs as number;
     const sendIntervals = deltas(sentMs).map((d) => Math.round(d * 1000));
 
@@ -773,6 +844,18 @@ async function run(): Promise<Record<string, unknown>> {
                           originMinusLoUs: originUs === null ? null : originUs - fromBrackets.loUs,
                           hiMinusOriginUs: originUs === null ? null : fromBrackets.hiUs - originUs,
                       },
+            // 製品の求め方 (非同期の IPC) の結果と、両方向の接続で求めた値との差。
+            calibrations: calibrations.map((c) => calibrationSummary(c.label, c.atMs, c.result, originUs)),
+            // 実行の間ずっと非同期の IPC で取った組 (製品の originFromBrackets で共通部分を取る)。
+            asyncHrtime:
+                fromAsyncBrackets === undefined
+                    ? null
+                    : {
+                          ...fromAsyncBrackets,
+                          rttUs: summarize(asyncRttUs),
+                          rttUsHistogram100us: histogram(asyncRttUs, 100),
+                          minusWebrtcUs: originUs === null ? null : fromAsyncBrackets.originUs - originUs,
+                      },
             // performance.timeOrigin (システム時刻から作る) と、ページの原点の TimeTicks の値の差。
             timeOriginMinusOriginUs: originUs === null ? null : timeOriginUs - originUs,
             ticksAtStart,
@@ -786,6 +869,10 @@ async function run(): Promise<Record<string, unknown>> {
             sentMs,
             originCandidatesUs: candidatesB,
             brackets: columns(brackets, ["beforeMs", "hrtimeNs", "afterMs"]),
+            asyncBrackets: columns(
+                asyncBrackets.map((b) => ({ beforeMs: b.beforeMs, hrtimeNs: b.hrtimeNs.toString(), afterMs: b.afterMs })),
+                ["beforeMs", "hrtimeNs", "afterMs"],
+            ),
             video: [videoB, videoD].map((s) => ({
                 label: s.label,
                 processor: columns(s.processor, ["readMs", "timestampUs", "rtp"]),

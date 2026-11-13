@@ -272,6 +272,8 @@ import {
 } from "../../../src-vencord/encode/session";
 import { limitsFromWire, tightenLimits, type EncodeSessionLimits } from "../../../src-vencord/encode/limits";
 import { SerialGate } from "../../../src-vencord/encode/serial";
+import { qpcTimebase, type SenderTimebase } from "../../../src-vencord/encode/sender_clock";
+import { measureTicksOrigin, ticksOriginLogLine } from "../../../src-vencord/encode/ticks_origin";
 import type { VideoFrameSource } from "../../../src-vencord/encode/frame_source";
 import type { HardwareAccelerationPreference, LadderStage, SourceFormat } from "../../../src-vencord/encode/ladder";
 import type {
@@ -336,6 +338,8 @@ declare global {
             report(obj: unknown): Promise<void>;
             progress(obj: unknown): void;
             readSession(): Promise<{ port: number; secret: string } | null>;
+            /** 主プロセスの process.hrtime.bigint() (ns) を 10 進の文字列で返す (非同期の IPC。製品の native.ts の hrtimeNs と同じ仕組み)。 */
+            hrtimeNsAsync(): Promise<string>;
             /** フレームだけを止める通知ファイルの現在の状態 (主プロセスが読む)。 */
             readFramePause(): Promise<FramePauseFileState>;
             /** 声に音を乗せるファイルの現在の状態 (主プロセスが読む。形はフレームを止めるファイルと同じ)。 */
@@ -414,15 +418,27 @@ function errInfo(e: unknown): { name: string; message: string } {
 interface Clock {
     readonly startPerfMs: number;
     readonly epochUs0: bigint;
+    /**
+     * 製品の送信側の時計の決め方 (src-vencord/encode/sender_clock.ts)。ページの原点の TimeTicks を求められたときだけ qpc で、
+     * この時計は製品と同じく TimeTicks (OBS の時計と同じ QueryPerformanceCounter の us) になる。求めなかったときは undefined
+     * で、原点は起動のときのシステム時刻のまま (製品の page と同じく、受信側が差を決める)。
+     */
+    readonly timebase: SenderTimebase | undefined;
     nowUs(): bigint;
 }
 
-function createClock(): Clock {
-    const epochUs0 = BigInt(Date.now()) * 1_000n;
+/**
+ * ticksOriginUs (ページの原点の TimeTicks) を渡すと、製品の qpc と同じ時計にする。渡さなければ、起動のときのシステム時刻を
+ * 原点にする。
+ */
+function createClock(ticksOriginUs?: bigint): Clock {
     const startPerfMs = performance.now();
+    const epochUs0 =
+        ticksOriginUs === undefined ? BigInt(Date.now()) * 1_000n : ticksOriginUs + BigInt(Math.round(startPerfMs * 1000));
     return {
         startPerfMs,
         epochUs0,
+        timebase: ticksOriginUs === undefined ? undefined : qpcTimebase(ticksOriginUs),
         nowUs(): bigint {
             const elapsedUs = BigInt(Math.round((performance.now() - startPerfMs) * 1000));
             return epochUs0 + elapsedUs;
@@ -753,6 +769,7 @@ function buildEncodeDeps(gate: SerialGate, clock: Clock, failStage: number): Enc
         },
         gate,
         nowUs: () => clock.nowUs(),
+        timebase: clock.timebase,
         makeBlackFrame,
         scaleFrame,
     };
@@ -913,7 +930,7 @@ async function pumpAudio(
             continue;
         }
         if (!wasOpen) {
-            chunker = createAudioChunker();
+            chunker = createAudioChunker(clock.timebase);
             wasOpen = true;
         }
         // 到着の時刻はここで測る (製品の index.ts の pumpAudio と同じ形)。
@@ -968,6 +985,11 @@ export interface HarnessRunParams {
     avatarExportDir?: string;
     /** hello の `version` に載せる文字列。 */
     helloVersion: string;
+    /**
+     * 送信側の時計。qpc なら製品と同じくページの原点の TimeTicks を求め、OBS の時計と同じ時計で送る (hello の clock_base)。
+     * page なら起動のときのシステム時刻を原点にする古い形 (受信側が差を決める)。環境変数 HARNESS_CLOCK_BASE (既定 qpc)。
+     */
+    clockBase: "qpc" | "page";
 }
 
 export interface HarnessStreamResult {
@@ -1034,6 +1056,8 @@ export interface HarnessRunResult {
     avatarExport: { dir: string; written: string[]; failed: { userId: string; state: string }[] } | null;
     /** 画面に描く画像を読んだ結果 (画像を渡したストリームだけ)。画像を 1 枚も渡さなかったときと、途中で失敗したときは null。 */
     screenImages: ScreenImageLoad[] | null;
+    /** 送信側の時計を決めたときのログの行 (decideHarnessClock)。決める前に失敗したときは null。 */
+    clock: string | null;
     aborted: boolean;
     fatalError: { name: string; message: string } | null;
 }
@@ -1153,8 +1177,25 @@ function buildConfigureStreams(screens: readonly ScreenEntry[], voices: readonly
     return streams;
 }
 
+/**
+ * 製品と同じく、ページの原点の TimeTicks を求めて (src-vencord/encode/ticks_origin.ts)、送信側の時計を決める。params.clockBase
+ * が page なら求めない。返す行は、受信側に送るログの行 (製品の index.ts の clock の行と同じ形)。
+ */
+async function decideHarnessClock(params: HarnessRunParams): Promise<{ clock: Clock; line: string }> {
+    if (params.clockBase === "page") return { clock: createClock(), line: "clock: base=page reason=harness-setting" };
+    const result = await measureTicksOrigin({
+        nowMs: () => performance.now(),
+        readHrtimeNs: () => window.harness.hrtimeNsAsync(),
+        crossOriginIsolated: self.crossOriginIsolated === true,
+    });
+    return {
+        clock: createClock(result.ok ? result.originUs : undefined),
+        line: `${ticksOriginLogLine(result)} coi=${self.crossOriginIsolated === true}`,
+    };
+}
+
 async function runProduct(params: HarnessRunParams): Promise<HarnessRunResult> {
-    const clock = createClock();
+    const { clock, line: clockLine } = await decideHarnessClock(params);
     // マーカーの境界はメディアのタイムスタンプで決める (sender_pure.ts の SyncCoordinatorPure) ので、タイムスタンプの原点を渡す。
     const sync = new SyncCoordinatorPure(params.syncEverySec, clock.epochUs0);
     const gate = new SerialGate(); // エンコーダの確保は全ストリームで直列にする。
@@ -1547,12 +1588,13 @@ async function runProduct(params: HarnessRunParams): Promise<HarnessRunResult> {
             wireVersion: WIRE_VERSION,
             // hello と pong に載せる送信側の時計 (製品の index.ts と同じく、タイムスタンプと同じ時計を渡す)。
             clockUs: () => Number(clock.nowUs()),
+            clockBase: clock.timebase?.base === "qpc" ? "qpc" : undefined,
         },
         {
             onEstablished(): void {
                 establishedReached = true;
                 // OBS のログでテスト用の送信側だと見分ける 1 行 (確立のたびに送る)。
-                socketHandle?.sendControl({ type: "log", lines: [harnessIdentityLogLine(params.helloVersion)] });
+                socketHandle?.sendControl({ type: "log", lines: [harnessIdentityLogLine(params.helloVersion), clockLine] });
                 sendConfigureNow(); // media で閉じていれば空。
                 for (const e of screens) e.session.requestKeyframe();
                 // 潰した接点と、ストリームごとの現在の段を facts で
@@ -1731,6 +1773,7 @@ async function runProduct(params: HarnessRunParams): Promise<HarnessRunResult> {
                 ? null
                 : { dir: avatarExport.dir, written: [...avatarExport.written], failed: [...avatarExport.failed] },
         screenImages: (params.screenImages ?? []).some((f) => f !== null) ? screenImageLoads : null,
+        clock: clockLine,
         aborted: false,
         fatalError: null,
     };
@@ -1759,6 +1802,7 @@ export async function run(params: HarnessRunParams): Promise<HarnessRunResult> {
             voiceTone: null,
             avatarExport: null,
             screenImages: null,
+            clock: null,
             aborted: true,
             fatalError: errInfo(e),
         };
@@ -1804,6 +1848,7 @@ function paramsFromEnv(env: Record<string, unknown>): HarnessRunParams {
         voiceToneFile: parseFramePauseFile(env.voiceToneFile),
         avatarExportDir: parseFramePauseFile(env.avatarExportDir),
         helloVersion: parseHelloVersion(env.helloVersion, CORDMUX_BUILD_ID),
+        clockBase: env.clockBase === "page" ? "page" : "qpc",
     };
 }
 
