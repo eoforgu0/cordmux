@@ -57,6 +57,25 @@ TEST_CASE("hello と pong の clock_us (送信側の時計) は往復し、0 以
 	CHECK_FALSE(bad_hello->clock_us.has_value());
 }
 
+TEST_CASE("hello の clock_base は文字列の qpc だけを読み、ほかはキーがないものとして hello を捨てない")
+{
+	HelloMessage hello{1, "vencord-1.2.3", "deadbeef"};
+	CHECK(parse_hello(*try_parse_json(build_hello(hello)))->clock_base == SenderClockBase::Unspecified);
+	hello.clock_base = SenderClockBase::Qpc;
+	const std::string text = build_hello(hello);
+	CHECK(text.find(R"("clock_base":"qpc")") != std::string::npos);
+	CHECK(parse_hello(*try_parse_json(text))->clock_base == SenderClockBase::Qpc);
+
+	for (const char *bad : {R"({"type":"hello","wire":1,"secret":"x","version":"v","clock_base":"QPC"})",
+				R"({"type":"hello","wire":1,"secret":"x","version":"v","clock_base":"page"})",
+				R"({"type":"hello","wire":1,"secret":"x","version":"v","clock_base":1})",
+				R"({"type":"hello","wire":1,"secret":"x","version":"v","clock_base":null})"}) {
+		const auto h = parse_hello(*try_parse_json(bad));
+		REQUIRE(h.has_value());
+		CHECK(h->clock_base == SenderClockBase::Unspecified);
+	}
+}
+
 TEST_CASE("secret か wire がないか型が違う hello には、parse_hello が例外を投げずに nullopt を返す")
 {
 	CHECK_FALSE(parse_hello(*try_parse_json(R"({"type":"hello","wire":0})")).has_value());

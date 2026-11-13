@@ -14,6 +14,7 @@
 
 using cordmux::pipeline::frame_pacer_capacity;
 using cordmux::pipeline::FramePacer;
+using cordmux::pipeline::kFramePacerMaxAheadUs;
 using cordmux::pipeline::FramePacerStats;
 using cordmux::pipeline::PacedTake;
 
@@ -114,16 +115,40 @@ TEST_CASE("古い時刻のフレームが、新しいフレームの後に渡さ
 	CHECK(pacer.empty());
 }
 
-TEST_CASE("送信側の時計が進んでいて age が負でも、待つ長さは積んだ時点から最長でも D である")
+TEST_CASE("タイムスタンプが今より先にある (描く予定の時刻のまま送られた) フレームは、タイムスタンプ + D に渡す")
+{
+	FramePacer<Frame> pacer = make_pacer(100000);
+	// 描く予定の時刻が 14 ms 先のフレームと、受信を始めた直後の 160 ms 先のフレーム。
+	pacer.push(2000000, -14000, 100, Frame{1});
+	CHECK(pacer.next_release_us().value() == 2000000 + 14000 + 100000);
+	CHECK_FALSE(pacer.take(2113999).item.has_value());
+	const PacedTake<Frame> first = pacer.take(2114000);
+	REQUIRE(first.item.has_value());
+	CHECK_FALSE(first.late);
+	// 統計でも、遅れて届いたフレームとしては数えない (時刻が来るまで待って渡した)。
+	const FramePacerStats stats = pacer.take_stats();
+	CHECK(stats.late == 0);
+	CHECK(stats.on_time == 1);
+	CHECK(stats.max_ahead_us == 14000);
+	CHECK(stats.ahead_capped == 0);
+	pacer.push(3000000, -160000, 100, Frame{2});
+	CHECK(pacer.next_release_us().value() == 3000000 + 160000 + 100000);
+}
+
+TEST_CASE("送信側の時計が大きく進んでいて age が負でも、待つ長さは積んだ時点から最長でも D + kFramePacerMaxAheadUs である")
 {
 	FramePacer<Frame> pacer = make_pacer(100000);
 	// 送信側の時計が 5 秒進んでいる (age = -5 秒)。そのまま使うと 5.1 秒待つ。
 	pacer.push(2000000, -5000000, 100, Frame{1});
-	CHECK(pacer.next_release_us().value() == 2100000);
-	CHECK_FALSE(pacer.take(2099999).item.has_value());
-	const PacedTake<Frame> taken = pacer.take(2100000);
+	CHECK(pacer.next_release_us().value() == 2000000 + kFramePacerMaxAheadUs + 100000);
+	CHECK_FALSE(pacer.take(2000000 + kFramePacerMaxAheadUs + 99999).item.has_value());
+	const PacedTake<Frame> taken = pacer.take(2000000 + kFramePacerMaxAheadUs + 100000);
 	REQUIRE(taken.item.has_value());
 	CHECK_FALSE(taken.late);
+	// 頭打ちにしたことと、先の長さの最大は統計に出る (受信側のログで確かめるため)。
+	const FramePacerStats stats = pacer.take_stats();
+	CHECK(stats.ahead_capped == 1);
+	CHECK(stats.max_ahead_us == 5000000);
 }
 
 TEST_CASE("age が非常に大きい (受信側の時計が大きく進んだ) フレームは、すぐ渡す側に倒れる")

@@ -84,6 +84,68 @@ TEST_CASE("10 時間続けても、どちらの時計も同じ単調な時計で
 	CHECK(changes < 20);
 }
 
+TEST_CASE("送信側の時計が OBS の時計と同じなら、組がなくても差は 0 で、最小の組は届くまでの遅れになる")
+{
+	SenderClockOffset clock;
+	clock.use_shared_clock();
+	CHECK(clock.shared_clock());
+	CHECK(clock.offset_us() == std::optional<std::int64_t>(0));
+	CHECK_FALSE(clock.min_sample_us().has_value());
+	// 送信側の読み s を、delay 後に受け取る。差は 0 のまま、最小値だけが下がる。
+	const std::int64_t s = 264'017'591'900;
+	CHECK(clock.note(s, s + 900));
+	CHECK(clock.note(s + 5'000'000, s + 5'000'000 + 250));
+	CHECK_FALSE(clock.note(s + 10'000'000, s + 10'000'000 + 3'000));
+	CHECK(clock.offset_us() == std::optional<std::int64_t>(0));
+	CHECK(clock.min_sample_us() == std::optional<std::int64_t>(250));
+	CHECK(clock.last_excess_us() == 3'000 - 250);
+	CHECK(clock.samples() == 3);
+	// 送信側の時計が先に進んでいる (前提が崩れた) と、最小値が負になる。差は 0 のまま。
+	CHECK(clock.note(s + 15'000'000, s + 15'000'000 - 4'000));
+	CHECK(*clock.min_sample_us() < -cordmux::pipeline::kSharedClockToleranceUs);
+	CHECK(clock.offset_us() == std::optional<std::int64_t>(0));
+}
+
+TEST_CASE("同じ時計という前提の判定: 先に進むのはすぐ、遅れるのは組が 12 個そろってから")
+{
+	using cordmux::pipeline::kSharedClockBehindSamples;
+	using cordmux::pipeline::kSharedClockBehindUs;
+	using cordmux::pipeline::kSharedClockToleranceUs;
+	using cordmux::pipeline::shared_clock_verdict;
+	using cordmux::pipeline::SharedClockVerdict;
+	CHECK(shared_clock_verdict(300, 1) == SharedClockVerdict::Holds);
+	CHECK(shared_clock_verdict(-kSharedClockToleranceUs, 1) == SharedClockVerdict::Holds);
+	CHECK(shared_clock_verdict(-kSharedClockToleranceUs - 1, 1) == SharedClockVerdict::SenderAhead);
+	// 遅れの向きは、最初の数組 (hello が忙しい時に届いて遅れる) では決めない。
+	CHECK(shared_clock_verdict(kSharedClockBehindUs + 1, kSharedClockBehindSamples - 1) == SharedClockVerdict::Holds);
+	CHECK(shared_clock_verdict(kSharedClockBehindUs, kSharedClockBehindSamples) == SharedClockVerdict::Holds);
+	CHECK(shared_clock_verdict(kSharedClockBehindUs + 1, kSharedClockBehindSamples) == SharedClockVerdict::SenderBehind);
+}
+
+TEST_CASE("同じ時計をやめると、差はこれまでの組の最小値になる")
+{
+	SenderClockOffset clock;
+	clock.use_shared_clock();
+	clock.note(1000, 9000);
+	clock.note(2000, 9500);
+	CHECK(clock.offset_us() == std::optional<std::int64_t>(0));
+	clock.leave_shared_clock();
+	CHECK_FALSE(clock.shared_clock());
+	CHECK(clock.offset_us() == std::optional<std::int64_t>(7500));
+}
+
+TEST_CASE("reset で、同じ時計の扱いも解く")
+{
+	SenderClockOffset clock;
+	clock.use_shared_clock();
+	clock.note(1000, 1100);
+	clock.reset();
+	CHECK_FALSE(clock.shared_clock());
+	CHECK_FALSE(clock.offset_us().has_value());
+	CHECK(clock.note(2000, 2100));
+	CHECK(clock.offset_us() == std::optional<std::int64_t>(100));
+}
+
 TEST_CASE("差が決まっていれば送信側のタイムスタンプに差を足し、決まっていなければ OBS の今を返す")
 {
 	CHECK(sender_to_obs_us(1'700'000'000'000'000, std::optional<std::int64_t>(kTrueOffset), 5) ==

@@ -306,6 +306,10 @@ public:
 	// キーがないメッセージでは呼ばない。io_thread から呼ぶ。nullptr でもよい。
 	std::function<void(std::int64_t sender_clock_us, std::int64_t received_us)> on_sender_clock;
 
+	// hello が運んだ送信側の時計の種類 (clock_base)。hello が通るたびに、on_connected の後、hello の on_sender_clock の前に
+	// 1 回呼ぶ (キーがないときは Unspecified で呼ぶ)。io_thread から呼ぶ。nullptr でもよい。
+	std::function<void(SenderClockBase base)> on_sender_clock_base;
+
 	// テキストのメッセージを受け取った時刻を読む時計 (us)。on_sender_clock の received_us に使う。Pipeline は OBS の時計
 	// (os_gettime_ns / 1000) を渡す (このフォルダーは libobs に依存しないので、時計は呼び出し元が決める)。nullptr なら
 	// received_us は 0 になる。io_thread から呼ぶ。

@@ -456,6 +456,9 @@ struct Listener::Impl {
 		}
 		if (owner->on_connected)
 			owner->on_connected();
+		// 時計の種類は、hello の時計の読みより先に渡す (受信側は、種類で読みの扱いを決めるため)。
+		if (owner->on_sender_clock_base)
+			owner->on_sender_clock_base(hello->clock_base);
 		if (hello->clock_us && owner->on_sender_clock)
 			owner->on_sender_clock(*hello->clock_us, received_us);
 		if (hello_timer) {

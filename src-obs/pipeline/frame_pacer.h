@@ -33,12 +33,27 @@ inline std::size_t frame_pacer_capacity(std::int64_t delay_us, std::int64_t fram
 	return total > 0 ? total : 1;
 }
 
+// 送信側のタイムスタンプが、積んだ時点の受信側の今より先にあってよい長さの上限 (マイクロ秒)。送信側は、映像の
+// タイムスタンプが WebRTC の描く予定の時刻なら、そのまま送る (src-vencord/encode/video_time.ts)。WebRTC はデコードを
+// 終えたフレームを描く予定の時刻より前に渡すので、フレームは自分のタイムスタンプより前に届く (age_us が負)。
+// テスト用の送信側の試しで、描く予定の時刻は読んだ時刻より中央値で 13.9 ms 先にあり、受信を始めた直後には、
+// 描く予定の時刻が届く時刻より 100 ms 以上先にあることがある (docs/architecture.md の「送信側: 送信側の時計への換算」)。
+// その先の時刻まで待たないと、映像はタイムスタンプ + D より早く出て、同じタイムスタンプで置く画面の音とずれる。
+// 上限は、受信を始めた直後の先の長さより十分大きく、待ち行列に持つフレームの数を抑える値にした。目安の値で、測って
+// 決めたものではない。これより先のタイムスタンプは、時計の飛び (送信側の時計が受信側より進んだ) とみなし、この長さ
+// だけ先にあるものとして扱う。
+inline constexpr std::int64_t kFramePacerMaxAheadUs = 500000;
+
 // 統計の 1 周期分の数 (FramePacer::take_stats)。
 struct FramePacerStats {
 	std::uint64_t on_time = 0; // 時刻が来るまで待ってから渡した数
 	std::uint64_t late = 0;    // 積んだ時点でもう表示の時刻 r を過ぎていて、すぐ渡した数 (格子の有無に依らない)
 	std::uint64_t dropped = 0; // 渡さずに捨てた数 (同時に時刻が来た古いフレーム、上限超過、破棄)
 	std::size_t max_queued = 0; // 周期の間の待ち行列の長さの最大
+	// 周期の間の、タイムスタンプが積んだ時点の今より先にあった長さの最大 (マイクロ秒。先になければ 0)。
+	std::int64_t max_ahead_us = 0;
+	// 先の長さが kFramePacerMaxAheadUs を超え、その長さに頭打ちにした数。
+	std::uint64_t ahead_capped = 0;
 };
 
 // FramePacer::take の結果。
@@ -67,9 +82,9 @@ template <typename T> struct PacedTake {
 // だけを表示する (libobs の ready_async_frame の async_unbuffered の枝) ので、古いフレームを渡しても表示されず、
 // OBS の中へのコピー (1080p の NV12 で約 3 MB) が無駄になるだけである。
 //
-// 時計の飛びへの備え。待つ長さは積んだ時点から最長でも D である (age_us を 0 以上に丸めるため)。送信側の時計が
-// 受信側より進んでいても、フレームが D より長く止まったり、待ち行列が上限まで伸びたりしない。遅れて届いた
-// フレームは age_us が D 以上になり、すぐ渡す側に倒れる。
+// 時計の飛びへの備え。待つ長さは積んだ時点から最長でも D + kFramePacerMaxAheadUs である (age_us を
+// -kFramePacerMaxAheadUs 以上に丸めるため)。送信側の時計が受信側より大きく進んでいても、フレームがそれより長く
+// 止まったり、待ち行列が上限まで伸びたりしない。遅れて届いたフレームは age_us が D 以上になり、すぐ渡す側に倒れる。
 template <typename T> class FramePacer {
 public:
 	FramePacer() = default;
@@ -103,14 +118,19 @@ public:
 
 	// フレームを 1 つ積む。
 	//   now_us    受信側の単調な時計の今 (マイクロ秒)
-	//   age_us    受信側の単調な時計の今 - フレームのタイムスタンプ (整列した値を同じ時計に換算した値)。つまり
-	//             フレームが送信側で生まれてからの時間。負なら 0 として扱う
+	//   age_us    受信側の単調な時計の今 - フレームのタイムスタンプ (整列した値を同じ時計に換算した値)。負は、
+	//             タイムスタンプが今より先にある (描く予定の時刻のまま送られたフレーム)。-kFramePacerMaxAheadUs より
+	//             小さければ、その値として扱う
 	//   bytes     フレームの大きさ (バイト数の上限の判定に使う)
 	// 上限 (数かバイト数) を超えたら、古いほうから捨てる。新しいほうを捨てると、取り出す側が詰まっている間、
 	// 古い映像を出し続ける。ただし積んだフレーム自身は捨てない。捨てた数を返す。
 	std::size_t push(std::int64_t now_us, std::int64_t age_us, std::size_t bytes, T item)
 	{
-		const std::int64_t age = age_us > 0 ? age_us : 0;
+		const std::int64_t age = age_us > -kFramePacerMaxAheadUs ? age_us : -kFramePacerMaxAheadUs;
+		if (-age_us > stats_.max_ahead_us)
+			stats_.max_ahead_us = -age_us;
+		if (age_us < -kFramePacerMaxAheadUs)
+			++stats_.ahead_capped;
 		Entry entry;
 		entry.sent_us = now_us - age;
 		entry.bytes = bytes;

@@ -101,11 +101,14 @@ constexpr std::chrono::milliseconds kMixerLagResetLimit{50};
 //   - フレームの間隔は 60 fps (約 16.7 ms) とみなす。送信側が送るフレームレートの上限である。これより遅い
 //     ストリームは、数の上限に余裕ができるだけである。
 //   - 余裕の 6 フレームは、取り出すスレッドが 100 ms ほど遅れても、定常状態では捨てない大きさである。
+//   - 数の上限は、タイムスタンプが今より先にあるフレーム (描く予定の時刻のまま送られたフレーム) が待つ分
+//     (最長で kFramePacerMaxAheadUs) も含める。含めないと、受信を始めた直後のように先の長さが余裕の 6 フレームを
+//     超える間、時刻が来ていない古いフレームを捨てる。
 //   - バイト数の上限は、解像度が大きいストリームで D が長いときに、メモリーを使い切らないための歯止めである。
-//     1080p の NV12 は 1 フレーム約 3.1 MB で、D が上限の 1000 ms のときの上限は (1000 / 16.7 = 60) + 6 = 66 フレーム、
-//     約 205 MB になる。4 ストリームが同時にこの大きさで約 820 MB である。256 MiB を超える解像度
-//     (1440p60 の D = 1000 ms など) では上限が先にかかり、古いフレームを捨てる。捨てた数は統計の行の
-//     paced_dropped に出る。
+//     1080p の NV12 は 1 フレーム約 3.1 MB で、実際に待つフレームは D と先の長さの間に届く分なので、D が上限の
+//     1000 ms で先の長さが 20 ms なら約 61 フレーム、約 190 MB になる。4 ストリームが同時にこの大きさで約 760 MB で
+//     ある。数の上限 ((1000 + 500) / 16.7 = 90) + 6 = 96 フレームまで待つ (先の長さが上限の 500 ms) と、1080p でも
+//     256 MiB が先にかかる。256 MiB を超える分は古いフレームを捨て、捨てた数は統計の行の paced_dropped に出る。
 constexpr std::int64_t kPacerFrameIntervalUs = 16667;
 constexpr std::size_t kPacerHeadroomFrames = 6;
 constexpr std::size_t kPacerMaxBytes = 256ull * 1024 * 1024;
@@ -113,7 +116,8 @@ constexpr std::size_t kPacerMaxBytes = 256ull * 1024 * 1024;
 // 待ち行列に、現在の表示の緩衝 D と、それに合わせた上限を設定する。
 template <typename Pacer> void configure_frame_pacer(Pacer &pacer, std::int64_t delay_us)
 {
-	pacer.configure(delay_us, frame_pacer_capacity(delay_us, kPacerFrameIntervalUs, kPacerHeadroomFrames),
+	pacer.configure(delay_us,
+			frame_pacer_capacity(delay_us + kFramePacerMaxAheadUs, kPacerFrameIntervalUs, kPacerHeadroomFrames),
 			kPacerMaxBytes);
 }
 
@@ -846,6 +850,7 @@ struct Pipeline::Impl {
 	SenderClockOffset sender_clock;
 	std::atomic<std::int64_t> sender_offset_us{kSenderOffsetUnknown};
 	void handle_sender_clock(std::int64_t sender_us, std::int64_t received_us);
+	void handle_sender_clock_base(ws::SenderClockBase base);
 	// 送信側のタイムスタンプを OBS の時計に換算する。差が決まっていなければ obs_now (今届いたものとして扱う)。
 	std::int64_t sender_to_obs_now(std::int64_t sender_us, std::int64_t obs_now) const
 	{
@@ -1431,14 +1436,47 @@ void Pipeline::Impl::notify_layout_changed()
 		layout_changed_sink();
 }
 
+void Pipeline::Impl::handle_sender_clock_base(ws::SenderClockBase base)
+{
+	// ws/listener.h の on_sender_clock_base から呼ばれる (handle_connected の後、hello の時計の読みの前)。送信側の時計が
+	// OBS の時計と同じ値なら、差を 0 にする。映像と音声のメッセージは hello_ok の後に届くので、最初のフレームから 0 で換算する。
+	if (base != ws::SenderClockBase::Qpc) {
+		diag::logf(LOG_INFO, "Sender clock: offset estimated from the sender's clock readings");
+		return;
+	}
+	sender_clock.use_shared_clock();
+	sender_offset_us.store(0, std::memory_order_relaxed);
+	diag::logf(LOG_INFO, "Sender clock: same as the OBS clock (QPC), offset 0");
+}
+
 void Pipeline::Impl::handle_sender_clock(std::int64_t sender_us, std::int64_t received_us)
 {
 	// ws/listener.h の on_sender_clock から呼ばれる。received_us は、Listener がメッセージを読む前に読んだ OBS の時計
 	// (Pipeline::start が receive_clock_us に obs_now_us を渡す)。
-	const std::optional<std::int64_t> before = sender_clock.offset_us();
-	if (!sender_clock.note(sender_us, received_us))
+	const std::optional<std::int64_t> before = sender_clock.min_sample_us();
+	const bool lowered = sender_clock.note(sender_us, received_us);
+	const std::int64_t min_sample = *sender_clock.min_sample_us();
+	if (sender_clock.shared_clock()) {
+		// 差は 0 のまま。最小値は、最も早く届いたメッセージの届くまでの遅れで、0 以上の小さい値になるはず。どちらかの
+		// 向きに外れたら (pipeline/sender_clock.h の shared_clock_verdict)、同じ時計という前提が崩れているので、差を
+		// これまでの最小値 (今までの見積もり) に戻す。外れていなければ、組は監視にだけ使う。
+		if (lowered)
+			diag::logf(diag::LineKind::Stats, LOG_DEBUG, "Sender clock delay (samples=%llu min_us=%lld)",
+				   static_cast<unsigned long long>(sender_clock.samples()), static_cast<long long>(min_sample));
+		const SharedClockVerdict verdict = shared_clock_verdict(min_sample, sender_clock.samples());
+		if (verdict == SharedClockVerdict::Holds)
+			return;
+		sender_clock.leave_shared_clock();
+		sender_offset_us.store(min_sample, std::memory_order_relaxed);
+		diag::logf(LOG_WARNING,
+			   "Sender clock is not the OBS clock (%s, min_us=%lld samples=%llu); using the estimated offset",
+			   verdict == SharedClockVerdict::SenderAhead ? "ahead" : "behind", static_cast<long long>(min_sample),
+			   static_cast<unsigned long long>(sender_clock.samples()));
 		return;
-	const std::int64_t offset = *sender_clock.offset_us();
+	}
+	if (!lowered)
+		return;
+	const std::int64_t offset = min_sample;
 	sender_offset_us.store(offset, std::memory_order_relaxed);
 	// 差は接続の初めに数回だけ下がる (pipeline/sender_clock.h)。下がった量は、前の値に含まれていた届くまでの遅れである。
 	diag::logf(diag::LineKind::Stats, LOG_DEBUG, "Sender clock offset set (samples=%llu lowered_us=%lld)",
@@ -2588,7 +2626,9 @@ void Pipeline::Impl::stats_loop()
 			// 間隔 (0 なら刻みに合わせず、タイムスタンプ + D の時刻に渡している)。paced_on_time は時刻まで待ってから
 			// 渡した数、paced_late は届いた時点でもう時刻を過ぎていてすぐ渡した数 (D が受信までの遅れより短いと
 			// 増える)、paced_dropped は渡さずに捨てた数 (同時に時刻が来た古いフレーム、上限超過、破棄)、
-			// paced_queue_max は待ち行列の長さの最大である。キーの名前は、ほかの行のキー (dropped= など) で終わらない
+			// paced_queue_max は待ち行列の長さの最大、paced_ahead_max_ms はタイムスタンプが積んだ時点の今より先にあった長さの
+			// 最大 (描く予定の時刻のまま送られたフレーム)、paced_ahead_capped はその長さが kFramePacerMaxAheadUs を超えて
+			// 頭打ちにした数である。キーの名前は、ほかの行のキー (dropped= など) で終わらない
 			// 形にしてある。合成のソースがない (または D が 0 の) とき、その周期に何も起きなかったストリームの行は書かない。
 			// 合成のソースがない間は待ち行列に積まない (frame_delivery_plan.h)。
 			// D そのものの動作は、上の video_latency の shown_ (OBS が表示に選んだフレームの遅れ) で確認する。
@@ -2610,11 +2650,19 @@ void Pipeline::Impl::stats_loop()
 					continue;
 				diag::logf(diag::LineKind::Stats, LOG_DEBUG,
 				           "Stats stream=%u video_pacer paced_delay_ms=%lld paced_tick_us=%lld paced_on_time=%llu "
-				           "paced_late=%llu paced_dropped=%llu paced_queue_max=%zu",
+				           "paced_late=%llu paced_dropped=%llu paced_queue_max=%zu paced_ahead_max_ms=%lld "
+				           "paced_ahead_capped=%llu",
 				           static_cast<unsigned>(kv.first), static_cast<long long>(delay_us / 1000),
 				           static_cast<long long>(tick_us),
 				           static_cast<unsigned long long>(paced.on_time), static_cast<unsigned long long>(paced.late),
-				           static_cast<unsigned long long>(paced.dropped), paced.max_queued);
+				           static_cast<unsigned long long>(paced.dropped), paced.max_queued,
+				           static_cast<long long>(paced.max_ahead_us / 1000),
+				           static_cast<unsigned long long>(paced.ahead_capped));
+				if (paced.ahead_capped > 0)
+					diag::logf(LOG_WARNING,
+						   "Video timestamps were more than %lld ms ahead of the OBS clock (stream=%u frames=%llu)",
+						   static_cast<long long>(kFramePacerMaxAheadUs / 1000), static_cast<unsigned>(kv.first),
+						   static_cast<unsigned long long>(paced.ahead_capped));
 			}
 			// ストリームごとの、届くまでの遅れ (表示の緩衝の待ち行列に積むときの、OBS の時計 - 換算した送信側の
 			// タイムスタンプ) の分布 (arrival_stats.h)。arrival_p50_ms、arrival_p95_ms、arrival_p99_ms、
@@ -3328,6 +3376,9 @@ void Pipeline::start()
 		impl_->safe_call("the disconnection from Vesktop", [&] { impl_->handle_disconnected(); });
 	};
 	impl_->listener.receive_clock_us = [] { return obs_now_us(); };
+	impl_->listener.on_sender_clock_base = [this](ws::SenderClockBase base) {
+		impl_->safe_call("the clock type from Vesktop", [&] { impl_->handle_sender_clock_base(base); });
+	};
 	impl_->listener.on_sender_clock = [this](std::int64_t sender_us, std::int64_t received_us) {
 		impl_->safe_call("a clock reading from Vesktop", [&] { impl_->handle_sender_clock(sender_us, received_us); });
 	};

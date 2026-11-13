@@ -64,6 +64,16 @@ inline constexpr int kWireVersion = 1;
 
 // ---- hello、hello_ok、hello_ng (接続して最初に交わすメッセージ) ----
 
+// 送信側の時計の種類 (hello の任意のキー clock_base)。
+enum class SenderClockBase {
+	// キーがないか、知らない値。受信側は、送信側の時計と OBS の時計の差を hello と pong の clock_us から決める
+	// (pipeline/sender_clock.h)。
+	Unspecified,
+	// "qpc"。送信側の時計は QueryPerformanceCounter の us で、OBS の時計 (os_gettime_ns / 1000) と同じ値である
+	// (src-vencord/encode/sender_clock.ts)。受信側は差を 0 にする。
+	Qpc,
+};
+
 struct HelloMessage {
 	int wire = 0;         // 送信側のワイヤー形式のバージョン
 	std::string version;  // 送信側のバージョン。表示にだけ使い、値を信用しない
@@ -76,6 +86,9 @@ struct HelloMessage {
 	// これで送信側の時計と OBS の時計の差を決める (pipeline/sender_clock.h)。0 以上の整数でなければ、値がないものとして
 	// 扱う。
 	std::optional<std::int64_t> clock_us;
+	// 送信側の時計の種類 (任意のキー clock_base)。文字列の "qpc" のときだけ Qpc で、キーがないか、ほかの値か、文字列で
+	// なければ Unspecified (古い受信側と同じ扱い)。
+	SenderClockBase clock_base = SenderClockBase::Unspecified;
 };
 
 enum class HelloNgReason { BadSecret, BadWire, Malformed };
@@ -470,6 +483,8 @@ inline std::string build_hello(const HelloMessage &m)
 		j["vesktop"] = *m.vesktop;
 	if (m.clock_us.has_value())
 		j["clock_us"] = *m.clock_us;
+	if (m.clock_base == SenderClockBase::Qpc)
+		j["clock_base"] = "qpc";
 	return j.dump();
 }
 
@@ -542,6 +557,11 @@ inline std::optional<HelloMessage> parse_hello(const nlohmann::json &j)
 	if (const auto vesktop_it = j.find("vesktop"); vesktop_it != j.end() && vesktop_it->is_string())
 		m.vesktop = vesktop_it->get<std::string>();
 	m.clock_us = detail::optional_clock_us(j);
+	// 任意のキー clock_base は、文字列の "qpc" だけを読む。ほかの値は、キーがないものとして扱い、hello は捨てない
+	// (送信側が新しい値を足しても、古い受信側は今までどおり差を決めて接続を続ける)。
+	if (const auto base_it = j.find("clock_base");
+	    base_it != j.end() && base_it->is_string() && base_it->get<std::string>() == "qpc")
+		m.clock_base = SenderClockBase::Qpc;
 	return m;
 }
 

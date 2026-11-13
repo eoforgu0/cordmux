@@ -41,7 +41,8 @@ ListenerConfig fast_test_config(uint16_t base_port, LogSink log = null_log_sink)
 
 std::string hello_json(const std::string &secret, int wire = kWireVersion,
 		       const std::optional<std::string> &vesktop = std::nullopt,
-		       std::optional<std::int64_t> clock_us = std::nullopt)
+		       std::optional<std::int64_t> clock_us = std::nullopt,
+		       const std::optional<std::string> &clock_base = std::nullopt)
 {
 	nlohmann::json j;
 	j["type"] = control_type::kHello;
@@ -53,6 +54,8 @@ std::string hello_json(const std::string &secret, int wire = kWireVersion,
 		j["vesktop"] = *vesktop;
 	if (clock_us.has_value())
 		j["clock_us"] = *clock_us;
+	if (clock_base.has_value())
+		j["clock_base"] = *clock_base;
 	return j.dump();
 }
 
@@ -1058,6 +1061,45 @@ TEST_CASE("hello と pong の clock_us を、読む前に読んだ受け取り�
 	std::lock_guard<std::mutex> lock(mu);
 	CHECK(calls == std::vector<std::string>{"connected", "clock 1700000000000000 at 1000",
 						"clock 1700000000005000 at 1001"});
+}
+
+TEST_CASE("hello の clock_base を、on_connected の後、hello の on_sender_clock の前に on_sender_clock_base で渡す")
+{
+	for (const auto &[base_key, expected] :
+	     std::vector<std::pair<std::optional<std::string>, std::string>>{{std::string("qpc"), "base qpc"},
+									     {std::nullopt, "base unspecified"},
+									     {std::string("other"), "base unspecified"}}) {
+		const uint16_t base = next_test_port_base();
+		Listener listener(fast_test_config(base), make_fake_platform_ops());
+		std::mutex mu;
+		std::vector<std::string> calls;
+		listener.on_connected = [&] {
+			std::lock_guard<std::mutex> lock(mu);
+			calls.push_back("connected");
+		};
+		listener.on_sender_clock_base = [&](SenderClockBase b) {
+			std::lock_guard<std::mutex> lock(mu);
+			calls.push_back(b == SenderClockBase::Qpc ? "base qpc" : "base unspecified");
+		};
+		listener.receive_clock_us = [] { return std::int64_t{1000}; };
+		listener.on_sender_clock = [&](std::int64_t sender_us, std::int64_t) {
+			std::lock_guard<std::mutex> lock(mu);
+			calls.push_back("clock " + std::to_string(sender_us));
+		};
+		const auto open = listener.try_open();
+		REQUIRE(open.outcome == OpenOutcome::Opened);
+
+		TestClient client;
+		REQUIRE(client.connect(open.port));
+		REQUIRE(client.wait_opened());
+		client.send(hello_json(open.secret_hex, kWireVersion, std::nullopt, 42, base_key));
+		REQUIRE(client.wait_message());
+		REQUIRE(wait_until([&] { return listener.stats().client_connected; }));
+		listener.stop();
+
+		std::lock_guard<std::mutex> lock(mu);
+		CHECK(calls == std::vector<std::string>{"connected", expected, "clock 42"});
+	}
 }
 
 TEST_CASE("pong を返すクライアントとの接続では、heartbeat_alive が true を返す")
