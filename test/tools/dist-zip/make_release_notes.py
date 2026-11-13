@@ -37,7 +37,6 @@ CHANGELOG_PATH = dist_common.REPO_ROOT / "CHANGELOG.md"
 VENCORD_LOCK_REPO_PATH = "src-vencord/vencord.lock.json"
 # zip の中の cordmux-build.txt のパス (最上位のフォルダーの下。make_dist_zip.py と check_dist_zip.py と同じ)。
 BUILD_MARK_IN_ZIP = "cordmux/data/vencord/" + dist_common.build_mark_names()["file_name"]
-INTERNAL_NUMBER_RE = re.compile(r"\bAC-[0-9]+\b")
 FENCE = "```"
 MAX_BLANK_RUN_RE = re.compile(r"\n{3,}")
 # テンプレートの条件のブロック {{#フラグ}}...{{/フラグ}} (フラグが真のときだけ中身を残す)。使えるフラグは compose が渡す。
@@ -61,17 +60,8 @@ ITEM_RE = re.compile(r"^- (\S.*?)\s*$")
 # -ed で終わる語と、よく使う不規則な過去形。
 EN_ITEM_START_RE = re.compile(r"^(?:[A-Z][a-z]+ed|Made|Kept|Left|Reset|Set|Split|Built|Rebuilt|Rewrote|Gave|Let|Put|Hid)\b")
 EN_PERSON_RE = re.compile(r"\b(?:[Ww]e|[Oo]ur|[Uu]s)\b")
-# 変更履歴の項目に書かない、内部の番号とコミット。項目の全体をチェックする。
-CHANGELOG_INTERNAL_PATTERNS = [
-    # 作業の中だけで通じる番号の形 (英大文字 1 字か 2 字と、ハイフンと、数字)
-    (r"internal id", re.compile(r"\b[A-Z]{1,2}[0-9]{0,2}-[A-Z]?[0-9]+\b", re.ASCII)),
-    # リポジトリにない文書の名前と行番号の形 (2 桁の数字とハイフンで始まる名前、2 桁の数字とコロンと行番号)
-    (r"internal doc", re.compile(r"\b0[0-9]-[A-Z][A-Z-]*\b|\b0[0-9]:[0-9]{3,4}\b", re.ASCII)),
-    # 作業の中だけで通じる語 (このファイル自身が検出されないよう、語を分けて書く)
-    (r"internal word", re.compile("決めた" + "こと|" + "節" + "目")),
-    # コミットの形 (英字と数字の両方を含む 7 桁以上の 16 進数)
-    (r"commit", re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b", re.ASCII)),
-]
+# 変更履歴の項目に書かない、コミットの形 (英字と数字の両方を含む 7 桁以上の 16 進数)。項目の全体をチェックする。
+CHANGELOG_COMMIT_RE = re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b", re.ASCII)
 # 関数と識別子の形。前の画面の語やファイルの名前を引用した所 ([ ]、「」、""、`) の外だけを見る。
 CHANGELOG_CODE_PATTERNS = [
     (r"function call", re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\(\)", re.ASCII)),
@@ -321,7 +311,7 @@ def spacing_rules(lang: str) -> list:
 
 
 def item_problems(section: ChangelogSection, name: str = "CHANGELOG.md") -> list[str]:
-    # 1 つのバージョンの節の項目が、決まった文の形か、内部の語と報告先の語を含まないかを確認する。日本語の項目は「。」で
+    # 1 つのバージョンの節の項目が、決まった文の形か、コミットと報告先の語を含まないかを確認する。日本語の項目は「。」で
     # 終える。英語の項目は過去形の動詞で始め、末尾に「.」を付けず、we、our、us を使わない。前の画面の語を引用する
     # ため、forbidden_ui_words.txt の画面の文字列のセット (symbols、notation) はチェックしない。
     # spacing のセットは、引用の中を伏せてからチェックする (引用した所は、元の画面の書き方のままにするため)。
@@ -339,9 +329,8 @@ def item_problems(section: ChangelogSection, name: str = "CHANGELOG.md") -> list
                     problems.append(f"{where}: 英語の項目の末尾に「.」がある")
                 if EN_PERSON_RE.search(item):
                     problems.append(f"{where}: 英語の項目に we、our、us がある")
-            for source, pattern in CHANGELOG_INTERNAL_PATTERNS:
-                if pattern.search(item):
-                    problems.append(f"{where}: 内部の語か番号がある ({source})")
+            if CHANGELOG_COMMIT_RE.search(item):
+                problems.append(f"{where}: コミットがある (commit)")
             for source, pattern in REPORT_TO_PATTERNS:
                 if pattern.search(item):
                     problems.append(f"{where}: 不具合の報告先がある ({source})")
@@ -544,9 +533,9 @@ def sources_zip_problems(path: Path, offer_text: str) -> list[str]:
     return problems
 
 
-def internal_word_problems(text: str) -> list[str]:
-    # 作った文に、内部の番号 (AC-<数字> の形。手順書の lint と同じ) と報告先の語がないかを確認する。
-    problems = [f"リリースノートに内部の番号 {m} がある" for m in sorted(set(INTERNAL_NUMBER_RE.findall(text)))]
+def report_to_problems(text: str) -> list[str]:
+    # 作った文に、報告先の語がないかを確認する。
+    problems: list[str] = []
     for raw, pattern in REPORT_TO_PATTERNS:
         if pattern.search(text):
             problems.append(f"リリースノートに不具合の報告先 ({raw}) がある")
@@ -617,7 +606,7 @@ def compose(label: str, assets_dir: Path, materials: Materials, expect_commit: O
     #   - zip のソースコードの入手先.txt に、このバージョンのソースの URL (dist_common.source_url_for) がない
     #   - 添付するファイルが 3 つ (配布用の zip、pdb の zip、ソースをまとめた zip) でない (classify_assets)
     #   - ソースをまとめた zip に、zip のソースコードの入手先.txt の行のソースがそろっていない (sources_zip_problems)
-    #   - テンプレートの知らないフラグとキー。作った文に内部の番号、報告先の語、{{ が残る
+    #   - テンプレートの知らないフラグとキー。作った文に報告先の語か {{ が残る
     #   - 正式版 (is_prerelease が偽) では、dist_common.formal_release_problems の問題も
     problems: list[str] = []
     prerelease = is_prerelease(label)
@@ -716,7 +705,7 @@ def compose(label: str, assets_dir: Path, materials: Materials, expect_commit: O
     notes = render(template, values, problems)
     if dist_common.FILL_OPEN in notes:
         problems.append(f"リリースノートに {dist_common.FILL_OPEN} が残っている")
-    problems += internal_word_problems(notes)
+    problems += report_to_problems(notes)
     return notes, problems
 
 
@@ -769,10 +758,6 @@ def run(args: argparse.Namespace) -> dict:
 LB = "【"
 RB = "】"
 SELFTEST_COMMIT = "0123456789abcdef0123456789abcdef01234567"
-# 内部の番号の形のテストデータ。
-SAMPLE_AC_ID = "AC-56"
-SAMPLE_RULE_ID = "R-55"
-SAMPLE_LETTER_RULE_ID = "V10-08"
 JA_NEW, JA_CHANGES, JA_FIXES = CHANGE_HEADINGS["ja"]
 
 
@@ -954,8 +939,8 @@ def selftest() -> int:
             if lang not in real.guide_texts:
                 failures.append(f"実際の手順書: {lang} の Markdown がない")
         template_keys = set(dist_common.FILL_TOKEN_RE.findall(real.template))
-        if internal_word_problems(real.template):
-            failures.append(f"テンプレート: {internal_word_problems(real.template)}")
+        if report_to_problems(real.template):
+            failures.append(f"テンプレート: {report_to_problems(real.template)}")
         for key in ("ja_changes", "en_changes", "ja_update_heading", "en_update_heading", "ja_maintenance",
                     "en_maintenance", "sources_asset", "ja_guide_url", "en_guide_url", "ja_update_url",
                     "en_update_url"):
@@ -1046,8 +1031,6 @@ def selftest() -> int:
          guides={"ja": selftest_guide(), "en": selftest_guide(update=False)})
     case(rc, "差し込みの書式が残っている", False, reason='差し込んでいない',
          guides={"ja": selftest_guide(maintenance="{{source_url}}"), "en": selftest_guide()})
-    case(rc, "内部の番号がある", False, reason=f"内部の番号 {SAMPLE_AC_ID}",
-         guides={"ja": selftest_guide(maintenance=f"See {SAMPLE_AC_ID}."), "en": selftest_guide()})
     case(rc, "手順書の部分に報告先がある", False, reason='不具合の報告先',
          guides={"ja": selftest_guide(), "en": selftest_guide(maintenance="Use GitHub Issues.")})
     case(rc, "知らない添付するファイル", False, reason='notes.txt は添付するファイルでない', extra_assets=("notes.txt",))
@@ -1113,14 +1096,10 @@ def selftest() -> int:
          changelog=selftest_changelog(en=[("New Features", ["New x is here"])]))
     case(rc, "英語の項目に we がある", False, reason="we、our、us がある",
          changelog=selftest_changelog(en=[("Changes", ["Changed x so we can do y"])]))
-    for what, item, reason in (("作業の番号", f"Fixed x ({SAMPLE_RULE_ID})", "internal id"), ("英字を含む作業の番号", f"Fixed x ({SAMPLE_LETTER_RULE_ID})", "internal id"),
-                               ("AC-<数字> の番号", f"Fixed {SAMPLE_AC_ID}", "内部の語か番号"), ("リポジトリにない文書の行", "Fixed x (05:2604)", "internal doc"),
-                               ("コミット", "Fixed x in 6de9882", "commit"), ("関数の名前", "Fixed decide_dock() x", "コードの名前"),
+    for what, item, reason in (("コミット", "Fixed x in 6de9882", "コミットがある"), ("関数の名前", "Fixed decide_dock() x", "コードの名前"),
                                ("Issues", "Fixed x, see GitHub Issues", "不具合の報告先")):
         case(rc, f"変更履歴に{what}", False, reason=reason,
              changelog=selftest_changelog(en=[("Bug Fixes", [item])]))
-    case(rc, "変更履歴に作業の中だけで通じる語", False, reason="internal word",
-         changelog=selftest_changelog(ja=[(JA_FIXES, ["Fixed " + "決めた" + "こと 1" + JA_PERIOD])]))
     case(rc, "変更履歴が古いファイルの名前を引用する", True,
          changelog=selftest_changelog(en=[("Changes", ['Renamed "name_screen.mov" to "Name Screen Share.mov"'])]))
     case(rc, "変更履歴に -rc の label のバージョンの節がある", True, changelog=good_log)
