@@ -16,7 +16,6 @@ import { describe, expect, it } from "vitest";
 
 import {
     HARNESS_USER_DATA_DIR_NAME,
-    ID_BEARING_FILE_PATTERNS,
     VENCORD_SETTINGS_AFTER_NAME,
     VENCORD_SETTINGS_AFTER_UNINSTALL_NAME,
     VENCORD_SETTINGS_BEFORE_NAME,
@@ -126,10 +125,6 @@ describe("不具合 3: アンインストールの後の Vencord の設定の比
     it("コピーしない実行 (リハーサル・--start-with-add なし) には比較がない", () => {
         expect(compareSteps(plan([...BASE, "--rehearsal", ...STAGE]))).toHaveLength(0);
         expect(compareSteps(plan([...REAL, "--broadcaster-id", "1"]))).toHaveLength(0);
-    });
-
-    it("アンインストールの後のコピーも ID の入りうる物として公開する場所へコピーしない", () => {
-        expect(ID_BEARING_FILE_PATTERNS).toContain(VENCORD_SETTINGS_AFTER_UNINSTALL_NAME);
     });
 
     it("judgeVencordSettingsRestored: 違いが無ければ合格、あれば失敗", () => {

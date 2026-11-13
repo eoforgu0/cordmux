@@ -1372,8 +1372,8 @@ async function runReal(args, steps, outDir) {
   };
 
   // 遅延の基準のキャプチャ (ウィンドウ・画面のどちらも) が画像を捉えたか。ソースの大きさが 0 なら捉えていない (window-capture.c は
-  // ウィンドウが見つかるまで描かない)。大きければ PNG を撮り、dummy_tile.py で黒でないかも見る。PNG には Vesktop のウィンドウが写るので、
-  // 結果のコピーに含めない (ID_BEARING_FILE_PATTERNS の latency-reference)。check-window-capture と switch-to-monitor-capture が同じ確認をする。
+  // ウィンドウが見つかるまで描かない)。大きければ PNG を撮り、dummy_tile.py で黒でないかも見る。check-window-capture と
+  // switch-to-monitor-capture が同じ確認をする。
   const checkLatencyCapture = async (s, ref) => {
     let size = null;
     let shot = null;

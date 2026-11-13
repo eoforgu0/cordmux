@@ -83,7 +83,7 @@ node test/tools/obs-run/run-window.mjs --obs _work/obs-33.0.1 --out _work/out/<�
 
 `call-1` のオプション (`--call-minutes` `--broadcaster-id` `--latency-person` `--voice-channel` `--start-with-add` `--vesktop-share` `--skip-continuous` `--skip-av2` `--skip-speaker-mute` `--extra-checks` `--skip-export-bundle` `--recheck` `--av-check` `--av-only` `--browser-profile` `--shared-content-dir` `--temp-vencord-build`) と、`hold` のオプション (`--hold-minutes` `--no-seed` `--keep-recordings` `--replay-buffer` `--self-mic` `--screen-sizes` `--screen-names` `--screen-images` `--voice-users` `--label-em-ratio-pct` `--wire-composite`) は、対応するステップ以外では受け付けない。誤った組み合わせは、OBS を起動する前に終了コード 1 で止まる。
 
-`--call-accounts <JSON ファイル>`: 実際の通話の実行 (`--step call-1` で、リハーサルでもドライランでもないもの) に必須である。通話に参加するアカウントの、Discord に表示される名前を次の形で書く。リポジトリの外に置く。
+`--call-accounts <JSON ファイル>`: 実際の通話の実行 (`--step call-1` で、リハーサルでもドライランでもないもの) に必須である。通話に参加するアカウントの、Discord に表示される名前を次の形で書く。
 
 ```json
 { "main": "メインアカウント", "receiver": "Vesktop のアカウント", "chrome": "Chrome のアカウント", "firefox": "Firefox のアカウント" }
@@ -391,7 +391,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File test/tools/obs-run/clean
 | `obsws.mjs` / `obsws.test.ts` | obs-websocket v5 の最小のクライアント (認証なし、127.0.0.1 だけ)。呼び出しに時限がある |
 | `stream-sink.mjs` / `stream-sink.test.ts` | 配信を受ける ffmpeg (`-listen`) の起動、停止、開き直し |
 | `tool_text_ids.py` | このフォルダーのツールが名指す製品の画面の文字列のキー (`cordmux.<...>`) が、`ja-JP.ini` と `en-US.ini` の両方にあり、形が正しいことを確認する |
-| `id-scan.mjs` / `id-scan.test.ts` | コピーしたファイルに Discord のユーザー ID の形 (17 桁から 20 桁の数) が残っていないかを数える。数そのものは出さない |
 | `seed-config.py` | テスト用の OBS の設定一式の書き込み (初期設定)。プロファイル、シーン、obs-websocket の待受、cordmux の `settings.json` |
 | `install_snapshot.py` | 導入の往復の前後のファイルの状態を撮り、比べる。zip の展開もここ |
 | `newer_ver_dll.py` | 製品の `cordmux.dll` のコピーを作り、`obs_module_ver()` が返すバージョンだけを新しくする |

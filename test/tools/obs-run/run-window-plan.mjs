@@ -20,7 +20,7 @@
 // plannedMinutes (実行計画が見込む待ちの合計)、--rehearsal (実際の Vesktop の代わりにテスト用の送信側で通す)、
 // judgeVencordDirRestored / judgeAvDrift / judgeNotNamedInTexts / insertStatsAtMinutes。
 // **human の message はテストを実行する人に見せる文なので、日本語の文字列リテラルで持つ** (文字列リテラルを
-// ASCII にする規則の例外。内部の語 (手順の種類の名前など) は入れない)。
+// ASCII にする規則の例外)。
 //
 // 判定スクリプトのセルを枠の実際の位置と大きさから決める screenCellRegions / cellRegionsForJudge / judgeCellArgs、
 // A/V の録画の間の音の切り分け、parseVideoRateSamples / judgeNoticeIffFramesStopped
@@ -1273,8 +1273,7 @@ export const VOICE_VOLUME_SETTLE_MS = 3000;
 // 下) へコピーし (読むだけ・コピーするだけ)、締めで Vesktop を終了してもらった後に現在の設定と鍵の単位で比べて違いを記録する。**戻さない**
 // (戻すのは利用者の同意を得てから、テストを実行する人がコピーで行う)。v1.15.11 の Vencord は起動のときに設定の鍵を移す
 // (migratePluginSettings) ので、通常の Vencord へ戻った後に設定が変わって見えることがある。
-// 結果には鍵のパスと変わり方だけを書き、値は書かない (プラグインの設定に人の ID が入りうる)。コピー自体は ID の入りうるものとして、
-// 結果の保存先へコピーしない (ID_BEARING_FILE_PATTERNS)。
+// 結果には鍵のパスと変わり方だけを書き、値は書かない (プラグインの設定に人の ID が入りうる)。
 export const VENCORD_SETTINGS_REAL_REL = "Vesktop/settings/settings.json";
 export const VENCORD_SETTINGS_BEFORE_NAME = "vencord-settings-before.json";
 export const VENCORD_SETTINGS_AFTER_NAME = "vencord-settings-after.json";
@@ -1291,17 +1290,8 @@ export const STOP_FILE_NAME = "stop-run.txt";
 export const VENCORD_DIR_FINAL_PREFIX = "vencord-dir-final-";
 
 // 配信者の Discord のユーザー ID は結果 JSON (args) とログに書かない (REDACTED_BROADCASTER_ID に
-// 置き換える)。消せないもの (テスト用の OBS の cordmux の settings.json、Vencord の設定のコピー、
-// OBS のログ) は名前で分かるようにし、結果の保存先へコピーしない (id-scan.mjs がコピーした後に 17-20 桁の数を数えて 0 を確認する)。
+// 置き換える)。
 export const REDACTED_BROADCASTER_ID = "<配信者の ID>";
-export const ID_BEARING_FILE_PATTERNS = [
-  VENCORD_SETTINGS_BEFORE_NAME,
-  VENCORD_SETTINGS_AFTER_NAME,
-  VENCORD_SETTINGS_AFTER_UNINSTALL_NAME,
-  "latency-reference",
-  "obs-logs-",
-  "plugin_config",
-];
 
 // rt-<tag> の下の保存先 (repo 直下からの相対)。**この一式は Node の API を呼ばない**ので、パスは文字列で組む。
 export function roundtripPaths(tag) {
@@ -7504,12 +7494,6 @@ export function redactBroadcasterId(data, id) {
     return v;
   };
   return walk(data);
-}
-
-// 文字列の中の 17-20 桁の数を数える (数そのものは返さない。id-scan.mjs とテストが使う)。
-export function countDiscordIdLike(text) {
-  const m = String(text == null ? "" : text).match(/(?<![0-9])[0-9]{17,20}(?![0-9])/g);
-  return m ? m.length : 0;
 }
 
 // 線と、外れたときの扱い (実行を止めるもの / 記録するだけのもの)。judge-lines が結果の表をこの並びで作る。

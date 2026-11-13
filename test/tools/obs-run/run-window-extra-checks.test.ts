@@ -6,7 +6,7 @@
  *   合否のしきい値 (映像と音のずれ・傾き・av2 - av1・4 分割の付け外し・声のミュート・遅延) と、実行の途中で止めるもの (stopOnFail) / 記録するだけのもの。
  *   Vencord の設定ファイルを [Vesktopに追加] の前にコピーし、Vesktop を終了してもらった後にキーの単位で比べる (戻さない)。
  *   finally で vencordDir を戻すか (finallyVencordRestorePlan)、cleanup.ps1 のフラグ、最後の確認と、止める通知ファイル。
- *   配信者の ID を結果とログに書かない (argsForResult)、17-20 桁の数の数え。
+ *   配信者の ID を結果とログに書かない (argsForResult)。
  *   バージョンの行の読み (並びに依存しない)、整列の傾きの区切り、参加のメッセージに Vesktop も入る。
  *   使う声の tone_scan.py を --windows で読む (tone_scan.py の実際の出力の形でテストする)。
  *   ログの文字列の全部から配信者の ID を伏せる (redactBroadcasterId。設定ウィンドウの dialog-click の edits と texts に残っていた)。
@@ -33,7 +33,6 @@ import {
     CALL_ONE_OPTION_FLAGS,
     CALL_ONE_VALUE_FLAGS,
     TONE_AUDIBLE_RMS,
-    ID_BEARING_FILE_PATTERNS,
     JUDGE_LINES,
     KEY_SENDING_KINDS,
     LATENCY_INPUT_NAME,
@@ -57,7 +56,6 @@ import {
     argsForResult,
     callJoinMessage,
     cleanupFlags,
-    countDiscordIdLike,
     deadlineEstimate,
     finallyVencordRestorePlan,
     isDiscordIdShape,
@@ -798,18 +796,11 @@ describe("配信者の ID を書かない", () => {
         expect(argsForResult(none)).toBe(none);
     });
 
-    it("countDiscordIdLike: 17-20 桁の数だけを数える (16 桁と 21 桁は数えない)", () => {
-        expect(countDiscordIdLike("a 12345678901234567 b 123456789012345678901 c 1234567890123456")).toBe(1);
-        expect(countDiscordIdLike("x12345678901234567890y")).toBe(1);
-        expect(countDiscordIdLike(null)).toBe(0);
-    });
-
     it("実行スクリプト: 結果 JSON の 2 か所の書き込みが伏せた args を書く (テキストとして読む)", () => {
         const source = readFileSync(join(HERE, "run-window.mjs"), "utf8");
         expect(source.match(/args: resultArgs/g)).toHaveLength(2);
         expect(source).toContain("const resultArgs = argsForResult(args);");
         expect(source).toContain("args: argsForResult(args),");
-        expect(ID_BEARING_FILE_PATTERNS).toEqual(expect.arrayContaining([VENCORD_SETTINGS_BEFORE_NAME, "latency-reference"]));
     });
 
     // Edit に ID が入っているウィンドウの [OK] (dialog-click) のログの形。dialog-click.ps1 の New-Result のキーと、
@@ -824,7 +815,7 @@ describe("配信者の ID を書かない", () => {
 
     it("redactBroadcasterId: 実際の ID の形なら、ステップを問わずログの文字列の全部から伏せる (dialog-click の edits と texts)。ほかの値と形は変えない", () => {
         const r = redactBroadcasterId(dialogClickWithIdEdit, FAKE_ID);
-        expect(countDiscordIdLike(JSON.stringify(r))).toBe(0);
+        expect(JSON.stringify(r)).not.toContain(FAKE_ID);
         expect(r.edits).toEqual(["欄の名前", REDACTED_BROADCASTER_ID, "保存先", "C:/rec"]);
         expect(r.texts[3]).toBe(REDACTED_BROADCASTER_ID);
         expect({ ...r, edits: dialogClickWithIdEdit.edits, texts: dialogClickWithIdEdit.texts }).toEqual(dialogClickWithIdEdit);

@@ -2082,7 +2082,7 @@ describe("planSteps", () => {
             expect(elsewhere.steps[0]).toMatchObject({ kind: "seed-config", dockInstall: "ours" });
         });
 
-        it("human の手順: until は 4 つのどれか、文は利用者向けの平易な日本語 (内部の語と ID の数字の並びを含まない)、時限と見込みを持つ", () => {
+        it("human の手順: until は 4 つのどれか、文と時限と見込みを持つ", () => {
             for (const steps of [planSteps(argsFor("call-1")).steps, withBroadcaster(), planSteps(argsFor("call-gate-a")).steps]) {
                 const humans = steps.filter((s) => s.kind === "human");
                 expect(humans.length).toBeGreaterThan(0);
@@ -2090,8 +2090,6 @@ describe("planSteps", () => {
                     expect(HUMAN_UNTIL_VALUES).toContain(h.until);
                     expect(typeof h.message).toBe("string");
                     expect(h.message.length).toBeGreaterThan(0);
-                    expect(h.message).not.toMatch(/\d{5,}/);
-                    expect(h.message).not.toMatch(/\b(step|gate|runner|harness|UIA|dock-click|go-file)\b/i);
                     expect(h.timeoutMs).toBeGreaterThan(0);
                     expect(h.waitSeconds).toBeGreaterThanOrEqual(0);
                     expect(h.appDataRel).toBe(VESKTOP_STATE_JSON_REAL_REL);

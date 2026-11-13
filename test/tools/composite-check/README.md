@@ -89,7 +89,7 @@ python test/tools/composite-check/compare.py judge --run <出力のフォルダ�
 | `<out>/<セット>/judge/diff-*.png` | 合わなかった画像の名前ラベルのまわり (撮った画像、参照、差を 32 倍した画像)。画面共有の枠は `t<タイル>`、並びは `r<番号>` |
 | `<out>/<セット>/judge/ref/` | 参照 (`check.json`、`ref-*.png`、置く物を 1 つずつ描いた `obj-*.png`) |
 
-撮った画像は 1 セットで数十枚になる。見終えたら出力のフォルダーを消す。
+撮った画像は 1 セットで数十枚になる。
 
 ## 合格の基準
 
