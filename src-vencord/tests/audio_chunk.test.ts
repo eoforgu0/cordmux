@@ -72,6 +72,9 @@ describe("pushAudio: 端数の持ち越し", () => {
         const s2 = pushAudio(s1.state, second, MEDIA_EPOCH_US + 5_000, SENDER_EPOCH_US + 5_000n);
         expect(s2.chunks).toHaveLength(1);
         expect(s2.chunks[0]?.timestampUs).toBe(SENDER_EPOCH_US);
+        // timeUs は、チャンクではなく受け取った断片の先頭サンプルの時刻 (2 つ目の断片を換算した時刻)。
+        expect(s1.timeUs).toBe(SENDER_EPOCH_US);
+        expect(s2.timeUs).toBe(SENDER_EPOCH_US + 5_000n);
         expect(Array.from(s2.chunks[0]?.samples ?? []).slice(FRAME_SAMPLES / 2, FRAME_SAMPLES / 2 + 2)).toEqual([
             10_000, 10_001,
         ]);

@@ -50,6 +50,8 @@ export interface PushAudioResult {
     state: AudioChunkerState;
     /** この呼び出しで 480 サンプルがそろったチャンク。0 個のこともある。 */
     chunks: AudioChunk[];
+    /** 受け取った断片の先頭サンプルの時刻 (メディアのタイムスタンプを送信側の時計に換算した値。us)。 */
+    timeUs: bigint;
 }
 
 /**
@@ -112,5 +114,6 @@ export function pushAudio(
             clockMap: mapped.state,
         },
         chunks,
+        timeUs: mapped.timeUs,
     };
 }

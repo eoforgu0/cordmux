@@ -247,6 +247,25 @@ describe("createEncodeSession: 段階ごとの所要時間", () => {
         session.stop();
     });
 
+    it("読み出した時刻 - 換算した時刻 を、負の値も残してパーセンタイルにし、取り出すと空に戻る (encode/clock_lag.ts)", async () => {
+        // 1 フレーム目で原点が決まる (遅れ 0)。2 フレーム目は換算した時刻より 3 ms 早く読めた (定数を下げるには、同じ期間に
+        // 3 つ要るので、まだ下げない)。読み出しの遅れ (read) は負の値を 0 として数えるが、こちらは -3 ms のまま数える。
+        const arrivals = [1_000_010n, 1_013_677n];
+        const { session, push } = startSession(makeDeps(arrivals, undefined));
+        push(makeFrame(10));
+        await session.start();
+        await flushMicrotasks();
+        push(makeFrame(16_677));
+        await flushMicrotasks();
+
+        const lag = session.takeClockLag();
+        expect(lag).toEqual({ count: 2, p5Us: -3_000, p50Us: -3_000, p95Us: 0 });
+        expect(summarizeDuration(session.takeLatencySpan().read).avgMs).toBeCloseTo(0, 9);
+        expect(session.takeClockLag().count).toBe(0);
+
+        session.stop();
+    });
+
     it("monotonicUs を渡さなければ、読み出しの遅れだけを測り、ほかの段は測らない", async () => {
         const { session, push } = startSession(makeDeps([1_000_010n], undefined));
         push(makeFrame(10));

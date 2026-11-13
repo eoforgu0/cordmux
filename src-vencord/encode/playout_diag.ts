@@ -317,8 +317,9 @@ export function shouldReportOnTick(state: PlayoutDiagState, nowMs: number): bool
  *   みなしたとき) の「+期間/通算」。音声のトラックが替わっても、ストリームの通算は続く。
  * - reanchorShift: 期間の決め直しの量の合計 (ms)。正は、音声のタイムスタンプが後ろへ動いたこと。
  * - originDown、originUp: 送信側の映像のタイムスタンプの定数 (encode/clock_map.ts) が、前に送ったフレームから
- *   1 フレームの周期 (configure の fps) より大きく下がった回数と上がった回数の「+期間/通算」。定数はトラックの始めの
- *   2 秒で決まり、その後はメディアの時計が替わったとみなしたときにだけ動く。
+ *   1 フレームの周期 (configure の fps) より大きく下がった回数と上がった回数の「+期間/通算」。定数は、下げるときと
+ *   決め直すとき (メディアの時計が替わったとみなしたとき) にまとめて動く。少しずつ上げる動き (1 フレームで 1 ms まで) は
+ *   1 フレームの周期より小さいので数えず、clock origin の行と clock lag の行 (encode/clock_lag.ts) で読む。
  * - originShift: 期間に数えた原点の動きの合計 (ms)。正は、映像のタイムスタンプが後ろへ動いたこと。
  * - eventLinesSkipped: 期間に、上限を超えて書かなかったイベントの行の数。
  *

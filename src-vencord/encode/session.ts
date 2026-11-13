@@ -9,6 +9,7 @@
 import type { FrameHeader } from "../core/wire";
 import { FrameType } from "../core/wire";
 import { applyParameterSetInsurance, NO_PARAMETER_SETS, type ParameterSets } from "./annexb";
+import { addClockLag, createClockLagSamples, takeClockLagSummary, type ClockLagSummary } from "./clock_lag";
 import { createClockMap, mapMediaTime, type ClockMapResult, type ClockMapState } from "./clock_map";
 import {
     type ActiveLadderStage,
@@ -186,6 +187,11 @@ export interface EncodeSessionHandle {
      * ログの行を書くときに呼ぶ。戻す値は呼び出し元のもので、この後セッションが書き換えない。
      */
     takeLatencySpan(): EncodeLatencySpan;
+    /**
+     * 前に呼んでから今までの、フレームを読み出した時刻 - 換算したタイムスタンプ の 5、50、95 パーセンタイルを取り出し、
+     * 空に戻す (encode/clock_lag.ts)。定期のログの行を書くときに呼ぶ。
+     */
+    takeClockLag(): ClockLagSummary;
     /** 最初の段階の確保が終わる (成功するか、Unavailable になる) まで待つ。その後の読み出しは中で続く。 */
     start(): Promise<void>;
     /** 次にエンコードするフレームをキーフレームにする。 */
@@ -469,6 +475,8 @@ export function createEncodeSession(
     const pendingSubmitUs = new Map<number, number>();
     // 段階ごとの所要時間の足し上げ (takeLatencySpan が取り出して空に戻す)。
     const latencySpan: EncodeLatencySpan = createEncodeLatencySpan();
+    // 読み出した時刻 - 換算したタイムスタンプ の値 (takeClockLag が取り出して空に戻す)。
+    const clockLag = createClockLagSamples();
     // メディアの時計と送信側の時計の対応。フォールバックでエンコーダが替わっても、フレームの読み出し元 (source) と
     // メディアの時計は同じなので、作り直さない。
     let clockMap: ClockMapState = createClockMap();
@@ -938,6 +946,8 @@ export function createEncodeSession(
             clockMap = mapped.state;
             // 読み出しの遅れ (latency_span.ts の read)。捨てるフレームも、間引くフレームも数える。
             addDuration(latencySpan.read, Number(arrivalUs - mapped.timeUs));
+            // 同じ差を、負の値も残して、パーセンタイルのために足す (encode/clock_lag.ts)。
+            addClockLag(clockLag, Number(arrivalUs - mapped.timeUs));
 
             // 到着と換算した時刻の差が 200 ms を超えた状態が 1 秒続いたので、メディアの時計が替わったとみなして定数を
             // 決め直した (encode/clock_map.ts)。決め直した後のタイムスタンプは、決め直す前に最後に送ったフレームから
@@ -1163,6 +1173,10 @@ export function createEncodeSession(
             };
             resetEncodeLatencySpan(latencySpan);
             return taken;
+        },
+
+        takeClockLag(): ClockLagSummary {
+            return takeClockLagSummary(clockLag);
         },
 
         clockOriginUs(): bigint | undefined {

@@ -66,6 +66,13 @@ import {
     type EncodeSessionSink,
 } from "./encode/session";
 import {
+    addClockLag,
+    clockLagLine,
+    createClockLagSamples,
+    takeClockLagSummary,
+    type ClockLagSamples,
+} from "./encode/clock_lag";
+import {
     clockOriginLogLine,
     createClockOriginLogState,
     type ClockOriginLogState,
@@ -193,6 +200,8 @@ interface ScreenAudioComponent {
     readonly trackId: string;
     readonly source: AudioSource;
     readonly getStats?: ReceiverStats;
+    /** 受け取った時刻 - 換算した時刻 の値 (encode/clock_lag.ts)。pumpAudio() が足し、reportPlayout() が取り出す。 */
+    readonly clockLag: ClockLagSamples;
 }
 
 /** 1 つの画面共有。Go Live の接続 1 つが 1 人に当たるので、pcId でまとめる。 */
@@ -411,7 +420,7 @@ function log(line: string): void {
     logBook.event(`${new Date().toISOString()} ${line}`);
 }
 
-/** 数秒から 60 秒ごとの統計の行を 1 行書く (clock origin の細かい変化、playout、latency)。受信側は直近の行だけを保つ (discord-stats.log)。 */
+/** 数秒から 60 秒ごとの統計の行を 1 行書く (clock origin の細かい変化、playout、latency、clock lag)。受信側は直近の行だけを保つ (discord-stats.log)。 */
 function logStats(line: string): void {
     logBook.stat(`${new Date().toISOString()} ${line}`);
 }
@@ -638,6 +647,14 @@ async function reportPlayout(pcId: number, entry: ScreenEntry): Promise<void> {
         const latency = entry.video?.session.takeLatencySpan();
         const latencyText = latency === undefined ? undefined : latencyLine(streamId, latency);
         if (latencyText !== undefined) logStats(latencyText);
+        // 受け取った時刻 - 換算した時刻 のパーセンタイル (encode/clock_lag.ts)。latency の行の直後に、映像と音声を 1 行に
+        // 書く。どちらも足されたものがなければ書かない。取り出すと空に戻る。
+        const lagText = clockLagLine(
+            streamId,
+            entry.video?.session.takeClockLag(),
+            entry.audio === undefined ? undefined : takeClockLagSummary(entry.audio.clockLag),
+        );
+        if (lagText !== undefined) logStats(lagText);
     } catch (e) {
         log(`playout stream ${streamId}: 行を作れなかった (${String(e)})`);
     } finally {
@@ -736,12 +753,14 @@ function sendAudioChunk(streamId: number, chunk: AudioChunk): void {
  * AudioSource から読み続け、480 サンプルのチャンクにするたびに送る (声と画面共有の音声の両方で使う)。
  * `onReanchor` は、メディアの時計が替わったとみなして換算の定数を決め直したときに、その量を受け取るコールバックで、
  * 画面共有の音声だけが渡す (声の診断の状態を作らないため)。量は、pushAudio() の前後の定数の差である
- * (encode/playout_diag.ts)。
+ * (encode/playout_diag.ts)。`clockLag` も画面共有の音声だけが渡し、断片ごとに 受け取った時刻 - 換算した時刻 を足す
+ * (encode/clock_lag.ts)。
  */
 async function pumpAudio(
     source: AudioSource,
     streamId: number,
     onReanchor?: (shiftUs: bigint) => void,
+    clockLag?: ClockLagSamples,
 ): Promise<void> {
     let chunker = createAudioChunker();
     for (;;) {
@@ -757,6 +776,7 @@ async function pumpAudio(
             const shiftUs = reanchorShiftUs(before, chunker);
             if (shiftUs !== undefined) onReanchor(shiftUs);
         }
+        if (clockLag !== undefined) addClockLag(clockLag, Number(arrivalUs - result.timeUs));
         for (const chunk of result.chunks) sendAudioChunk(streamId, chunk);
         audioClockOriginByStreamId.set(streamId, chunker.clockMap.offsetUs);
         maybeLogClockOrigin(streamId, videoClockOriginByStreamId.get(streamId));
@@ -937,9 +957,10 @@ function startScreenAudio(entry: ScreenEntry, track: MediaStreamTrackLike, getSt
         audioClockOriginByStreamId.delete(entry.streamId);
     }
     const source = createAudioTrackSource(track);
-    entry.audio = { trackId: track.id, source, getStats }; // getStats は再生の遅延の診断にだけ使う。
+    const clockLag = createClockLagSamples();
+    entry.audio = { trackId: track.id, source, getStats, clockLag }; // getStats は再生の遅延の診断にだけ使う。
     const streamId = entry.streamId;
-    void pumpAudio(source, streamId, (shiftUs) => notePlayoutReanchor(streamId, shiftUs)).catch((e) => {
+    void pumpAudio(source, streamId, (shiftUs) => notePlayoutReanchor(streamId, shiftUs), clockLag).catch((e) => {
         // audio/track_source.ts の next() は reject しないが、pumpAudio() と sendAudioChunk() の想定外の失敗で
         // reject したときのためにログに書く。
         log(`screen audio stream ${entry.streamId}: pumpAudioが失敗して止まった (${String(e)})`);

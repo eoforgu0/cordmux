@@ -2,7 +2,8 @@
 
 // encode/clock_map.ts のテスト。メディアのタイムスタンプを「トラックごとの定数」で送信側の時計に換算する。定数は最初の
 // 到着の「到着の時刻 - メディアのタイムスタンプ」から始め、2 秒の期間の中の小さいほうから 3 番目が今の定数より小さくなったときに
-// だけ下げる。上げるのは、差が 200 ms を超えた状態が 1 秒続いて、メディアの時計が替わったとみなしたときだけである。最後に、音の時計 (D)、送信側の時計 (Q)、
+// すぐ下げる。上げるのは、直近 20 秒の期間のどれでも 3 番目の差が今の定数より上のときで、少しずつ上げる。差が 200 ms を超えた
+// 状態が 1 秒続いたときは、メディアの時計が替わったとみなして決め直す。最後に、音の時計 (D)、送信側の時計 (Q)、
 // システム時刻 (S) を別々の速さにした 10 時間の模擬で、音と映像のタイムスタンプの関係が動かないことを確かめる。
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,10 @@ import { createAudioChunker, pushAudio } from "../audio/chunk";
 import {
     CLOCK_MAP_JUMP_CONFIRM_US,
     CLOCK_MAP_JUMP_US,
+    CLOCK_MAP_RAISE_MIN_US,
+    CLOCK_MAP_RAISE_RATE_US_PER_S,
+    CLOCK_MAP_RAISE_STEP_MAX_US,
+    CLOCK_MAP_RAISE_WINDOWS,
     CLOCK_MAP_RANK,
     CLOCK_MAP_WINDOW_US,
     createClockMap,
@@ -234,6 +239,248 @@ describe("mapMediaTime: 不連続", () => {
     });
 });
 
+/* ==========================================================================
+   上げる向き
+   ========================================================================== */
+
+/** runVideo() の結果。配列はフレームごと。 */
+interface VideoRun {
+    /** 始めからの時刻 (us)。 */
+    tUs: number[];
+    /** 換算した時刻 - 詰まりのない到着の時刻 (us)。メディアのタイムスタンプが先に出ている間も、この値が変わらないのが正しい。 */
+    errUs: number[];
+    offsets: bigint[];
+    restarts: number;
+    /** 決め直しでなく、定数が前のフレームより上がった回数。 */
+    raises: number;
+    /** 決め直しでなく上がったときの、1 フレームで上がった量の最大 (us)。 */
+    maxRaiseStepUs: bigint;
+}
+
+/**
+ * 60 fps の映像を seconds 秒流す。aheadUs(t) は、メディアのタイムスタンプが本当の時刻より先に出る量 (WebRTC のデコードの
+ * 時間の見積もりが大きい間は正。到着の時刻 - メディアのタイムスタンプ はその分だけ小さくなる)。delayUs(t) は詰まりで、
+ * 到着がその分だけ遅れる。取り出しの遅れは 1 から 6 ms で、100 フレームに 1 つ 80 ms 詰まる (10 時間の模擬と同じ)。
+ * aheadUs と delayUs は乱数を使わないので、同じ種なら、取り出しの遅れの列はどの呼び出しでも同じである。
+ */
+function runVideo(
+    seconds: number,
+    aheadUs: (tUs: number) => number,
+    delayUs: (tUs: number) => number,
+    seed: number,
+): VideoRun {
+    const rand = rng(seed);
+    let state = createClockMap();
+    const out: VideoRun = { tUs: [], errUs: [], offsets: [], restarts: 0, raises: 0, maxRaiseStepUs: 0n };
+    const frames = Math.floor((seconds * 1_000_000) / FRAME_US);
+    for (let i = 0; i < frames; i++) {
+        const tUs = i * FRAME_US;
+        const lagUs = Math.round(1_000 + rand() * 5_000 + (rand() < 0.01 ? 80_000 : 0) + delayUs(tUs));
+        const before = state.offsetUs;
+        const result = mapMediaTime(state, MEDIA_EPOCH_US + tUs + Math.round(aheadUs(tUs)), SENDER_EPOCH_US + BigInt(tUs + lagUs));
+        state = result.state;
+        const after = state.offsetUs as bigint;
+        if (result.restart === undefined && before !== undefined && after > before) {
+            out.raises++;
+            if (after - before > out.maxRaiseStepUs) out.maxRaiseStepUs = after - before;
+        }
+        out.tUs.push(tUs);
+        out.errUs.push(Number(result.timeUs - (SENDER_EPOCH_US + BigInt(tUs))));
+        out.offsets.push(after);
+    }
+    out.restarts = state.restarts;
+    return out;
+}
+
+/** 区間 [fromUs, toUs) で value から 0 まで、またはその逆に、直線で動く量。 */
+function ramp(tUs: number, fromUs: number, toUs: number, fromValue: number, toValue: number): number {
+    if (tUs <= fromUs) return fromValue;
+    if (tUs >= toUs) return toValue;
+    return fromValue + ((toValue - fromValue) * (tUs - fromUs)) / (toUs - fromUs);
+}
+
+/** 受信を始めた直後の下がり。1-2 秒でメディアのタイムスタンプが 150 ms 先に出て、10 秒から 20 秒の間に戻る。 */
+function startDipAhead(tUs: number): number {
+    return tUs < 10_000_000 ? ramp(tUs, 1_000_000, 2_000_000, 0, 150_000) : ramp(tUs, 10_000_000, 20_000_000, 150_000, 0);
+}
+
+/** 正しい値 (同じ取り出しの遅れで、下がりのない列の定数) との差が 1 ms 以内に戻り、その後ずっと保った時刻 (us)。 */
+function recoveredAtUs(run: VideoRun, reference: VideoRun): number {
+    let last = 0;
+    for (let i = 0; i < run.offsets.length; i++) {
+        const diff = (run.offsets[i] as bigint) - (reference.offsets[i] as bigint);
+        if (diff > 1_000n || diff < -1_000n) last = run.tUs[i + 1] ?? Number.POSITIVE_INFINITY;
+    }
+    return last;
+}
+
+/** 区間 [fromUs, 終わり) の、隣り合うフレームの errUs の差の最大 (us)。 */
+function maxErrJumpUs(run: VideoRun, fromUs: number): number {
+    let max = 0;
+    for (let i = 1; i < run.errUs.length; i++) {
+        if ((run.tUs[i] as number) < fromUs) continue;
+        max = Math.max(max, Math.abs((run.errUs[i] as number) - (run.errUs[i - 1] as number)));
+    }
+    return max;
+}
+
+const NO_SHIFT = (): number => 0;
+
+describe("mapMediaTime: 上げる向き", () => {
+    it("値の関係: 20 秒 (2 秒の期間 10 個) の後に、1 秒あたり 10 ms まで、1 回で 1 ms まで上げる。2 ms より小さい差では上げ始めない", () => {
+        expect(BigInt(CLOCK_MAP_RAISE_WINDOWS) * CLOCK_MAP_WINDOW_US).toBe(20_000_000n);
+        expect(CLOCK_MAP_RAISE_RATE_US_PER_S).toBe(10_000n);
+        expect(CLOCK_MAP_RAISE_STEP_MAX_US).toBe(1_000n);
+        expect(CLOCK_MAP_RAISE_MIN_US).toBe(2_000n);
+    });
+
+    it("受信を始めた直後に差が 150 ms 下がり、10 秒から 20 秒の間に戻る列では、定数が 60 秒以内に正しい値へ戻り、戻る間に 5 ms を超える飛びがない", () => {
+        const reference = runVideo(120, NO_SHIFT, NO_SHIFT, 7);
+        const run = runVideo(120, startDipAhead, NO_SHIFT, 7);
+        const recovered = recoveredAtUs(run, reference);
+        console.log(
+            `直線で戻る下がり: 正しい値に戻った時刻 ${(recovered / 1e6).toFixed(1)} s, 戻る間の最大の飛び ` +
+                `${(maxErrJumpUs(run, 10_000_000) / 1000).toFixed(3)} ms, 上げた回数 ${run.raises}`,
+        );
+        expect(run.restarts).toBe(0);
+        expect(reference.restarts).toBe(0);
+        expect(reference.raises).toBe(0);
+        // 下がった定数は、差が戻った後も直近 20 秒の期間に下がった差が残っている間は上がらない。
+        const at30 = run.tUs.findIndex((t) => t >= 30_000_000);
+        expect((reference.offsets[at30] as bigint) - (run.offsets[at30] as bigint)).toBeGreaterThan(140_000n);
+        // その後 15 秒ほどで上がりきる (目安: 直近の期間の 3 番目の差が上がり始めるのが 32 秒、1 秒あたり 10 ms で 150 ms)。
+        expect(recovered).toBeLessThanOrEqual(60_000_000);
+        expect(recovered).toBeGreaterThan(40_000_000);
+        expect(maxErrJumpUs(run, 10_000_000)).toBeLessThanOrEqual(5_000);
+        expect(run.maxRaiseStepUs).toBeLessThanOrEqual(CLOCK_MAP_RAISE_STEP_MAX_US);
+        // 戻った後は、換算した時刻の誤差が下がりのない列と同じになる。
+        const last = run.errUs.length - 1;
+        expect(Math.abs((run.errUs[last] as number) - (reference.errUs[last] as number))).toBeLessThanOrEqual(1_000);
+    });
+
+    it("差が 20 秒の時点でまとめて戻る列 (戻りの遅い側) でも、定数は 60 秒以内に正しい値へ戻る", () => {
+        const stepAhead = (tUs: number): number => (tUs < 20_000_000 ? ramp(tUs, 1_000_000, 2_000_000, 0, 150_000) : 0);
+        const reference = runVideo(120, NO_SHIFT, NO_SHIFT, 8);
+        const run = runVideo(120, stepAhead, NO_SHIFT, 8);
+        const recovered = recoveredAtUs(run, reference);
+        console.log(`20 秒で戻る下がり: 正しい値に戻った時刻 ${(recovered / 1e6).toFixed(1)} s`);
+        expect(run.restarts).toBe(0);
+        expect(recovered).toBeLessThanOrEqual(60_000_000);
+        // 上げる間の飛びは小さい (差がまとめて戻る 20 秒の 1 フレームは、メディアのタイムスタンプそのものの飛びなので除く)。
+        expect(maxErrJumpUs(run, 21_000_000)).toBeLessThanOrEqual(5_000);
+    });
+
+    it("上げている途中に差がまた下がると、その期間に見た差まで下げ、それより上には上げない", () => {
+        // 10 秒まで 150 ms 先に出て戻る (32 秒ごろから上げ始める)。38 秒から 60 秒まではまた 100 ms 先に出る。
+        const ahead = (tUs: number): number =>
+            tUs >= 1_000_000 && tUs < 10_000_000 ? 150_000 : tUs >= 38_000_000 && tUs < 60_000_000 ? 100_000 : 0;
+        const reference = runVideo(70, NO_SHIFT, NO_SHIFT, 15);
+        const run = runVideo(70, ahead, NO_SHIFT, 15);
+        const at = (s: number): number => run.tUs.findIndex((t) => t >= s * 1_000_000);
+        // 37 秒には上げている途中 (正しい値より 50 ms 以上低く、100 ms 以上は低くない)。
+        const gap37 = (reference.offsets[at(37)] as bigint) - (run.offsets[at(37)] as bigint);
+        expect(gap37 > 50_000n && gap37 < 100_000n).toBe(true);
+        // 38 秒の後に初めて下げてから 59 秒までは、定数は 1 度も上がらない。下げた期間が終わる前に、前の期間までの差を
+        // 目標にして、上げては下げることを繰り返さない。
+        expect((reference.offsets[at(39)] as bigint) - (run.offsets[at(39)] as bigint)).toBeGreaterThan(98_000n);
+        let dropped = at(38);
+        while ((run.offsets[dropped] as bigint) >= (run.offsets[dropped - 1] as bigint)) dropped++;
+        let raisedAfterDrop = 0;
+        for (let i = dropped + 1; i < at(59); i++) {
+            if ((run.offsets[i] as bigint) > (run.offsets[i - 1] as bigint)) raisedAfterDrop++;
+        }
+        expect(raisedAfterDrop).toBe(0);
+        expect(run.restarts).toBe(0);
+    });
+
+    it("300 ms の詰まりが 1 秒より長く続くと決め直し、詰まりが終われば元の定数に戻り、上げる規則は働かない", () => {
+        const jam = (tUs: number): number => (tUs >= 30_000_000 && tUs < 33_000_000 ? 300_000 : 0);
+        const reference = runVideo(70, NO_SHIFT, NO_SHIFT, 9);
+        let state = createClockMap();
+        const rand = rng(9);
+        let restart: { shiftUs: bigint; jumpForUs: bigint; atUs: number } | undefined;
+        let raised = false;
+        const frames = Math.floor(70_000_000 / FRAME_US);
+        for (let i = 0; i < frames; i++) {
+            const tUs = i * FRAME_US;
+            const lagUs = Math.round(1_000 + rand() * 5_000 + (rand() < 0.01 ? 80_000 : 0) + jam(tUs));
+            const before = state.offsetUs;
+            const result = mapMediaTime(state, MEDIA_EPOCH_US + tUs, SENDER_EPOCH_US + BigInt(tUs + lagUs));
+            state = result.state;
+            if (result.restart !== undefined) {
+                expect(restart).toBeUndefined(); // 決め直しは 1 回だけ
+                restart = { shiftUs: result.restart.shiftUs, jumpForUs: result.restart.jumpForUs, atUs: tUs };
+            } else if (before !== undefined && (state.offsetUs as bigint) > before) {
+                raised = true;
+            }
+        }
+        expect(restart).toBeDefined();
+        // 詰まりが始まってから 1 秒で決め直す (到着の時刻で数えるので、取り出しの遅れの揺れとたまの 80 ms の詰まりの分だけ
+        // 前後する)。量は詰まりの 300 ms に、決め直したフレームの取り出しの遅れ (1 から 6 ms、たまに 80 ms 足される) を足した値。
+        expect(restart?.jumpForUs ?? 0n).toBeGreaterThanOrEqual(CLOCK_MAP_JUMP_CONFIRM_US);
+        expect((restart?.atUs ?? 0) - 30_000_000).toBeGreaterThan(900_000);
+        expect((restart?.atUs ?? 0) - 30_000_000).toBeLessThan(1_100_000);
+        expect(Number(restart?.shiftUs ?? 0n)).toBeGreaterThan(295_000);
+        expect(Number(restart?.shiftUs ?? 0n)).toBeLessThan(390_000);
+        expect(raised).toBe(false);
+        expect(state.restarts).toBe(1);
+        // 詰まりが終わると、詰まりのない到着が 3 つそろった時点で下げ、下がりのない列の定数との差は揺れの分だけになる。
+        const end = (reference.offsets[reference.offsets.length - 1] as bigint) - (state.offsetUs as bigint);
+        expect(end >= -1_000n && end <= 1_000n).toBe(true);
+    });
+
+    it("20 秒より短い詰まり、繰り返す詰まり、ゆっくりした揺れでは、定数を上げない", () => {
+        // 18 秒続く 30 ms の詰まり。
+        const once = runVideo(120, NO_SHIFT, (t) => (t >= 30_000_000 && t < 48_000_000 ? 30_000 : 0), 11);
+        // 15 秒の 30 ms の詰まりと 5 秒の詰まりのない区間の繰り返し (5 分)。
+        const repeated = runVideo(300, NO_SHIFT, (t) => (t % 20_000_000 < 15_000_000 ? 30_000 : 0), 12);
+        // JavaScript の数秒の詰まりがたびたび起きる列 (5 分)。1 秒ごとに 2 割の確率で、0.5 から 3 秒の 20 から 100 ms の詰まり。
+        const jamRand = rng(99);
+        const jams: [number, number, number][] = [];
+        for (let s = 0; s < 300; s++) {
+            if (jamRand() < 0.2) jams.push([s * 1e6, s * 1e6 + 500_000 + jamRand() * 2_500_000, 20_000 + jamRand() * 80_000]);
+        }
+        const hiccups = runVideo(300, NO_SHIFT, (t) => jams.find(([a, b]) => t >= a && t < b)?.[2] ?? 0, 13);
+        // メディアのタイムスタンプが 15 秒の周期で 0 から 20 ms 先に出る揺れ (デコードの時間の見積もりの揺れ) (5 分)。
+        const wave = runVideo(300, (t) => 10_000 * (1 - Math.cos((2 * Math.PI * t) / 15_000_000)), NO_SHIFT, 14);
+        const lines: string[] = [];
+        for (const [name, run] of [
+            ["18 秒の詰まり", once],
+            ["繰り返す詰まり", repeated],
+            ["数秒の詰まり", hiccups],
+            ["15 秒の周期の揺れ", wave],
+        ] as const) {
+            lines.push(`${name}: 上げた回数 ${run.raises}, 決め直し ${run.restarts}`);
+            expect(run.raises).toBe(0);
+            expect(run.restarts).toBe(0);
+        }
+        console.log(lines.join("\n"));
+    });
+
+    it("音の列 (10 ms の断片、取り出しの揺れ、起動の直後とたまの詰まりでまとめて届く) では、定数は上がらない", () => {
+        const rand = rng(21);
+        let chunker = createAudioChunker();
+        let raises = 0;
+        let stallUntilUs = 300_000; // 起動の直後は、始めの 300 ms 分がまとめて届く。
+        const fragments = 60_000; // 10 分
+        const samples = new Float32Array(960);
+        for (let i = 0; i < fragments; i++) {
+            const tUs = i * 10_000;
+            // 200 個に 1 つ、30 から 150 ms の詰まりが始まり、その間の断片は詰まりが終わったときにまとめて届く。
+            if (tUs >= stallUntilUs && rand() < 0.005) stallUntilUs = tUs + 30_000 + rand() * 120_000;
+            const arrival = Math.max(tUs, stallUntilUs) + 1_000 + rand() * 3_000;
+            const media = MEDIA_EPOCH_US + tUs + Math.round((rand() - 0.5) * 2_000);
+            const before = chunker.clockMap.offsetUs;
+            const result = pushAudio(chunker, samples, media, SENDER_EPOCH_US + BigInt(Math.round(arrival)));
+            chunker = result.state;
+            const after = chunker.clockMap.offsetUs as bigint;
+            if (before !== undefined && after > before) raises++;
+        }
+        expect(raises).toBe(0);
+        expect(chunker.clockMap.restarts).toBe(0);
+    });
+});
+
 describe("mapMediaTime: 不正な入力", () => {
     it("有限の数でないメディアのタイムスタンプには、例外を投げる", () => {
         expect(() => mapMediaTime(createClockMap(), Number.NaN, SENDER_EPOCH_US)).toThrow(RangeError);
@@ -273,11 +520,20 @@ interface SimResult {
     endUs: number;
     maxJumpUs: number;
     restarts: number;
+    /** 音と映像の定数が、決め直しでなく前の値より上がった回数の合計。 */
+    raises: number;
+}
+
+/** 定数が、決め直しでなく前の値より上がったら 1。 */
+function raisedOnce(before: ClockMapState, after: ClockMapState): number {
+    return before.offsetUs !== undefined && after.restarts === before.restarts && (after.offsetUs as bigint) > before.offsetUs
+        ? 1
+        : 0;
 }
 
 /**
  * 送信側の 10 時間の模擬。Q は送信側の時計と同じ単調な時計で、AudioData.timestamp (音を再生のために取り出した時刻) と
- * VideoFrame.timestamp (描画の時刻からの差) はどちらも Q の値である。音は D の速さで 10 ms ずつ取り出され
+ * VideoFrame.timestamp (WebRTC が決めた描画の時刻) はどちらも Q から作った値である。音は D の速さで 10 ms ずつ取り出され
  * (D は Q より dPpm 速い)、到着の時刻は senderClockUs (performance) から読む。システム時刻 (Date.now) は sPpm で進み、
  * 5 時間目に 1 秒飛ぶ。製品のコードが Date.now を読めば、その飛びが結果に入る。
  */
@@ -292,14 +548,14 @@ function simulate(dPpm: number, sPpm: number, hours: number, seed: number): SimR
         return Math.floor((1_700_000_000_000_000 + elapsedUs * (1 + sPpm * 1e-6) + jumpUs) / 1000);
     });
     const audioOriginUs = 7_777_000; // AudioData.timestamp の原点 (Q からの差)
-    const videoOriginUs = -2_000_000; // VideoFrame.timestamp の原点 (最初のフレームの描画の時刻)
+    const videoOriginUs = -2_000_000; // VideoFrame.timestamp の原点 (Q からの差)
     let audio = createClockMap();
     let video = createClockMap();
     const d = dPpm * 1e-6;
     const chunkQUs = 10_000 / (1 + d);
     let nextFrame = 0;
     let videoErrUs = 0;
-    const result: SimResult = { startUs: Number.NaN, endUs: 0, maxJumpUs: 0, restarts: 0 };
+    const result: SimResult = { startUs: Number.NaN, endUs: 0, maxJumpUs: 0, restarts: 0, raises: 0 };
     let prev: number | undefined;
     const chunks = Math.floor((hours * 3_600_000_000) / chunkQUs);
     for (let i = 0; i < chunks; i++) {
@@ -314,6 +570,7 @@ function simulate(dPpm: number, sPpm: number, hours: number, seed: number): SimR
             qNowUs = renderQUs + lag;
             const media = Math.round(renderQUs - q0Us + videoOriginUs + (rand() - 0.5) * 400);
             const mapped = mapMediaTime(video, media, senderClockUs(perf));
+            result.raises += raisedOnce(video, mapped.state);
             video = mapped.state;
             videoErrUs = Number(mapped.timeUs) - (renderQUs + 1_699_999_000_000_000 - 3_000_000_000);
         }
@@ -321,6 +578,7 @@ function simulate(dPpm: number, sPpm: number, hours: number, seed: number): SimR
         const tsQUs = playQUs + (rand() - 0.5) * 2_000;
         qNowUs = playQUs + 1_000 + rand() * 3_000 + (rand() < 0.005 ? 50_000 : 0);
         const mapped = mapMediaTime(audio, Math.round(tsQUs + audioOriginUs), senderClockUs(perf));
+        result.raises += raisedOnce(audio, mapped.state);
         audio = mapped.state;
         const audioErrUs = Number(mapped.timeUs) - (playQUs + 1_699_999_000_000_000 - 3_000_000_000);
         const av = audioErrUs - videoErrUs;
@@ -341,9 +599,17 @@ function simulate(dPpm: number, sPpm: number, hours: number, seed: number): SimR
  * 持ち越しを通す。10 時間分を短い時間で流すため、実物の 480 サンプルより長くした) で取り出され、各断片の AudioData.timestamp は、その先頭のサンプルを取り出した Q の時刻 (+-1 ms の揺れ) で
  * ある。到着は senderClockUs (製品の index.ts の nowUs と同じ関数) に、Q で進む performance を渡して読む。チャンクごとに、
  * チャンクの timestampUs - そのチャンクの先頭のサンプルの本当の取り出しの時刻 を測り、同じ時点の映像の換算の誤差を
- * 引いて、音と映像のタイムスタンプの関係とする。
+ * 引いて、音と映像のタイムスタンプの関係とする。videoAheadUs(t) は、映像のメディアのタイムスタンプが本当の描画の時刻より
+ * 先に出る量 (受信を始めた直後のデコードの時間の見積もりの分。t は始めからの Q の us)。startUs と maxJumpUs は、
+ * measureFromUs (既定は 60 秒) から測る。
  */
-function simulateChunks(dPpm: number, hours: number, seed: number): SimResult {
+function simulateChunks(
+    dPpm: number,
+    hours: number,
+    seed: number,
+    videoAheadUs: (tUs: number) => number = () => 0,
+    measureFromUs = 60_000_000,
+): SimResult {
     const rand = rng(seed);
     const q0Us = 3_600_000_000;
     let qNowUs = q0Us;
@@ -358,7 +624,7 @@ function simulateChunks(dPpm: number, hours: number, seed: number): SimResult {
     let nextFrame = 0;
     let videoErrUs = 0;
     let chunkIndex = 0;
-    const result: SimResult = { startUs: Number.NaN, endUs: 0, maxJumpUs: 0, restarts: 0 };
+    const result: SimResult = { startUs: Number.NaN, endUs: 0, maxJumpUs: 0, restarts: 0, raises: 0 };
     let prev: number | undefined;
     const fragments = Math.floor((hours * 3_600_000_000) / (fragmentFrames * sampleQUs));
     for (let f = 0; f < fragments; f++) {
@@ -368,13 +634,16 @@ function simulateChunks(dPpm: number, hours: number, seed: number): SimResult {
             if (renderQUs > playQUs) break;
             nextFrame++;
             qNowUs = renderQUs + 1_000 + rand() * 5_000;
-            const mapped = mapMediaTime(video, Math.round(renderQUs - q0Us - 2_000_000), senderClockUs(perf));
+            const media = renderQUs - q0Us - 2_000_000 + videoAheadUs(renderQUs - q0Us);
+            const mapped = mapMediaTime(video, Math.round(media), senderClockUs(perf));
+            result.raises += raisedOnce(video, mapped.state);
             video = mapped.state;
             videoErrUs = Number(mapped.timeUs) - (renderQUs + senderOfQ);
         }
         qNowUs = playQUs + 1_000 + rand() * 3_000;
         const tsUs = Math.round(playQUs + (rand() - 0.5) * 2_000 + 7_777_000);
         const pushed = pushAudio(chunker, samples, tsUs, senderClockUs(perf));
+        result.raises += raisedOnce(chunker.clockMap, pushed.state.clockMap);
         chunker = pushed.state;
         for (const chunk of pushed.chunks) {
             // このチャンクの先頭のサンプルの本当の取り出しの時刻 (送信側の時計)。
@@ -382,7 +651,7 @@ function simulateChunks(dPpm: number, hours: number, seed: number): SimResult {
             chunkIndex++;
             const av = Number(chunk.timestampUs) - trueUs - videoErrUs;
             const tQUs = q0Us + chunkIndex * 480 * sampleQUs;
-            if (tQUs - q0Us >= 60_000_000 && Number.isNaN(result.startUs)) result.startUs = av;
+            if (tQUs - q0Us >= measureFromUs && Number.isNaN(result.startUs)) result.startUs = av;
             if (prev !== undefined && !Number.isNaN(result.startUs)) {
                 result.maxJumpUs = Math.max(result.maxJumpUs, Math.abs(av - prev));
             }
@@ -415,12 +684,14 @@ describe("10 時間の模擬", () => {
                 lines.push(
                     `D ${dPpm} ppm, S ${sPpm} ppm: 始め ${(r.startUs / 1000).toFixed(3)} ms, 終わり-始め ` +
                         `${((r.endUs - r.startUs) / 1000).toFixed(3)} ms, 最大の飛び ${(r.maxJumpUs / 1000).toFixed(3)} ms, ` +
-                        `決め直し ${r.restarts}`,
+                        `決め直し ${r.restarts}, 上げた回数 ${r.raises}`,
                 );
-                // タイムスタンプの揺れ (音 +-1 ms、映像 +-0.2 ms) を除けば、関係は一定である。
+                // タイムスタンプの揺れ (音 +-1 ms、映像 +-0.2 ms) を除けば、関係は一定である。差の揺れは上げ始める
+                // 2 ms より小さいので、定数は上がらない。
                 expect(Math.abs(r.endUs - r.startUs)).toBeLessThan(2_500);
                 expect(r.maxJumpUs).toBeLessThan(5_000);
                 expect(r.restarts).toBe(0);
+                expect(r.raises).toBe(0);
             }
             console.log(lines.join("\n"));
         },
@@ -436,17 +707,42 @@ describe("10 時間の模擬", () => {
                 const r = simulateChunks(dPpm, 10, seed++);
                 lines.push(
                     `pushAudio, D ${dPpm} ppm: 終わり-始め ${((r.endUs - r.startUs) / 1000).toFixed(3)} ms, ` +
-                        `最大の飛び ${(r.maxJumpUs / 1000).toFixed(3)} ms, 決め直し ${r.restarts}`,
+                        `最大の飛び ${(r.maxJumpUs / 1000).toFixed(3)} ms, 決め直し ${r.restarts}, 上げた回数 ${r.raises}`,
                 );
                 // 断片の時刻の揺れ (+-1 ms) と映像の揺れを除けば、関係は一定である。
                 expect(Math.abs(r.endUs - r.startUs)).toBeLessThan(2_500);
                 expect(r.maxJumpUs).toBeLessThan(5_000);
                 expect(r.restarts).toBe(0);
+                expect(r.raises).toBe(0);
             }
             console.log(lines.join("\n"));
         },
         300_000,
     );
+
+    it("pushAudio を通し、映像だけが受信を始めた直後に 150 ms 下がる列でも、60 秒の時点で音と映像の関係は下がりのない列と同じになり、戻る間に 5 ms を超える飛びがない", () => {
+        const lines: string[] = [];
+        let seed = 201;
+        for (const dPpm of [100, -100]) {
+            const reference = simulateChunks(dPpm, 3 / 60, seed);
+            const dipped = simulateChunks(dPpm, 3 / 60, seed, startDipAhead);
+            // 差が戻り始める 10 秒から測る (下がる 1-2 秒は、メディアのタイムスタンプが先へ動くのに定数が追いつく間)。
+            const returning = simulateChunks(dPpm, 3 / 60, seed, startDipAhead, 10_000_000);
+            seed++;
+            lines.push(
+                `pushAudio、映像の下がり, D ${dPpm} ppm: 60 秒の時点の差 ${((dipped.startUs - reference.startUs) / 1000).toFixed(3)} ms, ` +
+                    `終わりの差 ${((dipped.endUs - reference.endUs) / 1000).toFixed(3)} ms, 10 秒からの最大の飛び ` +
+                    `${(returning.maxJumpUs / 1000).toFixed(3)} ms, 上げた回数 ${dipped.raises}`,
+            );
+            expect(Math.abs(dipped.startUs - reference.startUs)).toBeLessThan(1_000);
+            expect(Math.abs(dipped.endUs - reference.endUs)).toBeLessThan(1_000);
+            expect(returning.maxJumpUs).toBeLessThan(5_000);
+            expect(dipped.restarts).toBe(0);
+            expect(dipped.raises).toBeGreaterThan(0);
+            expect(reference.raises).toBe(0);
+        }
+        console.log(lines.join("\n"));
+    });
 
     it("システム時刻 (Date.now) が飛んでも、換算したタイムスタンプは 1 us も変わらない", () => {
         const run = (sJumpUs: number): bigint[] => {
