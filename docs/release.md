@@ -110,14 +110,14 @@ cordmux 自身のコードは Apache-2.0 で配る (リポジトリの `LICENSE`
 - srt.dll と librist.dll には Mbed TLS が静的にリンクされている。FFmpeg の DLL には、aom、svt-av1、theora、lame、opus、vorbis、ogg、libvpx が静的にリンクされていて、nv-codec-headers と AMF のヘッダーも使われている。どれも `ソースコードの入手先.txt` と `licenses/` に含める。
 - cordmux.dll には websocketpp、asio、nlohmann/json が入る (`src-obs/ws/ws_deps.cmake`)。
 
-タグのプッシュで作るリリースには、同梱するソフトウェアのソースのコピーを添付する。`test/tools/dist-zip/fetch_sources.py` が、次のものから取得するソースの一覧を作り、`ソースコードの入手先.txt` の行と突き合わせてから取得する。片方にしかないソフトウェアがあるか、行のコミットかバージョンが一致しなければ、何も取得せずに失敗する。
+タグのプッシュで作るリリースには、同梱するソフトウェアのソースのコピーを 1 つの zip にまとめて添付する。`test/tools/dist-zip/fetch_sources.py` が、次のものから取得するソースの一覧を作り、`ソースコードの入手先.txt` の行と突き合わせてから取得する。片方にしかないソフトウェアがあるか、行のコミットかバージョンが一致しなければ、何も取得せずに失敗する。
 
 - obs-deps のタグ (FFmpeg などに適用したパッチと、ビルドの手順を含む)
 - obs-deps の `deps.ffmpeg/*.ps1` が取得するソフトウェア (git のコミットか、SHA256 を確認した tarball)
 - `src-obs/ws/ws_deps.cmake` の URL と SHA256
 - `src-vencord/vencord.lock.json` の Vencord のコミット (`pnpm-lock.yaml` を含む)
 
-添付の名前は `cordmux-<ラベル>-src-<名前>.<拡張子>` である。cordmux 自身のソースは、GitHub がリリースに付ける Source code の zip と tar.gz で配る。
+取得したソースは、ソフトウェアごとに 1 つのアーカイブ (git のリポジトリは `git archive` の tar.gz、ほかは配布元のアーカイブを照合したバイト列のまま) にし、それを `cordmux-<ラベル>-sources.zip` にまとめる。zip の中は `cordmux-<ラベル>-sources/` の下に、アーカイブ (`<名前>.<拡張子>`) と、`ソースコードの入手先.txt` の行ごとにそのソースのあるファイルを書いた `README.txt` を置く。アーカイブは圧縮し直さずに入れ、時刻 (コミットの時刻)、並び (名前の順)、属性を固定して、同じ入力からは同じ zip にする。添付を配布用の zip、pdb の zip、ソースをまとめた zip の 3 つにするのは、リリースのページで、どれをダウンロードすればよいかを名前を全部見て確かめなくて済むようにするためである。cordmux 自身のソースは、GitHub がリリースに付ける Source code の zip と tar.gz で配る。
 
 ## 対応している OBS のバージョン
 
@@ -181,7 +181,7 @@ cordmux 自身のコードは Apache-2.0 で配る (リポジトリの `LICENSE`
 1. GitHub のタグが指すコミットが、この実行のコミット (`GITHUB_SHA`) と同じかを確認する。
 2. そのコミットが main にあるかを確認する。
 3. 同じタグのリリースが公開済みなら失敗し、公開したリリースの添付ファイルは差し替えない。途中で失敗した実行が残した下書きのリリースは削除する。
-4. `fetch_sources.py` で、同梱するソフトウェアのソースのコピーを取得する。
+4. `fetch_sources.py` で、同梱するソフトウェアのソースのコピーを取得し、1 つの zip にまとめる。
 5. `make_release_notes.py` で、リリースノートを作り、pdb を zip にする。リリースノートは、`CHANGELOG.md` のそのバージョンの節と、手順書 (`guide/ja.md` と `guide/en.md`) の「互換性」の節から作る (テンプレートは `test/tools/dist-zip/release_notes_template.md`)。
 6. `gh release create` でリリースを作り、添付ファイルを付けて公開する。
 
@@ -191,13 +191,16 @@ cordmux 自身のコードは Apache-2.0 で配る (リポジトリの `LICENSE`
 |---|---|
 | `cordmux-<ラベル>.zip` | 配布用の zip |
 | `cordmux-<ラベル>-pdb.zip` | cordmux.pdb (OBS がクラッシュしたときに原因を調べるため) |
-| `cordmux-<ラベル>-src-<名前>.<拡張子>` | 同梱するソフトウェアのソースのコピー (ソフトウェアごとに 1 つ) |
+| `cordmux-<ラベル>-sources.zip` | 同梱するソフトウェアのソースのコピー (ソフトウェアごとのアーカイブと、`ソースコードの入手先.txt` の行との対応を書いた `README.txt`) |
+
+添付はこの 3 つだけにする。
 
 `make_release_notes.py` は、次のときにリリースを作らずに失敗する。
 
 - 手順書の「互換性」の節がない、空、仮の文字列 (日本語は `(確認してから書きます)`、英語は `(to be written after testing)`) を含む。この節はリリースノートに使うので、リリース候補でも失敗にする
 - `CHANGELOG.md` の形式が違う、またはそのバージョンの節がない
-- 添付ファイルがそろっていない、zip の `cordmux-build.txt` のビルドの ID がラベルのバージョンやタグのコミットと合わない
+- 添付ファイルが上の 3 つでない、zip の `cordmux-build.txt` のビルドの ID がラベルのバージョンやタグのコミットと合わない
+- ソースをまとめた zip に、配布用の zip の `ソースコードの入手先.txt` の行のソースがそろっていない (行ごとのアーカイブと、`README.txt` の行)
 - 正式なリリースで、手順書のどこかに仮の文字列が残っている
 
 ## 依存関係を更新する手順

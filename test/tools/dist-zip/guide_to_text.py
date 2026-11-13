@@ -73,9 +73,10 @@ def convert(md_text: str, lang: str, guide_url: str, source_url: str, where: str
     #   2. zip 用の差し込みの印の行を、「このバージョンのソースコード: <source_url>」の段落にする
     #   3. 見出しの # の印はそのまま残す (見出しの行は折り返さない)
     #   4. リンクとインラインのコードは inline_text の形にする
-    #   5. 段落と項目は折り返さず、1 つを 1 行にする。Windows 11 のメモ帳は、既定でウィンドウの幅に合わせて折り返す。
-    #      決まった桁で改行を入れると、ウィンドウがそれより狭いときに、行の途中に短い行ができて読みにくい
-    #   6. 見出し、段落、リストの前後の空行を 1 行にそろえる (続けて書いた項目の間には空行を入れない)。末尾は改行 1 つ
+    #   5. 決まった桁で改行を入れず、Markdown の 1 行を 1 行にする。Windows 11 のメモ帳は、既定でウィンドウの幅に合わせて
+    #      折り返す。決まった桁で改行を入れると、ウィンドウがそれより狭いときに、行の途中に短い行ができて読みにくい
+    #   6. 見出し、段落、リストの前後の空行を 1 行にそろえる (続けて書いた項目の間と、空行を挟まずに続く段落の行の間には
+    #      空行を入れない。Markdown では、空行を挟まずに続く地の文の行は同じ段落になる)。末尾は改行 1 つ
     #   7. 出力に {{ か <!-- が残れば DistError
     # 手順書が使ってよい記法の外の書き方をしていれば (install_guide.syntax_problems)、変換せずに DistError にする。
     if lang not in INTRO_SENTENCE:
@@ -93,10 +94,12 @@ def convert(md_text: str, lang: str, guide_url: str, source_url: str, where: str
 
     blocks: list[tuple[str, list[str], bool]] = []   # (種類, 行, 前に空行があったか)
     blank_before = False
+    previous = None   # 直前の行の種類
     for line in doc.lines:
         kind = line.kind
         if kind == "blank":
             blank_before = True
+            previous = kind
             continue
         if kind in install_guide.HEADING_KINDS:
             blocks.append(("heading", [line.prefix + inline_text(line.text, lang)], blank_before))
@@ -108,9 +111,13 @@ def convert(md_text: str, lang: str, guide_url: str, source_url: str, where: str
         elif kind in ITEM_PREFIX_KINDS:
             prefix = line.prefix
             blocks.append(("item", [prefix + inline_text(line.text, lang)], blank_before))
+        elif previous == "paragraph":
+            # 空行を挟まずに続く地の文の行は、前の行と同じ段落の行として残す (規則の 5 と 6)
+            blocks[-1][1].append(inline_text(line.raw, lang))
         else:
             blocks.append(("paragraph", [inline_text(line.raw, lang)], blank_before))
         blank_before = False
+        previous = kind
 
     out: list[str] = []
     for index, (kind, lines, blank) in enumerate(blocks):
@@ -209,9 +216,10 @@ def selftest() -> int:
     check("項目の続き", out[10], "- b")
     check("末尾の改行は 1 つ", convert(sample_md("x"), "ja", SAMPLE_GUIDE_URL, SAMPLE_SOURCE_URL).endswith("\n\n"), False)
     check("見出しの直後の空行", lines_of("## 節\n本文。")[5:8], ["## 節", "", "本文。"])
+    check("空行を挟まずに続く段落の行は、間に空行を入れずに残す", lines_of("1 行目。\n2 行目。\n\n次の段落。")[5:9],
+          ["1 行目。", "2 行目。", "", "次の段落。"])
     # 7. 記法の問題と、残った {{ と <!--
-    for label, body in (("太字", "**x**"), ("差し込みの書式", "{{source_url}}"), ("手で折り返した段落", "a\nb"),
-                        ("HTML のコメント", "<!-- x -->")):
+    for label, body in (("太字", "**x**"), ("差し込みの書式", "{{source_url}}"), ("HTML のコメント", "<!-- x -->")):
         try:
             convert(sample_md(body), "ja", SAMPLE_GUIDE_URL, SAMPLE_SOURCE_URL)
             failures.append(f"{label}: 変換しないはずが変換した")

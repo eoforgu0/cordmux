@@ -44,8 +44,8 @@ test/lint/ の lint の多くは、`dist` という名前のフォルダーを�
 2. `<!-- zip:source_url -->` の行を、ja「このバージョンのソースコード: <source_url>」、en "Source code of this version: <source_url>" の 1 行の段落にする。
 3. 見出しの `#` の印はそのまま残す (テキストでも見出しと分かり、GitHub の表示と同じ構成で読める)。見出しの行は折り返さない。
 4. リンクのうち、同じファイルの見出しへのリンクと相対リンクはテキストだけにし、`[テキスト](https://...)` は `テキスト (https://...)` にする (テキストと URL が同じなら URL だけ)。インラインのコードは、ja は「」、en は "" で囲む (ja では、コードと日本語の文字の間の空白を 1 つ除く)。
-5. 段落と項目は折り返さず、1 つを 1 行にする (入れ子の項目は、Markdown と同じ字下げを残す)。表示のときの折り返しは、メモ帳などの読む側の設定に任せる。
-6. 見出し、段落、リストの前後の空行を 1 行にそろえる (続けて書いた項目の間には空行を入れない)。末尾は改行 1 つ。
+5. 決まった桁で改行を入れず、Markdown の 1 行を 1 行にする (入れ子の項目は、Markdown と同じ字下げを残す)。表示のときの折り返しは、メモ帳などの読む側の設定に任せる。
+6. 見出し、段落、リストの前後の空行を 1 行にそろえる (続けて書いた項目の間と、空行を挟まずに続く段落の行の間には空行を入れない)。末尾は改行 1 つ。
 7. 使ってよい記法の外の書き方 (lint の記法のチェックと同じ) があるときと、変換したテキストに `{{` か `<!--` が残るときは、変換せずに失敗する。
 
 ### 差し込み
@@ -109,7 +109,7 @@ obs-deps 2025-07-11 に入っている `licenses/<コンポーネント>/` を�
 | `Vencord/LICENSE` | GPL-3.0 の本文 | Vencord の `LICENSE` (固定したコミットのものと同じバイト列。gnu.org の `gpl-3.0.txt` と同じで、MD5 1ebbd3e34237af26da5dc08a4e440464、35149 バイト) |
 | `FFmpeg/COPYING.GPLv3` | GPL-3.0 の本文 (obs-deps には `COPYING.GPLv2` と `MAINTAINERS` しかない) | gnu.org の `gpl-3.0.txt` (上の行と同じバイト列) |
 | `x264/` `srt/` `librist/` `zlib/` | FFmpeg とは別の DLL で配る 4 つ | obs-deps の `licenses/` (`zlib/README` を除く) |
-| `zlib/README` | zlib 1.3.1 の README のうち、タイトルの行、バージョンの 1 文、「Copyright notice:」の節 (ライセンスの本文) だけ | obs-deps には 1.2.11 の README が入っていて、配る DLL のバージョン (1.3.1) と違う。zlib のリポジトリのタグ `v1.3.1` の README からコピーした。README の全文は、同じリリースに添付する zlib のソースのアーカイブに入っている |
+| `zlib/README` | zlib 1.3.1 の README のうち、タイトルの行、バージョンの 1 文、「Copyright notice:」の節 (ライセンスの本文) だけ | obs-deps には 1.2.11 の README が入っていて、配る DLL のバージョン (1.3.1) と違う。zlib のリポジトリのタグ `v1.3.1` の README からコピーした。README の全文は、同じリリースに添付するソースの zip の中の、zlib のアーカイブに入っている |
 | `mbedtls/` | srt.dll と librist.dll に静的に入っている Mbed TLS (Apache-2.0。srt は obs-deps がビルドした 3.6.4、librist は自分のソースに持つ 2.26.0。本文は同じ Apache License 2.0) | obs-deps の `licenses/` |
 | `aom/` `svt-av1/` `libtheora/` `lame/` `opus/` `libvorbis/` `libogg/` `libvpx/` `nv-codec-headers/` `amf/` | FFmpeg の DLL に静的に入っているコンポーネント | obs-deps の `licenses/` |
 | `websocketpp/` `asio/` `nlohmann-json/` | cordmux.dll に入っているコンポーネント (`src-obs/ws/ws_deps.cmake`) | obs-deps の `licenses/` |

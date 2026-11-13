@@ -14,6 +14,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
+import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -44,6 +46,7 @@ VENCORD_TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$")
 LEGAL_REFERENCE_RE = re.compile(r"For license information please see (\S+?)\s*\*/")
 
 ZIP_UTF8_FLAG = 0x800
+ZIP_EPOCH_MIN = 315532800  # 1980-01-01T00:00:00Z (zip の形式が持てる最も古い時刻)
 
 
 class DistError(Exception):
@@ -266,6 +269,23 @@ def write_text_lf(path: Path, text: str) -> None:
     # UTF-8 と LF で書く。Windows でテキストとして書くと改行が CRLF になるので、バイト列で書く。
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.encode("utf-8"))
+
+
+def zip_date_time(epoch: int) -> tuple:
+    # zip の項目の時刻 (epoch。UTC)。zip の形式が持てる最も古い時刻より前なら、その時刻にする。
+    return time.gmtime(max(epoch, ZIP_EPOCH_MIN))[:6]
+
+
+def fixed_zip_info(name: str, date_time: tuple, compression: int) -> zipfile.ZipInfo:
+    # 同じ入力から同じバイト列の zip を作るための項目 (配布用の zip とソースをまとめた zip で使う)。時刻は呼び出し元が
+    # 全部の項目で同じ値を渡す。zip を作った OS (create_system) と属性 (external_attr) は 0 にする。Windows で作っても
+    # Linux で作っても、同じバイト列にするため。属性の 0 は、Python の zipfile が書くときに 0o600 << 16 (0x1800000) に
+    # 置き換える (Python 3.12.9 で確認した) ので、zip の中ではどの項目もその値になる。
+    info = zipfile.ZipInfo(name, date_time=date_time)
+    info.compress_type = compression
+    info.create_system = 0
+    info.external_attr = 0
+    return info
 
 
 def legal_names_referenced(js_bytes: bytes) -> list[str]:
@@ -534,17 +554,22 @@ GUIDE_URL_COMMIT_FORMAT = REPO_URL + "/blob/{commit}/{path}"
 RELEASE_ZIP_FORMAT = "cordmux-{label}.zip"
 RELEASE_PDB_ZIP_FORMAT = "cordmux-{label}-pdb.zip"
 RELEASE_PDB_MEMBER = "cordmux.pdb"
-RELEASE_SOURCE_FORMAT = "cordmux-{label}-src-{part}.{ext}"
-# ソースコードの入手先.txt のコンポーネントの行のうち、専用のソースのアーカイブを添付しないもの。cordmux と userplugin の
-# ソースは、GitHub がタグに付ける Source code のアーカイブにある。pnpm-lock.yaml は Vencord のアーカイブに入っている。
+# 同梱するソフトウェアのソースを 1 つにまとめた zip。中は、最上位のフォルダー (zip の名前から .zip を除いたもの) の下に、
+# コンポーネントごとのアーカイブ (RELEASE_SOURCE_MEMBER_FORMAT) と、どのアーカイブがソースコードの入手先.txt のどの行に
+# 当たるかの一覧 (RELEASE_SOURCE_LIST) を置く。
+RELEASE_SOURCES_ZIP_FORMAT = "cordmux-{label}-sources.zip"
+RELEASE_SOURCE_MEMBER_FORMAT = "{part}.{ext}"
+RELEASE_SOURCE_LIST = "README.txt"
+# ソースコードの入手先.txt のコンポーネントの行のうち、ソースをまとめた zip に専用のアーカイブを入れないもの。cordmux と
+# userplugin のソースは、GitHub がタグに付ける Source code のアーカイブにある。pnpm-lock.yaml は Vencord のアーカイブに入っている。
 SOURCE_PARTS_WITHOUT_TARBALL = ("cordmux", "userplugin", "pnpm-lock.yaml")
 _PART_SLUG_RE = re.compile(r"[^a-z0-9._-]")
 
 
 def source_part_slug(name: str) -> str:
-    # ソースコードの入手先.txt のコンポーネントの行の最初の語 (コンポーネントの名前) を、添付するファイルの名前の {part} に
-    # する。小文字にし、英数字と ._- のほかの文字を - にする。GitHub は、添付するファイルの名前にある特殊な文字を、
-    # 別の文字に置き換えるため。
+    # ソースコードの入手先.txt のコンポーネントの行の最初の語 (コンポーネントの名前) を、ソースをまとめた zip の中の
+    # アーカイブの名前の {part} にする。小文字にし、英数字と ._- のほかの文字を - にする。nlohmann/json の / のように、
+    # 展開したときにフォルダーの区切りになる文字や、OS によって使えない文字を名前に残さないため。
     return _PART_SLUG_RE.sub("-", name.lower())
 
 

@@ -3,6 +3,7 @@
 
 # リリースノート (日本語と英語) を作る。使うものは、CHANGELOG.md の label のバージョンの節、手順書 (guide/*.md) の
 # 互換性の節と更新の見出し、--assets-dir の cordmux-<label>.zip の中の手順書、cordmux-build.txt、ソースコードの入手先.txt。
+# 添付するファイルが 3 つだけで、ソースをまとめた zip に、ソースコードの入手先.txt の行のソースがそろっていることも確かめる。
 # 文の形と日英の決まった文は
 # release_notes_template.md にあり、ここで {{キー}} と {{#フラグ}}...{{/フラグ}} を埋める。並びは、このバージョンの
 # 変更点、互換性、添付するファイルの順。問題が 1 つでもあれば文を書かない (問題になるものは
@@ -25,11 +26,11 @@ sys.path.insert(0, str(TOOL_DIR))
 import build_info  # noqa: E402  (タグの形を build_info.TAG_RE の 1 か所に保つ)
 import dist_common  # noqa: E402  (ツールが共有する関数と定数)
 from dist_common import DistError  # noqa: E402
-import fetch_sources  # noqa: E402  (上流のアーカイブの拡張子の一覧 ARCHIVE_SUFFIXES)
+import fetch_sources  # noqa: E402  (上流のアーカイブの拡張子の一覧 ARCHIVE_SUFFIXES と、コンポーネントの行の読み方)
 
 sys.path.insert(0, str(dist_common.REPO_ROOT / "test" / "lint"))
 import install_guide  # noqa: E402  (手順書の節を rules の role で探す関数)
-import forbidden_ui_words  # noqa: E402  (internal-words と spacing のセット)
+import forbidden_ui_words  # noqa: E402  (spacing のセット)
 
 TEMPLATE_PATH = TOOL_DIR / "release_notes_template.md"
 CHANGELOG_PATH = dist_common.REPO_ROOT / "CHANGELOG.md"
@@ -123,11 +124,6 @@ def zip_path_for(assets_dir: Path, label: str) -> Path:
     # 文を作るのに使う zip は、添付する zip そのもの (--assets-dir と --label から名前の規則で決め、添付と違う zip から
     # 文を作らない)。
     return assets_dir / dist_common.RELEASE_ZIP_FORMAT.format(label=label)
-
-
-def source_prefix_for(label: str) -> str:
-    # 同梱するソフトウェアのソースのアーカイブの名前の先頭 (cordmux-<label>-src-)。
-    return dist_common.RELEASE_SOURCE_FORMAT.split("{part}")[0].format(label=label)
 
 
 def pack_pdb(pdb: Path, assets_dir: Path, label: str) -> Path:
@@ -330,7 +326,6 @@ def item_problems(section: ChangelogSection, name: str = "CHANGELOG.md") -> list
     # ため、forbidden_ui_words.txt の画面の文字列のセット (symbols、notation) はチェックしない。
     # spacing のセットは、引用の中を伏せてからチェックする (引用した所は、元の画面の書き方のままにするため)。
     problems: list[str] = []
-    internal = forbidden_ui_words.load_word_patterns()
     for lang in dist_common.FILL_LANGS:
         spacing = spacing_rules(lang)
         for item in section.items(lang):
@@ -344,8 +339,8 @@ def item_problems(section: ChangelogSection, name: str = "CHANGELOG.md") -> list
                     problems.append(f"{where}: 英語の項目の末尾に「.」がある")
                 if EN_PERSON_RE.search(item):
                     problems.append(f"{where}: 英語の項目に we、our、us がある")
-            for source, pattern in internal + [(raw, regex) for raw, regex in CHANGELOG_INTERNAL_PATTERNS]:
-                if isinstance(source, str) and pattern.search(item):
+            for source, pattern in CHANGELOG_INTERNAL_PATTERNS:
+                if pattern.search(item):
                     problems.append(f"{where}: 内部の語か番号がある ({source})")
             for source, pattern in REPORT_TO_PATTERNS:
                 if pattern.search(item):
@@ -470,28 +465,23 @@ def section_text(sections: dict, heading: str, guide: str, role: str, block, pro
 
 
 def classify_assets(assets_dir: Path, label: str, problems: list[str]) -> dict:
-    # 添付するファイルを 3 種類 (zip、pdb の zip、ソースのアーカイブ) に分ける。名前の規則に合わないもの、足りない
-    # ものは問題にする。
-    zip_name = dist_common.RELEASE_ZIP_FORMAT.format(label=label)
-    pdb_name = dist_common.RELEASE_PDB_ZIP_FORMAT.format(label=label)
-    head = source_prefix_for(label)
-    exts = "|".join(re.escape(suffix[1:]) for suffix in fetch_sources.ARCHIVE_SUFFIXES)
-    source_re = re.compile(re.escape(head) + r"([a-z0-9._-]+?)\.(" + exts + r")$")
-    sources = []
+    # 添付するファイルが 3 つ (配布用の zip、pdb の zip、ソースをまとめた zip) だけかを確認し、種類 -> 名前 を返す。
+    # 足りないもの、ほかのファイル、フォルダーは問題にする。添付を 3 つに限るのは、リリースのページで、どれを
+    # ダウンロードすればよいかを名前を全部見て確かめなくて済むようにするため。
+    names = {
+        "zip": dist_common.RELEASE_ZIP_FORMAT.format(label=label),
+        "pdb": dist_common.RELEASE_PDB_ZIP_FORMAT.format(label=label),
+        "sources": dist_common.RELEASE_SOURCES_ZIP_FORMAT.format(label=label),
+    }
     for path in sorted(assets_dir.iterdir()):
         if path.is_dir():
             problems.append(f"添付: フォルダー {path.name} がある (添付できるのはファイルだけ)")
-        elif path.name in (zip_name, pdb_name):
-            continue
-        elif source_re.match(path.name):
-            sources.append(path.name)
-        else:
-            problems.append(f"添付: {path.name} が添付するファイルの名前の規則に合わない")
-    for name in (zip_name, pdb_name):
+        elif path.name not in names.values():
+            problems.append(f"添付: {path.name} は添付するファイルでない (添付するのは {', '.join(names.values())} の 3 つだけ)")
+    for name in names.values():
         if not (assets_dir / name).is_file():
             problems.append(f"添付: {name} がない")
-    if not sources:
-        problems.append("添付: ソースのアーカイブがない (fetch_sources.py が作る)")
+    pdb_name = names["pdb"]
     pdb_path = assets_dir / pdb_name
     if pdb_path.is_file():
         try:
@@ -501,16 +491,62 @@ def classify_assets(assets_dir: Path, label: str, problems: list[str]) -> dict:
                 problems.append(f"添付: {pdb_name} の中身は [{dist_common.RELEASE_PDB_MEMBER}] のはずが {members}")
         except zipfile.BadZipFile as exc:
             problems.append(f"添付: {pdb_name}: {exc}")
-    return {"zip": zip_name, "pdb": pdb_name, "sources": sources}
+    return names
+
+
+def sources_zip_problems(path: Path, offer_text: str) -> list[str]:
+    # ソースをまとめた zip (fetch_sources.py が作る) に、配布用の zip のソースコードの入手先.txt のコンポーネントの行の
+    # ソースが全部あるかを確認し、問題の文の並びを返す。zip の中は、最上位のフォルダー (zip の名前から .zip を除いたもの)
+    # の下に、次のものだけがあるはず。
+    #   - 専用のアーカイブを入れない行 (dist_common.SOURCE_PARTS_WITHOUT_TARBALL) のほかの行ごとに、アーカイブが 1 つ
+    #     (名前は dist_common.RELEASE_SOURCE_MEMBER_FORMAT。{part} は行の最初の語、{ext} は上流のアーカイブの拡張子)
+    #   - 一覧 (dist_common.RELEASE_SOURCE_LIST)。ソースコードの入手先.txt のコンポーネントの行が、全部同じ文字列である
+    name = path.name
+    top = path.name[: -len(".zip")] + "/"
+    list_name = top + dist_common.RELEASE_SOURCE_LIST
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            listing = archive.read(list_name).decode("utf-8") if list_name in names else None
+    except (OSError, zipfile.BadZipFile, UnicodeDecodeError) as exc:
+        return [f"添付: {name}: {exc}"]
+    problems: list[str] = []
+    outside = [n for n in names if not n.startswith(top)]
+    if outside:
+        problems.append(f"添付: {name} の最上位のフォルダー {top} の外に項目がある: {outside[:3]}")
+    members = [n[len(top):] for n in names if n.startswith(top)]
+    entries = fetch_sources.offer_entries(offer_text)
+    if not entries:
+        problems.append("配布用の zip のソースコードの入手先.txt にコンポーネントの行がない")
+    matched: set[str] = set()
+    for part, _ in entries:
+        if part in dist_common.SOURCE_PARTS_WITHOUT_TARBALL:
+            continue
+        slug = dist_common.source_part_slug(part)
+        wanted = {dist_common.RELEASE_SOURCE_MEMBER_FORMAT.format(part=slug, ext=suffix[1:])
+                  for suffix in fetch_sources.ARCHIVE_SUFFIXES}
+        found = [member for member in members if member in wanted]
+        if not found:
+            problems.append(f"添付: {name} に {part} の行のソースのアーカイブ ({slug}.<拡張子>) がない")
+        elif len(found) > 1:
+            problems.append(f"添付: {name} に {part} の行のソースのアーカイブが {len(found)} つある: {found}")
+        matched.update(found)
+    extra = [member for member in members if member not in matched and member != dist_common.RELEASE_SOURCE_LIST]
+    if extra:
+        problems.append(f"添付: {name} に、ソースコードの入手先.txt のどの行にも当たらない項目がある: {extra}")
+    if listing is None:
+        problems.append(f"添付: {name} に {dist_common.RELEASE_SOURCE_LIST} がない")
+    else:
+        listed = set(listing.split("\n"))
+        missing = [part for part, line in entries if line not in listed]
+        if missing:
+            problems.append(f"添付: {name} の {dist_common.RELEASE_SOURCE_LIST} に、ソースコードの入手先.txt の行がない: {missing}")
+    return problems
 
 
 def internal_word_problems(text: str) -> list[str]:
-    # 作った文に、内部の語と報告先の語がないかを確認する (内部の語は手順書の lint と同じで、AC-<数字> の形の番号と
-    # forbidden_ui_words.txt の internal-words のセット)。
+    # 作った文に、内部の番号 (AC-<数字> の形。手順書の lint と同じ) と報告先の語がないかを確認する。
     problems = [f"リリースノートに内部の番号 {m} がある" for m in sorted(set(INTERNAL_NUMBER_RE.findall(text)))]
-    for raw, pattern in forbidden_ui_words.load_word_patterns():
-        if pattern.search(text):
-            problems.append(f"リリースノートに内部の語 {raw} がある")
     for raw, pattern in REPORT_TO_PATTERNS:
         if pattern.search(text):
             problems.append(f"リリースノートに不具合の報告先 ({raw}) がある")
@@ -579,8 +615,9 @@ def compose(label: str, assets_dir: Path, materials: Materials, expect_commit: O
     #     節がない、空、placeholder や {{ がある (section_text)。更新の節がない
     #   - cordmux-build.txt の build_id が label のバージョンで始まらない、--expect-commit の短いコミットで終わらない
     #   - zip のソースコードの入手先.txt に、このバージョンのソースの URL (dist_common.source_url_for) がない
-    #   - 添付するファイルの過不足と、名前の規則に合わないもの (classify_assets)
-    #   - テンプレートの知らないフラグとキー。作った文に内部の語、報告先の語、{{ が残る
+    #   - 添付するファイルが 3 つ (配布用の zip、pdb の zip、ソースをまとめた zip) でない (classify_assets)
+    #   - ソースをまとめた zip に、zip のソースコードの入手先.txt の行のソースがそろっていない (sources_zip_problems)
+    #   - テンプレートの知らないフラグとキー。作った文に内部の番号、報告先の語、{{ が残る
     #   - 正式版 (is_prerelease が偽) では、dist_common.formal_release_problems の問題も
     problems: list[str] = []
     prerelease = is_prerelease(label)
@@ -618,12 +655,10 @@ def compose(label: str, assets_dir: Path, materials: Materials, expect_commit: O
         if expect_commit and not build_id.endswith("+" + expect_commit[: build_info.SHORT_COMMIT_LENGTH]):
             problems.append(f"{mark_names['file_name']} の build_id {build_id!r} が --expect-commit {expect_commit} の短いコミットで終わらない")
 
-    # ソースのアーカイブは名前を 1 つずつ並べず、名前の先頭 (cordmux-<label>-src-) を 1 つ書く。GitHub の Assets の
-    # 一覧に全部の名前が表示されるので、同じものを 2 回並べないため。
     values = {
         "zip_asset": assets["zip"],
         "pdb_asset": assets["pdb"],
-        "source_prefix": source_prefix_for(label),
+        "sources_asset": assets["sources"],
         "source_offer": materials.offer_name,
     }
     guide_texts: dict[str, str] = {}
@@ -669,6 +704,9 @@ def compose(label: str, assets_dir: Path, materials: Materials, expect_commit: O
                 problems.append(f"{materials.offer_name} にソースの URL {url} がない")
         except DistError as exc:
             problems.append(str(exc))
+        sources_path = assets_dir / assets["sources"]
+        if sources_path.is_file():
+            problems += sources_zip_problems(sources_path, offer.decode("utf-8"))
 
     if not prerelease:
         placeholders = [block.placeholder for block in materials.blocks]
@@ -731,10 +769,10 @@ def run(args: argparse.Namespace) -> dict:
 LB = "【"
 RB = "】"
 SELFTEST_COMMIT = "0123456789abcdef0123456789abcdef01234567"
-# 内部の番号の形のテストデータ。references.py が、このファイルの番号の形の文字列として検出しないよう、分けて書く。
-SAMPLE_AC_ID = "AC" + "-56"
-SAMPLE_RULE_ID = "R" + "-55"
-SAMPLE_LETTER_RULE_ID = "V" + "10-08"
+# 内部の番号の形のテストデータ。
+SAMPLE_AC_ID = "AC-56"
+SAMPLE_RULE_ID = "R-55"
+SAMPLE_LETTER_RULE_ID = "V10-08"
 JA_NEW, JA_CHANGES, JA_FIXES = CHANGE_HEADINGS["ja"]
 
 
@@ -793,19 +831,33 @@ def selftest_guide(maintenance: str = "Sample maintenance text.", steps: str = "
     ])
 
 
+# テスト用のソースコードの入手先.txt のコンポーネントの行 (専用のアーカイブを入れない行と、入れる行が 1 つずつ)。
+SELFTEST_OFFER_LINES = ("- cordmux same tag (Apache-2.0): https://example.invalid/cordmux",
+                        "- FFmpeg n7.1.1 (GPL-3.0-or-later): https://example.invalid/ffmpeg")
+
+
+def selftest_sources(listing_lines: tuple = SELFTEST_OFFER_LINES) -> dict:
+    # テスト用のソースをまとめた zip の中身 (最上位のフォルダーの下の名前 -> 中身)。
+    listing = "list\n\n" + "".join(f"{line}\n  file\n" for line in listing_lines)
+    return {"ffmpeg.tar.gz": b"src", dist_common.RELEASE_SOURCE_LIST: listing.encode("utf-8")}
+
+
 def selftest_world(root: Path, label: str, build_id: Optional[str] = None, guides: Optional[dict] = None,
                    offer: Optional[str] = None, extra_assets: tuple = (), skip_assets: tuple = (),
-                   drop_zip_members: tuple = ()) -> Path:
-    # 添付するファイルを置いたフォルダーを作る (zip、pdb の zip、ソースのアーカイブ 1 つ)。
+                   drop_zip_members: tuple = (), sources: Optional[dict] = None) -> Path:
+    # 添付するファイルを置いたフォルダーを作る (zip、pdb の zip、ソースをまとめた zip)。sources はソースをまとめた zip の
+    # 最上位のフォルダーの下の名前 -> 中身 (/ で始まる名前は、最上位のフォルダーの外に置く)。
     assets = root / "assets"
     assets.mkdir()
     build_id = build_id if build_id is not None else f"{version_of(label)}+{SELFTEST_COMMIT[:build_info.SHORT_COMMIT_LENGTH]}"
     guides = guides if guides is not None else {lang: selftest_guide() for lang in ("ja", "en")}
     top = f"cordmux-{label}/"
+    default_offer = "".join([f"Source: {dist_common.source_url_for(label, SELFTEST_COMMIT)}\n",
+                             *(line + "\n" for line in SELFTEST_OFFER_LINES)])
     members = {
         top + "guide-ja.txt": guides["ja"],
         top + "guide-en.txt": guides["en"],
-        top + "offer.txt": offer if offer is not None else f"Source: {dist_common.source_url_for(label, SELFTEST_COMMIT)}\n",
+        top + "offer.txt": offer if offer is not None else default_offer,
         top + BUILD_MARK_IN_ZIP: dist_common.build_mark_text(build_id, "0" * 40, "v1.0.0"),
     }
     zip_name = dist_common.RELEASE_ZIP_FORMAT.format(label=label)
@@ -818,9 +870,12 @@ def selftest_world(root: Path, label: str, build_id: Optional[str] = None, guide
     pdb.write_bytes(b"pdb")
     if dist_common.RELEASE_PDB_ZIP_FORMAT.format(label=label) not in skip_assets:
         pack_pdb(pdb, assets, label)
-    source = dist_common.RELEASE_SOURCE_FORMAT.format(label=label, part="ffmpeg", ext="tar.gz")
-    if source not in skip_assets:
-        (assets / source).write_bytes(b"src")
+    sources_name = dist_common.RELEASE_SOURCES_ZIP_FORMAT.format(label=label)
+    if sources_name not in skip_assets:
+        sources_top = sources_name[: -len(".zip")] + "/"
+        with zipfile.ZipFile(assets / sources_name, "w") as archive:
+            for name, data in (sources if sources is not None else selftest_sources()).items():
+                archive.writestr(name[1:] if name.startswith("/") else sources_top + name, data)
     for name in extra_assets:
         (assets / name).write_bytes(b"x")
     return assets
@@ -867,8 +922,8 @@ def selftest() -> int:
         failures.append(f"タイトル: {title_for('0.1.0-rc1')!r}")
     if zip_path_for(Path("assets"), "0.1.0-rc1").name != "cordmux-0.1.0-rc1.zip":
         failures.append(f"zip の名前: {zip_path_for(Path('assets'), '0.1.0-rc1').name!r}")
-    if source_prefix_for("0.1.0-rc1") != "cordmux-0.1.0-rc1-src-":
-        failures.append(f"ソースのアーカイブの名前の先頭: {source_prefix_for('0.1.0-rc1')!r}")
+    if dist_common.RELEASE_SOURCES_ZIP_FORMAT.format(label="0.1.0-rc1") != "cordmux-0.1.0-rc1-sources.zip":
+        failures.append(f"ソースをまとめた zip の名前: {dist_common.RELEASE_SOURCES_ZIP_FORMAT.format(label='0.1.0-rc1')!r}")
 
     # 前のリリースの選び方
     tags = ["v0.1.0-rc1", "v0.1.0", "v0.1.1", "v0.2.0-rc1", "v0.2.0-rc2", "not-a-tag"]
@@ -902,7 +957,7 @@ def selftest() -> int:
         if internal_word_problems(real.template):
             failures.append(f"テンプレート: {internal_word_problems(real.template)}")
         for key in ("ja_changes", "en_changes", "ja_update_heading", "en_update_heading", "ja_maintenance",
-                    "en_maintenance", "source_prefix", "ja_guide_url", "en_guide_url", "ja_update_url",
+                    "en_maintenance", "sources_asset", "ja_guide_url", "en_guide_url", "ja_update_url",
                     "en_update_url"):
             if key not in template_keys:
                 failures.append(f"テンプレートのキー: {sorted(template_keys)} に {key} がない")
@@ -945,7 +1000,7 @@ def selftest() -> int:
 
     def good_notes(notes: str) -> None:
         guide_url = "https://github.com/eoforgu0/cordmux/blob/v0.1.0-rc1/sample/selftest-ja.txt"
-        for piece in ("cordmux-0.1.0-rc1.zip", "cordmux-0.1.0-rc1-pdb.zip", "cordmux-0.1.0-rc1-src-",
+        for piece in ("cordmux-0.1.0-rc1.zip", "cordmux-0.1.0-rc1-pdb.zip", "`cordmux-0.1.0-rc1-sources.zip`",
                       "Sample maintenance text.", "offer.txt", "guide-ja.txt", f"({guide_url})", f"({guide_url}#update)",
                       f"#### {JA_NEW}\n\n- Added x" + JA_PERIOD, "#### Bug Fixes\n\n- Fixed an issue where y failed",
                       "Update", *rc_sentences):
@@ -995,10 +1050,29 @@ def selftest() -> int:
          guides={"ja": selftest_guide(maintenance=f"See {SAMPLE_AC_ID}."), "en": selftest_guide()})
     case(rc, "手順書の部分に報告先がある", False, reason='不具合の報告先',
          guides={"ja": selftest_guide(), "en": selftest_guide(maintenance="Use GitHub Issues.")})
-    case(rc, "知らない添付するファイル", False, reason='notes.txt が添付するファイルの名前の規則に合わない', extra_assets=("notes.txt",))
+    case(rc, "知らない添付するファイル", False, reason='notes.txt は添付するファイルでない', extra_assets=("notes.txt",))
+    case(rc, "前の形のソースのアーカイブを添付した", False, reason='cordmux-0.1.0-rc1-src-ffmpeg.tar.gz は添付するファイルでない',
+         extra_assets=("cordmux-0.1.0-rc1-src-ffmpeg.tar.gz",))
     case(rc, "pdb の zip がない", False, reason='-pdb.zip がない', skip_assets=(dist_common.RELEASE_PDB_ZIP_FORMAT.format(label=rc),))
-    case(rc, "ソースのアーカイブがない", False, reason='ソースのアーカイブがない',
-         skip_assets=(dist_common.RELEASE_SOURCE_FORMAT.format(label=rc, part="ffmpeg", ext="tar.gz"),))
+    sources_name = dist_common.RELEASE_SOURCES_ZIP_FORMAT.format(label=rc)
+    case(rc, "ソースをまとめた zip がない", False, reason=f'{sources_name} がない', skip_assets=(sources_name,))
+    no_ffmpeg = {k: v for k, v in selftest_sources().items() if k != "ffmpeg.tar.gz"}
+    case(rc, "ソースをまとめた zip に行のアーカイブがない", False, reason="に FFmpeg の行のソースのアーカイブ (ffmpeg.<拡張子>) がない",
+         sources=no_ffmpeg)
+    case(rc, "ソースをまとめた zip に同じ行のアーカイブが 2 つ", False, reason="2 つある",
+         sources={**selftest_sources(), "ffmpeg.zip": b"src"})
+    case(rc, "ソースをまとめた zip に行に当たらない項目", False, reason="どの行にも当たらない項目がある: ['x264.tar.gz']",
+         sources={**selftest_sources(), "x264.tar.gz": b"src"})
+    case(rc, "ソースをまとめた zip の最上位のフォルダーの外に項目", False, reason="の外に項目がある",
+         sources={**selftest_sources(), "/sources/ffmpeg.tar.gz": b"src"})
+    no_list = {k: v for k, v in selftest_sources().items() if k != dist_common.RELEASE_SOURCE_LIST}
+    case(rc, "ソースをまとめた zip に一覧がない", False, reason=f"{dist_common.RELEASE_SOURCE_LIST} がない", sources=no_list)
+    case(rc, "一覧に行がない", False, reason="ソースコードの入手先.txt の行がない: ['FFmpeg']",
+         sources=selftest_sources(SELFTEST_OFFER_LINES[:1]))
+    case(rc, "一覧の行が配布用の zip の行と違う", False, reason="ソースコードの入手先.txt の行がない: ['FFmpeg']",
+         sources=selftest_sources((SELFTEST_OFFER_LINES[0], SELFTEST_OFFER_LINES[1].replace("n7.1.1", "n7.1.0"))))
+    case(rc, "配布用の zip にコンポーネントの行がない", False, reason="コンポーネントの行がない",
+         offer=f"Source: {dist_common.source_url_for(rc, SELFTEST_COMMIT)}\n")
     case(rc, "zip がない", False, reason='cordmux-0.1.0-rc1.zip', skip_assets=(dist_common.RELEASE_ZIP_FORMAT.format(label=rc),))
     case(rc, "ソースコードの入手先.txt にソースの URL がない", False, reason='にソースの URL', offer="Source: somewhere\n")
     case(rc, "zip に英語の手順書がない", False, reason='guide-en.txt がない', drop_zip_members=("guide-en.txt",))

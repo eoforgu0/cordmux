@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-# 同梱するソフトウェアのソースを取得し、コンポーネントごとに 1 つのアーカイブ (リリースに添付するファイル) にする。
-# 取得するものの一覧は持たず、すでにある事実から作る: obs-deps のタグ (src-obs/buildspec.json)、その中の
+# 同梱するソフトウェアのソースを取得してコンポーネントごとに 1 つのアーカイブにし、それを 1 つの zip (リリースに添付する
+# ファイル) にまとめる。取得するものの一覧は持たず、すでにある事実から作る: obs-deps のタグ (src-obs/buildspec.json)、その中の
 # deps.ffmpeg/*.ps1 の param ブロック、src-obs/ws/ws_deps.cmake の FetchContent_Declare、src-vencord/vencord.lock.json。
 # 取得する前に、その一覧とソースコードの入手先.txt のコンポーネントの行を突き合わせ、合わなければ何も取得せずに失敗する。
-# 結果は 1 行の JSON (ok、out、obs_deps_commit、files、skipped、error)。ネットワークに接続するのは --fetch のときだけ。
-# 引数は README.md と --help にある。
+# 結果は 1 行の JSON (ok、out、zip、bytes、sha256、obs_deps_commit、files、skipped、error)。ネットワークに接続するのは
+# --fetch のときだけ。引数は README.md と --help にある。
 
 import argparse
 import gzip
 import hashlib
+import io
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ import sys
 import tarfile
 import tempfile
 import xml.etree.ElementTree as ElementTree
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -53,7 +55,10 @@ NOT_SHIPPED_SCRIPTS = {
     "libpng": "同梱する DLL のどれにも入っていない (FFmpeg の configure にも DLL にも libpng がない)",
     "libdatachannel": "同梱しない別の datachannel.dll (OBS 自身が使う)",
 }
-ARCHIVE_SUFFIXES = (".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".zip", ".tar")
+# ソースをまとめた zip に専用のアーカイブを入れない行 (dist_common.SOURCE_PARTS_WITHOUT_TARBALL) の、ソースのある場所
+# (一覧のテキストに書く)。None は GitHub がタグに付ける Source code のアーカイブ。名前は、その名前の行のアーカイブの中。
+WITHOUT_TARBALL_PLACES = {"cordmux": None, "userplugin": None, "pnpm-lock.yaml": "Vencord"}
+ARCHIVE_SUFFIXES =(".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".zip", ".tar")
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 COMMIT_IN_TEXT_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
 PARAM_START_RE = re.compile(r"^\s*param\s*\(", re.I | re.M)
@@ -320,7 +325,7 @@ def match_parts(parts: list[Part], offer_text: str, require_every_line: bool = T
                 problems.append(f"ソースコードの入手先.txt の行 {name!r} に対応するコンポーネントがない")
     slugs = [dist_common.source_part_slug(p.offer_name) for p in parts if p.offer_name]
     for slug in sorted({s for s in slugs if slugs.count(s) > 1}):
-        problems.append(f"添付するファイルの名前の {{part}} が {slug!r} になるコンポーネントが 2 つ以上ある")
+        problems.append(f"ソースの zip の中のアーカイブの名前の {{part}} が {slug!r} になるコンポーネントが 2 つ以上ある")
     return problems
 
 
@@ -434,7 +439,7 @@ def write_git_tar(repo: Path, commit: str, prefix: str, out_path: Path, paths: t
 
 
 def archive_ext(uri: str) -> str:
-    # 上流のアーカイブの拡張子 (添付するファイルの名前の {ext})。
+    # 上流のアーカイブの拡張子 (ソースの zip の中のアーカイブの名前の {ext})。
     name = uri.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lower()
     for suffix in ARCHIVE_SUFFIXES:
         if name.endswith(suffix):
@@ -499,12 +504,94 @@ def real_inputs() -> FetchInputs:
                        lock["commit"], lock["tag"])
 
 
-def fetch_all(inputs: FetchInputs, offer_text: str, label: str, out_dir: Path, work_dir: Path) -> dict:
-    # obs-deps を取得してコンポーネントの一覧を作り、ソースコードの入手先.txt と突き合わせてから、全部を取得する。問題があれば
-    # DistError。obs-deps 自身は、タグの git archive をそのまま tar.gz にする (FFmpeg、lame、theora などに
-    # 適用したパッチと、ビルドの手順を含む)。添付するファイルの名前は dist_common.RELEASE_SOURCE_FORMAT で、
-    # {part} はソースコードの入手先.txt のコンポーネントの名前 (dist_common.source_part_slug)。out_dir に同じ名前のファイルがあれば
-    # 上書きせずに DistError。
+def sources_list_text(label: str, offer_name: str, offer_text: str, parts: list[Part], members: dict[str, str],
+                      places: dict = WITHOUT_TARBALL_PLACES) -> str:
+    # ソースをまとめた zip に入れる一覧 (dist_common.RELEASE_SOURCE_LIST) の中身。ソースコードの入手先.txt のコンポーネントの
+    # 行を同じ順に全部並べ、行ごとに、そのソースのあるファイルを次の行に書く。offer_name は配布用の zip の中のソースコードの
+    # 入手先.txt の名前 (top_level_files.txt の source-offer の行。日本語のファイル名はそこにだけ書く)。members は
+    # コンポーネントの名前 (offer_name) -> zip の中のアーカイブの名前、places は専用のアーカイブを入れない行の場所
+    # (WITHOUT_TARBALL_PLACES)。行の文字列はソースコードの入手先.txt のまま写す (make_release_notes.py が、配布用の zip の
+    # ソースコードの入手先.txt の行が全部あることを確かめる)。
+    zip_name = dist_common.RELEASE_ZIP_FORMAT.format(label=label)
+    lines = [
+        f"cordmux {label} に同梱したコンポーネントのソースコード",
+        "",
+        f"{zip_name} の中の「{offer_name}」のコンポーネントの行ごとに、そのソースコードのあるファイルを書いています。"
+        "git のリポジトリから取得したものは、そのバージョンのコミットを git archive で tar.gz にしたものです (submodule も"
+        "含みます)。ほかのファイルは、配布元が配っているアーカイブをそのまま置いています。",
+        "",
+        f"Source code of the components bundled with cordmux {label}",
+        "",
+        f"For each component line of \"{offer_name}\" in {zip_name}, the file with its source code is shown on "
+        "the next line. Files from git repositories are tar.gz files made with git archive from the commit of that "
+        "version (including submodules). The other files are the archives as distributed by each project, unchanged.",
+        "",
+    ]
+    by_name = {part.offer_name: part for part in parts if part.offer_name}
+    for name, line in offer_entries(offer_text):
+        lines.append(line)
+        if name in dist_common.SOURCE_PARTS_WITHOUT_TARBALL:
+            if name not in places:
+                raise DistError(f"WITHOUT_TARBALL_PLACES に {name!r} の場所がない")
+            holder = places[name]
+            if holder is None:
+                lines.append("  GitHub のリリースの [Source code (zip)] と [Source code (tar.gz)] / "
+                             "[Source code (zip)] and [Source code (tar.gz)] of the GitHub release")
+            elif holder in members:
+                lines.append(f"  {members[holder]} の中 / inside {members[holder]}")
+            else:
+                raise DistError(f"{name!r} の行のソースがある {holder!r} のアーカイブがない")
+        elif name in members:
+            sparse = by_name[name].sparse
+            if sparse:
+                paths = "、".join(sparse)
+                lines.append(f"  {members[name]} ({paths} だけ / only {', '.join(sparse)})")
+            else:
+                lines.append(f"  {members[name]}")
+        else:
+            raise DistError(f"ソースコードの入手先.txt の行 {name!r} のアーカイブがない")
+    return "\n".join(lines) + "\n"
+
+
+def write_sources_zip(out: Path, files: dict[str, Path], list_text: str, epoch: int) -> None:
+    # ソースをまとめた zip を書く。中は最上位のフォルダー (out の名前から .zip を除いたもの) の下に、files (zip の中の名前 ->
+    # 取得したファイル) と一覧のテキスト。make_dist_zip.write_zip と同じく、名前の順に同じ時刻 (epoch。UTC) で書き、
+    # 書き終えてから置き換える (途中で止まった zip を out に残さない)。アーカイブはどれも圧縮してあるので、圧縮し直さずに
+    # (ZIP_STORED) 取得したバイト列のまま入れる。一覧のテキストも小さいので同じく圧縮しない。大きなアーカイブを
+    # メモリーに読み込まないよう、ファイルから少しずつ書く。
+    top = out.name[: -len(".zip")]
+    members: dict[str, Optional[Path]] = {f"{top}/{name}": path for name, path in files.items()}
+    members[f"{top}/{dist_common.RELEASE_SOURCE_LIST}"] = None
+    date_time = dist_common.zip_date_time(epoch)
+    partial = out.with_name(out.name + ".partial")
+    try:
+        with zipfile.ZipFile(partial, "w") as archive:
+            for name in sorted(members):
+                info = dist_common.fixed_zip_info(name, date_time, zipfile.ZIP_STORED)
+                source = members[name]
+                if source is None:
+                    archive.writestr(info, list_text.encode("utf-8"))
+                    continue
+                info.file_size = source.stat().st_size
+                with open(source, "rb") as reader, archive.open(info, "w") as writer:
+                    shutil.copyfileobj(reader, writer, 1 << 20)
+        os.replace(partial, out)
+    finally:
+        if partial.exists():
+            partial.unlink()
+
+
+def fetch_all(inputs: FetchInputs, offer_text: str, label: str, out_dir: Path, work_dir: Path, epoch: int,
+              offer_name: str) -> dict:
+    # obs-deps を取得してコンポーネントの一覧を作り、ソースコードの入手先.txt と突き合わせてから、全部を取得し、
+    # out_dir の dist_common.RELEASE_SOURCES_ZIP_FORMAT の zip にまとめる。問題があれば DistError。obs-deps 自身は、
+    # タグの git archive をそのまま tar.gz にする (FFmpeg、lame、theora などに適用したパッチと、ビルドの手順を含む)。
+    # 取得したアーカイブは work_dir に置き、zip の中の名前は dist_common.RELEASE_SOURCE_MEMBER_FORMAT で、{part} は
+    # ソースコードの入手先.txt のコンポーネントの名前 (dist_common.source_part_slug)。out_dir には zip だけを書き、
+    # 同じ名前の zip があれば、何も取得せずに DistError (上書きしない)。
+    zip_path = out_dir / dist_common.RELEASE_SOURCES_ZIP_FORMAT.format(label=label)
+    if zip_path.exists():
+        raise DistError(f"{out_dir} に {zip_path.name} が既にある")
     obs_deps = Part(OBS_DEPS_PART_NAME, "src-obs/buildspec.json prebuilt", "git", inputs.obs_deps_uri,
                     inputs.obs_deps_tag, want=f"refs/tags/{inputs.obs_deps_tag}")
     obs_deps_repo = work_dir / "obs-deps"
@@ -515,27 +602,37 @@ def fetch_all(inputs: FetchInputs, offer_text: str, label: str, out_dir: Path, w
     problems = match_parts(parts, offer_text)
     if problems:
         raise DistError("ソースコードの入手先.txt と取得するコンポーネントが合わない: " + "; ".join(problems))
-    out_dir.mkdir(parents=True, exist_ok=True)
+    staging = work_dir / "sources"
+    staging.mkdir()
     files = []
+    staged: dict[str, Path] = {}
+    members: dict[str, str] = {}
     for index, part in enumerate(parts):
         slug = dist_common.source_part_slug(part.offer_name)
         ext = "tar.gz" if part.kind == "git" else archive_ext(part.uri)
-        out_path = out_dir / dist_common.RELEASE_SOURCE_FORMAT.format(label=label, part=slug, ext=ext)
-        if out_path.exists():
-            raise DistError(f"{out_dir} に {out_path.name} が既にある")
+        member = dist_common.RELEASE_SOURCE_MEMBER_FORMAT.format(part=slug, ext=ext)
+        path = staging / member
         if part is obs_deps:
-            write_git_tar(obs_deps_repo, obs_deps_commit, archive_prefix(part), out_path)
-            files.append(file_record(out_path, part, obs_deps_commit))
+            write_git_tar(obs_deps_repo, obs_deps_commit, archive_prefix(part), path)
+            files.append(file_record(path, part, obs_deps_commit))
         elif part.kind == "git":
             repo = work_dir / f"part-{index:02d}"
             commit = fetch_git(part, repo)
-            write_git_tar(repo, commit, archive_prefix(part), out_path, part.sparse)
-            files.append(file_record(out_path, part, commit))
+            write_git_tar(repo, commit, archive_prefix(part), path, part.sparse)
+            files.append(file_record(path, part, commit))
             remove_tree(repo)
         else:
-            fetch_archive(part, out_path)
-            files.append(file_record(out_path, part))
-    return {"ok": True, "out": str(out_dir), "obs_deps_commit": obs_deps_commit, "files": files, "skipped": skipped}
+            fetch_archive(part, path)
+            files.append(file_record(path, part))
+        staged[member] = path
+        members[part.offer_name] = member
+    list_text = sources_list_text(label, offer_name, offer_text, parts, members)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if zip_path.exists():
+        raise DistError(f"{out_dir} に {zip_path.name} が既にある")
+    write_sources_zip(zip_path, staged, list_text, epoch)
+    return {"ok": True, "out": str(out_dir), "zip": zip_path.name, "bytes": zip_path.stat().st_size,
+            "sha256": sha256_of(zip_path), "obs_deps_commit": obs_deps_commit, "files": files, "skipped": skipped}
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -551,7 +648,9 @@ def run(args: argparse.Namespace) -> dict:
         if leftovers:
             return {"ok": False, "out": str(out_dir), "error": f"--work の {work_dir} が空でない: {leftovers[:5]}"}
     try:
-        return fetch_all(real_inputs(), offer_text, args.label, out_dir, work_dir)
+        # 一覧に書く名前は、--source-offer のファイルの名前ではなく、配布用の zip の中の名前にする。
+        return fetch_all(real_inputs(), offer_text, args.label, out_dir, work_dir, int(args.source_date_epoch),
+                         default_source_offer().name)
     except (DistError, OSError, tarfile.TarError, ElementTree.ParseError) as exc:
         return {"ok": False, "out": str(out_dir), "error": str(exc)}
     finally:
@@ -561,13 +660,14 @@ def run(args: argparse.Namespace) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="同梱するソフトウェアのソースを取得し、コンポーネントごとに 1 つのアーカイブにする "
+        description="同梱するソフトウェアのソースを取得し、コンポーネントごとのアーカイブを 1 つの zip にまとめる "
         "(ネットワークに接続するのは --fetch のときだけ)"
     )
     parser.add_argument("--selftest", action="store_true", help="このツールのセルフテストを実行する (ネットワークに接続しない)")
     parser.add_argument("--fetch", action="store_true", help="実際にソースをダウンロードする (ネットワークに接続する)")
     parser.add_argument("--label", help="タグから v を除いた文字列。例: 1.0.0、1.0.0-rc1")
-    parser.add_argument("--out", help="アーカイブを置くフォルダー (リリースに添付するファイル)")
+    parser.add_argument("--out", help="ソースをまとめた zip を置くフォルダー (リリースに添付するファイルを置くフォルダー)")
+    parser.add_argument("--source-date-epoch", help="zip の中の時刻 (cordmux のコミットの時刻。秒)")
     parser.add_argument("--source-offer", help="コンポーネントと突き合わせるソースコードの入手先.txt (既定: dist/ のもの)")
     parser.add_argument("--work", help="ダウンロードに使う空のフォルダー (既定: 一時フォルダーを作り、終わったら削除する)")
     return parser
@@ -582,16 +682,20 @@ def validate(args: argparse.Namespace) -> Optional[str]:
         return None
     if not args.fetch:
         return "ネットワークに接続するには --fetch を付ける (付けなければ何もダウンロードしない)"
-    missing = [f"--{name}" for name in ("label", "out") if not getattr(args, name)]
+    missing = [f"--{name.replace('_', '-')}" for name in ("label", "out", "source_date_epoch") if not getattr(args, name)]
     if missing:
         return "引数が足りない: " + ", ".join(missing)
     if not label_ok(args.label):
         return f"--label にはタグから v を除いた文字列 (1.0.0 か 1.0.0-rc1) を指定する: {args.label!r}"
+    if not args.source_date_epoch.isdigit():
+        return f"--source-date-epoch には秒の整数を指定する: {args.source_date_epoch!r}"
     return None
 
 
 # ---- セルフテスト (ネットワークに接続しない。テスト用のリポジトリと script とアーカイブで実行する) ---------------
 
+SELFTEST_EPOCH = 1700000000  # zip の中の時刻 (2023-11-14T22:13:20Z)
+SELFTEST_OFFER_NAME = "offer.txt"  # 一覧に書く、配布用の zip の中のソースコードの入手先.txt の名前
 
 def clixml(digest: str, name: str, algorithm: str = "SHA256") -> str:
     # obs-deps の checksums/*.sha256 と同じ形のテストデータ。
@@ -641,8 +745,8 @@ def make_repo(root: Path, name: str, files: dict, submodule: Optional[Path] = No
     return repo, commit
 
 
-def tar_names(path: Path) -> list[str]:
-    with tarfile.open(path, "r:gz") as archive:
+def tar_names(data: bytes) -> list[str]:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
         return sorted(member.name for member in archive.getmembers() if member.isfile())
 
 
@@ -719,43 +823,86 @@ def selftest_world(root: Path) -> dict:
 
 
 def selftest_fetch(failures: list[str]) -> None:
-    # テスト用のデータで全部を取得し、名前と中身を確認し、壊したデータで失敗することを確認する。
+    # テスト用のデータで全部を取得して zip にまとめ、zip の中の名前と中身と一覧を確認し、同じ入力から同じ zip になることと、
+    # 壊したデータで失敗することを確認する。
     GIT_CONFIG_PAIRS.append(SELFTEST_GIT_CONFIG)
     root = Path(tempfile.mkdtemp(prefix="cordmux-fetch-selftest-"))
     try:
         world = selftest_world(root)
         label = "0.1.0-rc1"
         out = root / "assets"
-        result = fetch_all(world["inputs"], world["offer"], label, out, root / "work")
-        want = {f"cordmux-{label}-src-{name}" for name in (
-            "obs-deps.tar.gz", "zlib.tar.gz", "mbedtls.tar.gz", "amf.tar.gz", "theora.zip", "mp3lame.tar.gz",
-            "asio.zip", "vencord.tar.gz")}
-        got = {path.name for path in out.iterdir()}
-        if got != want:
-            failures.append(f"取得: ファイルが {sorted(want)} のはずが {sorted(got)}")
+        result = fetch_all(world["inputs"], world["offer"], label, out, root / "work", SELFTEST_EPOCH, SELFTEST_OFFER_NAME)
+        zip_name = dist_common.RELEASE_SOURCES_ZIP_FORMAT.format(label=label)
+        top = f"cordmux-{label}-sources/"
+        got_files = sorted(path.name for path in out.iterdir())
+        if got_files != [zip_name]:
+            failures.append(f"取得: 出力先のファイルが [{zip_name}] のはずが {got_files}")
+        archives = {"obs-deps.tar.gz", "zlib.tar.gz", "mbedtls.tar.gz", "amf.tar.gz", "theora.zip", "mp3lame.tar.gz",
+                    "asio.zip", "vencord.tar.gz"}
+        want = {top + name for name in archives} | {top + dist_common.RELEASE_SOURCE_LIST}
+        with zipfile.ZipFile(out / zip_name) as archive:
+            infos = archive.infolist()
+            data = {info.filename: archive.read(info) for info in infos}
+        names = [info.filename for info in infos]
+        if set(names) != want or len(names) != len(want):
+            failures.append(f"取得: zip の中が {sorted(want)} のはずが {names}")
+        if names != sorted(names):
+            failures.append("取得: zip の中が名前の順に並んでいない")
+        if any(info.compress_type != zipfile.ZIP_STORED for info in infos):
+            failures.append("取得: zip の中に圧縮し直した項目がある")
+        if any(info.date_time != dist_common.zip_date_time(SELFTEST_EPOCH) for info in infos):
+            failures.append("取得: zip の中に時刻の違う項目がある")
+        if result.get("zip") != zip_name or result.get("sha256") != sha256_of(out / zip_name):
+            failures.append(f"取得: 結果の zip と sha256 が出力のファイルと合わない: {result.get('zip')}")
         if result.get("obs_deps_commit") != world["obs_deps_commit"]:
             failures.append(f"取得: obs-deps のコミットが違う: {result.get('obs_deps_commit')}")
         skipped = {entry["script"] for entry in result.get("skipped", [])}
         if skipped != {f"{SCRIPTS_DIR}/40-gas-preprocessor.ps1", f"{SCRIPTS_DIR}/20-libpng.ps1"}:
             failures.append(f"取得: 外した script が違う: {sorted(skipped)}")
         records = {record["name"]: record for record in result.get("files", [])}
-        if len(records) != len(want) or any(r["sha256"] != sha256_of(out / n) for n, r in records.items()):
-            failures.append("取得: 結果の files がファイルと合わない")
+        if set(records) != archives or any(
+                r["sha256"] != hashlib.sha256(data.get(top + n, b"")).hexdigest() for n, r in records.items()):
+            failures.append("取得: 結果の files が zip の中のファイルと合わない")
         checks = [
-            (f"cordmux-{label}-src-mbedtls.tar.gz", "mbedtls-3.6.4/framework/f.txt", True),
-            (f"cordmux-{label}-src-mbedtls.tar.gz", "mbedtls-3.6.4/m.txt", True),
-            (f"cordmux-{label}-src-amf.tar.gz", "amf-1.4.36/amf/public/include/core.h", True),
-            (f"cordmux-{label}-src-amf.tar.gz", "amf-1.4.36/Thirdparty/big.bin", False),
-            (f"cordmux-{label}-src-vencord.tar.gz", "vencord-v1.15.1/pnpm-lock.yaml", True),
-            (f"cordmux-{label}-src-obs-deps.tar.gz", f"obs-deps-2025-07-11/{SCRIPTS_DIR}/10-zlib.ps1", True),
+            ("mbedtls.tar.gz", "mbedtls-3.6.4/framework/f.txt", True),
+            ("mbedtls.tar.gz", "mbedtls-3.6.4/m.txt", True),
+            ("amf.tar.gz", "amf-1.4.36/amf/public/include/core.h", True),
+            ("amf.tar.gz", "amf-1.4.36/Thirdparty/big.bin", False),
+            ("vencord.tar.gz", "vencord-v1.15.1/pnpm-lock.yaml", True),
+            ("obs-deps.tar.gz", f"obs-deps-2025-07-11/{SCRIPTS_DIR}/10-zlib.ps1", True),
         ]
         for name, member, present in checks:
-            if name in got and (member in tar_names(out / name)) != present:
+            if top + name in data and (member in tar_names(data[top + name])) != present:
                 failures.append(f"取得: {name} に {member} が{'ない' if present else 'ある'}")
-        for name, source in ((f"cordmux-{label}-src-theora.zip", world["theora"]),
-                             (f"cordmux-{label}-src-mp3lame.tar.gz", world["lame"])):
-            if name in got and (out / name).read_bytes() != source.read_bytes():
+        for name, source in (("theora.zip", world["theora"]), ("mp3lame.tar.gz", world["lame"])):
+            if top + name in data and data[top + name] != source.read_bytes():
                 failures.append(f"取得: {name} が上流のバイト列と違う")
+        # 一覧: ソースコードの入手先.txt のコンポーネントの行が全部、同じ順に同じ文字列であり、次の行にソースのある場所がある
+        listing = data.get(top + dist_common.RELEASE_SOURCE_LIST, b"").decode("utf-8")
+        lines = listing.split("\n")
+        entries = offer_entries(world["offer"])
+        positions = [lines.index(line) if line in lines else -1 for _, line in entries]
+        if -1 in positions or positions != sorted(positions):
+            failures.append("一覧: ソースコードの入手先.txt のコンポーネントの行が全部、同じ順にない")
+        else:
+            following = {name: lines[pos + 1] for (name, _), pos in zip(entries, positions)}
+            for name, start in (("zlib", "  zlib.tar.gz"), ("mp3lame", "  mp3lame.tar.gz"),
+                                ("AMF", "  amf.tar.gz (amf/public/include だけ / only amf/public/include)"),
+                                ("pnpm-lock.yaml", "  vencord.tar.gz の中 / inside vencord.tar.gz"),
+                                ("cordmux", "  GitHub のリリースの [Source code (zip)]"),
+                                ("userplugin", "  GitHub のリリースの [Source code (zip)]")):
+                if not following.get(name, "").startswith(start):
+                    failures.append(f"一覧: {name} の行の次が {start!r} で始まらない: {following.get(name)!r}")
+        if "\r" in listing or not listing.endswith("\n"):
+            failures.append("一覧: 改行が LF でないか、末尾に改行がない")
+        if f"「{SELFTEST_OFFER_NAME}」" not in listing or f"\"{SELFTEST_OFFER_NAME}\"" not in listing:
+            failures.append(f"一覧: 日本語と英語の説明に、渡したソースコードの入手先.txt の名前 {SELFTEST_OFFER_NAME} がない")
+
+        # 同じ入力からもう一度作ると、同じバイト列の zip になる
+        fetch_all(world["inputs"], world["offer"], label, root / "assets-again", root / "work-again", SELFTEST_EPOCH,
+                  SELFTEST_OFFER_NAME)
+        if (root / "assets-again" / zip_name).read_bytes() != (out / zip_name).read_bytes():
+            failures.append("同じ入力から 2 回作った zip のバイト列が違う")
         # 一部だけを取得した AMF は、checkout しないパスの中身 (大きな blob) をダウンロードしていない (filter が動作した)。
         # rev-list の --missing=print は、ないオブジェクトを取得せずに ? を付けて出力する。
         amf_parts = [p for p in plan_from_scripts(root / "work" / "obs-deps" / SCRIPTS_DIR)[0] if p.name == "amf"]
@@ -768,12 +915,14 @@ def selftest_fetch(failures: list[str]) -> None:
             if f"?{world['amf_big_blob']}" not in listing.split():
                 failures.append("一部だけの取得: checkout しないパスの blob をダウンロードした")
 
-        # 同じ出力先へもう一度取得する: すでにある添付するファイルを上書きしない
+        # 同じ出力先へもう一度取得する: すでにある zip を上書きせず、取得も始めない
         try:
-            fetch_all(world["inputs"], world["offer"], label, out, root / "work2")
-            failures.append("ファイルがすでにあるフォルダーへの取得: エラーになるはずが通った")
+            fetch_all(world["inputs"], world["offer"], label, out, root / "work2", SELFTEST_EPOCH, SELFTEST_OFFER_NAME)
+            failures.append("zip がすでにあるフォルダーへの取得: エラーになるはずが通った")
         except DistError:
             pass
+        if (root / "work2").exists():
+            failures.append("zip がすでにあるフォルダーへの取得: 取得を始めた")
 
         def expect_fetch_error(what: str, func) -> None:
             try:
@@ -796,10 +945,23 @@ def selftest_fetch(failures: list[str]) -> None:
         # ソースコードの入手先.txt に行のないコンポーネントが obs-deps に追加されたら、何も取得せずにエラー
         bad_offer = "\n".join(line for line in world["offer"].split("\n") if not line.startswith("- zlib "))
         expect_fetch_error("ソースコードの入手先.txt に zlib の行がない",
-                           lambda: fetch_all(world["inputs"], bad_offer, label, root / "out3", root / "work3"))
+                           lambda: fetch_all(world["inputs"], bad_offer, label, root / "out3", root / "work3",
+                                             SELFTEST_EPOCH, SELFTEST_OFFER_NAME))
         if (root / "out3").exists() and any((root / "out3").iterdir()):
             failures.append("ソースコードの入手先.txt と合わない: 突き合わせの前にファイルを書いた")
-    except (DistError, OSError, tarfile.TarError) as exc:
+        # 一覧: 専用のアーカイブを入れない行の場所がない、行のアーカイブがない
+        parts = [Part("zlib", "z", "git", "u", "1.3.1", commit="a" * 40)]
+        parts[0].offer_name = "zlib"
+        no_cordmux = {name: place for name, place in WITHOUT_TARBALL_PLACES.items() if name != "cordmux"}
+        for what, offer, members, places in (
+            ("場所を決めていない行", "- zlib 1.3.1\n- cordmux tag\n", {"zlib": "zlib.tar.gz"}, no_cordmux),
+            ("行のアーカイブがない", "- zlib 1.3.1\n", {}, WITHOUT_TARBALL_PLACES),
+            ("pnpm-lock.yaml の入った Vencord のアーカイブがない", "- zlib 1.3.1\n- pnpm-lock.yaml x\n",
+             {"zlib": "zlib.tar.gz"}, WITHOUT_TARBALL_PLACES),
+        ):
+            expect_fetch_error(f"一覧 ({what})", lambda offer=offer, members=members, places=places:
+                               sources_list_text(label, SELFTEST_OFFER_NAME, offer, parts, members, places))
+    except (DistError, OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
         failures.append(f"取得のテストデータ: {exc}")
     finally:
         remove_tree(root)
@@ -835,7 +997,7 @@ def selftest_match(failures: list[str]) -> None:
         # 上流のバージョンが上がると Uri も変わるので、行のバージョンと Uri の両方が古い形
         "行のバージョンが古い": good.replace("3.100", "3.99"),
         "同じコンポーネントの行が 2 つある": good + f"\n- ogg 1.3.5 commit {commit} (BSD): https://x/ogg2",
-        "添付するファイルの名前が重なる": good + "\n- OGG 1 (BSD): x",
+        "zip の中のアーカイブの名前が重なる": good + "\n- OGG 1 (BSD): x",
     }
     for label, text in cases.items():
         if not match_parts(parts(), text):
@@ -900,10 +1062,15 @@ def selftest_real_files(failures: list[str]) -> None:
             failures.append("ソースコードの入手先.txt: コンポーネントの行がない")
         folded = [dist_common.source_part_slug(name) for name in names]
         if len(set(folded)) != len(folded):
-            failures.append(f"ソースコードの入手先.txt: 添付するファイルの名前にすると重なるコンポーネントがある: {folded}")
+            failures.append(f"ソースコードの入手先.txt: zip の中のアーカイブの名前にすると重なるコンポーネントがある: {folded}")
         absent = [name for name in dist_common.SOURCE_PARTS_WITHOUT_TARBALL if name not in names]
         if absent:
-            failures.append(f"ソースコードの入手先.txt: アーカイブを添付しないコンポーネントの行がない: {absent}")
+            failures.append(f"ソースコードの入手先.txt: 専用のアーカイブを入れないコンポーネントの行がない: {absent}")
+        if sorted(WITHOUT_TARBALL_PLACES) != sorted(dist_common.SOURCE_PARTS_WITHOUT_TARBALL):
+            failures.append(f"WITHOUT_TARBALL_PLACES の名前が SOURCE_PARTS_WITHOUT_TARBALL と違う: {sorted(WITHOUT_TARBALL_PLACES)}")
+        holders = [place for place in WITHOUT_TARBALL_PLACES.values() if place is not None and place not in names]
+        if holders:
+            failures.append(f"ソースコードの入手先.txt: 専用のアーカイブを入れない行のソースがある行がない: {holders}")
         if OBS_DEPS_PART_NAME not in names:
             failures.append("ソースコードの入手先.txt: obs-deps の行がない")
     except (DistError, OSError, KeyError) as exc:
@@ -919,19 +1086,23 @@ def selftest() -> int:
         if (error is not None) != want_error:
             failures.append(f"{label}: {'受け入れない' if want_error else '受け入れる'}はずが {error!r}")
 
-    expect(["--fetch", "--label", "0.1.0-rc1", "--out", "assets"], False, "正しい引数")
-    expect(["--fetch", "--label", "0.1.0", "--out", "assets", "--work", "w", "--source-offer", "s.txt"], False, "全部の引数")
-    expect(["--label", "0.1.0", "--out", "assets"], True, "--fetch がない")
-    expect(["--fetch", "--out", "assets"], True, "--label がない")
-    expect(["--fetch", "--label", "0.1.0"], True, "--out がない")
-    expect(["--fetch", "--label", "0.1.0+abc1234", "--out", "assets"], True, "label にビルド ID")
-    expect(["--fetch", "--label", "v0.1.0", "--out", "assets"], True, "label の先頭に v")
+    epoch = ["--source-date-epoch", "1700000000"]
+    expect(["--fetch", "--label", "0.1.0-rc1", "--out", "assets", *epoch], False, "正しい引数")
+    expect(["--fetch", "--label", "0.1.0", "--out", "assets", *epoch, "--work", "w", "--source-offer", "s.txt"], False,
+           "全部の引数")
+    expect(["--label", "0.1.0", "--out", "assets", *epoch], True, "--fetch がない")
+    expect(["--fetch", "--out", "assets", *epoch], True, "--label がない")
+    expect(["--fetch", "--label", "0.1.0", *epoch], True, "--out がない")
+    expect(["--fetch", "--label", "0.1.0", "--out", "assets"], True, "--source-date-epoch がない")
+    expect(["--fetch", "--label", "0.1.0", "--out", "assets", "--source-date-epoch", "1.5"], True, "整数でない時刻")
+    expect(["--fetch", "--label", "0.1.0+abc1234", "--out", "assets", *epoch], True, "label にビルド ID")
+    expect(["--fetch", "--label", "v0.1.0", "--out", "assets", *epoch], True, "label の先頭に v")
 
-    # 添付するファイルの名前の規則 (README.md の例と同じ)
+    # zip の中のアーカイブの名前の規則 (README.md の例と同じ)
     slugs = {"FFmpeg": "ffmpeg", "nlohmann/json": "nlohmann-json", "obs-deps": "obs-deps", "svt-av1": "svt-av1", "AMF": "amf"}
     for name, want in slugs.items():
         if dist_common.source_part_slug(name) != want:
-            failures.append(f"{name!r} の添付するファイルの名前の {{part}} が {want!r} のはずが {dist_common.source_part_slug(name)!r}")
+            failures.append(f"{name!r} の zip の中のアーカイブの名前の {{part}} が {want!r} のはずが {dist_common.source_part_slug(name)!r}")
 
     selftest_parse(failures)
     selftest_match(failures)
@@ -942,7 +1113,7 @@ def selftest() -> int:
         for failure in failures:
             print(f"selftest 失敗: {failure}", file=sys.stderr)
         return 1
-    print("selftest OK: fetch_sources (引数、読み方、突き合わせ、実際のファイル、ローカルでの取得。ネットワークに接続しない)")
+    print("selftest OK: fetch_sources (引数、読み方、突き合わせ、実際のファイル、ローカルでの取得と zip へのまとめ。ネットワークに接続しない)")
     return 0
 
 

@@ -1,9 +1,0 @@
-{
-    "dependencies": {
-        "deps": {
-            "version": "2024-05-01",
-            "label": "Pre-built dependencies"
-        }
-    },
-    "name": "sample"
-}

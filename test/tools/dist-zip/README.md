@@ -1,6 +1,6 @@
 # test/tools/dist-zip
 
-配布用の zip を作るツールと、zip の中身をチェックするツール。リリースノートと、同梱するソフトウェアのソースのアーカイブもここで作る。CI (`.github/workflows/dist.yml`) もローカルも、同じ引数で実行する。どのツールにも `--selftest` があり、`.github/workflows/lint.yml` の `dist-tools-selftest` のジョブが実行する。Python 3 の標準ライブラリだけを使う。配布の流れは docs/release.md の「配布用の zip を作るワークフロー」と「リリースの手順」にある。
+配布用の zip を作るツールと、zip の中身をチェックするツール。リリースノートと、同梱するソフトウェアのソースをまとめた zip もここで作る。CI (`.github/workflows/dist.yml`) もローカルも、同じ引数で実行する。どのツールにも `--selftest` があり、`.github/workflows/lint.yml` の `dist-tools-selftest` のジョブが実行する。Python 3 の標準ライブラリだけを使う。配布の流れは docs/release.md の「配布用の zip を作るワークフロー」と「リリースの手順」にある。
 
 ## ファイル
 
@@ -10,7 +10,7 @@
 | `guide_to_text.py` | 手順書 (`guide/ja.md` と `guide/en.md`。Markdown) を zip に入れるテキスト (はじめに.txt と README-en.txt) にする |
 | `check_dist_zip.py` | zip の中身をチェックする |
 | `build_info.py` | ビルド ID と zip の名前を決め、タグを確認する。ほかに、`src-vencord/version.ts` を書き換え、obs-deps の bin のパスを出力する |
-| `fetch_sources.py` | 同梱するソフトウェアのソースを取得し、コンポーネントごとのアーカイブにする |
+| `fetch_sources.py` | 同梱するソフトウェアのソースを取得し、コンポーネントごとのアーカイブを 1 つの zip にまとめる |
 | `make_release_notes.py` | リリースノートを作り、pdb を zip にする |
 | `dist_common.py` | ほかのツールが共有する関数と定数 (下の「dist_common.py」) |
 | `top_level_files.txt` | zip の最上位に `dist/` から置くファイルと、差し込みをするファイル (`fill-values`) の一覧。形は先頭のコメントにある。手順書は書かない (下の「guide_to_text.py」) |
@@ -62,7 +62,7 @@
 - 手順書の Markdown を、zip に入れるテキストにする (規則は `dist/README.md` の「zip の中の手順書」)。`make_dist_zip.py` は `convert` を import して zip を作るときに使う。このコマンドは、zip を作らずに変換の結果を見るためのもので、`--out` を省くと標準出力に書く。
 - 手順書の言語 (案内の文と、インラインのコードを囲む引用符) は、rules のセットの `target` と同じパスならそのセットの `ini` から、なければファイル名 (`ja.md`、`en.md`) から決める。手順書の URL は、リポジトリの中のパス (`--repo-path`。既定は手順書のパスから作る) を指す。
 - 使ってよい記法の外の書き方 (`install_guide.py` の記法のチェック) があれば、変換せずに 1 行の JSON (`ok` が false) で失敗する。
-- `--selftest` は、規則ごとの例 (タイトルの後ろの案内、差し込みの印、見出し、リンクとコード、折り返さないこと、空行) と、実際の `guide/ja.md` と `guide/en.md` の変換 (Markdown の 1 行が 1 行になり、`##` の節が Markdown と同じ) を確かめる。
+- `--selftest` は、規則ごとの例 (タイトルの後ろの案内、差し込みの印、見出し、リンクとコード、折り返さないこと、空行と段落の行) と、実際の `guide/ja.md` と `guide/en.md` の変換 (Markdown の 1 行が 1 行になり、`##` の節が Markdown と同じ) を確かめる。
 
 ## `check_dist_zip.py`
 
@@ -101,8 +101,8 @@
 ## `fetch_sources.py`
 
 ```
-    python test/tools/dist-zip/fetch_sources.py --fetch --label <label> --out <添付するファイルを置くフォルダー>
-        [--source-offer <ソースコードの入手先.txt>] [--work <空の作業フォルダー>]
+    python test/tools/dist-zip/fetch_sources.py --fetch --label <label> --source-date-epoch <cordmux のコミットの時刻 (秒)>
+        --out <添付するファイルを置くフォルダー> [--source-offer <ソースコードの入手先.txt>] [--work <空の作業フォルダー>]
     python test/tools/dist-zip/fetch_sources.py --selftest
 ```
 
@@ -113,9 +113,10 @@
   - ps1 が一部だけを checkout するコンポーネント (`-SparseArgs set,<パス>`) は、そのパスだけを `--filter=blob:none` で取得する (今は AMF の `amf/public/include`)。
   - obs-deps 自身は、タグの `git archive` にする。
 - 同梱しないものは外す: `Targets` に `x64` がないもの (gas-preprocessor) と、`NOT_SHIPPED_SCRIPTS` の 2 つ (libpng と libdatachannel。理由はツールの中のコメント)。同梱するものの一覧ではなく、同梱しないものの一覧にするのは、obs-deps がコンポーネントを追加したときに、ソースコードの入手先.txt に行がないので失敗し、人が判断できるようにするため。
-- 取得する前に、取得するコンポーネントと、ソースコードの入手先.txt のコンポーネントの行を 1 対 1 で突き合わせる。名前 (英数字だけにし、先頭の `lib` を外す)、コミット、`Uri` の順に探し、最初に見つかった段階で行が 1 つだけなら対応とする。対応した行には、そのコンポーネントのコミット (なければバージョン) が書いてあること。コンポーネントのない行、行のないコンポーネント、2 つある行、古い行があれば、何も取得せずに失敗する (`SOURCE_PARTS_WITHOUT_TARBALL` の 3 行は外す)。添付するファイルの名前の `<コンポーネント>` は、対応した行の最初の語。
-- 結果は 1 行の JSON で、キーは `ok`、`out`、`obs_deps_commit`、`files`、`skipped` である。`files` はファイルごとの名前、コンポーネント、どこから読んだか、バイト数、SHA256 (git のコンポーネントはコミットも)、`skipped` は外した script と理由。失敗したときは `ok` が `false` で、`error` に理由がある。`--out` に同じ名前のファイルがあれば失敗にする (上書きしない)。`--work` は空のフォルダーだけを受け入れる (既定は一時フォルダーで、終わったら削除する)。
-- `--selftest` はネットワークに接続しない。テスト用の obs-deps (注釈付きのタグ、ps1、Clixml)、git のコンポーネント (submodule 付き、一部だけを取得するもの)、アーカイブ (`file://`)、ws_deps、Vencord で全部を取得し、添付するファイルの名前と中身を確認する。照合の値の違い、`pnpm-lock.yaml` のない Vencord、上流にないコミット、行のないコンポーネント、コンポーネントのない行、古いコミットとバージョン、2 つある行、すでにあるファイル、読めない `param` と Clixml は、どれも失敗する。実際の `ws_deps.cmake` と Vencord が、現在のソースコードの入手先.txt の行と対応することも確認する。
+- 取得する前に、取得するコンポーネントと、ソースコードの入手先.txt のコンポーネントの行を 1 対 1 で突き合わせる。名前 (英数字だけにし、先頭の `lib` を外す)、コミット、`Uri` の順に探し、最初に見つかった段階で行が 1 つだけなら対応とする。対応した行には、そのコンポーネントのコミット (なければバージョン) が書いてあること。コンポーネントのない行、行のないコンポーネント、2 つある行、古い行があれば、何も取得せずに失敗する (`SOURCE_PARTS_WITHOUT_TARBALL` の 3 行は外す)。zip の中のアーカイブの名前の `<コンポーネント>` は、対応した行の最初の語。
+- 取得したアーカイブは作業フォルダーに置き、全部そろってから `--out` の `cordmux-<label>-sources.zip` にまとめる (形は下の「リリースに添付するファイルの名前」)。`--out` には、この zip のほかに何も書かない。`--source-date-epoch` は zip の中の時刻で、CI は配布用の zip と同じコミットの時刻を渡す。
+- 結果は 1 行の JSON で、キーは `ok`、`out`、`zip`、`bytes`、`sha256`、`obs_deps_commit`、`files`、`skipped` である。`zip`、`bytes`、`sha256` はまとめた zip の名前、バイト数、SHA256。`files` は zip の中のアーカイブごとの名前、コンポーネント、どこから読んだか、バイト数、SHA256 (git のコンポーネントはコミットも)、`skipped` は外した script と理由。失敗したときは `ok` が `false` で、`error` に理由がある。`--out` に同じ名前の zip があれば、何も取得せずに失敗にする (上書きしない)。`--work` は空のフォルダーだけを受け入れる (既定は一時フォルダーで、終わったら削除する)。
+- `--selftest` はネットワークに接続しない。テスト用の obs-deps (注釈付きのタグ、ps1、Clixml)、git のコンポーネント (submodule 付き、一部だけを取得するもの)、アーカイブ (`file://`)、ws_deps、Vencord で全部を取得して zip にまとめ、`--out` に zip だけがあること、zip の中の名前、並び、時刻、圧縮し直していないこと、アーカイブの中身、`README.txt` の行を確認し、同じ入力から 2 回作った zip が同じバイト列になることを確認する。照合の値の違い、`pnpm-lock.yaml` のない Vencord、上流にないコミット、行のないコンポーネント、コンポーネントのない行、古いコミットとバージョン、2 つある行、すでにある zip、読めない `param` と Clixml は、どれも失敗する。実際の `ws_deps.cmake` と Vencord が、現在のソースコードの入手先.txt の行と対応することも確認する。
 - Windows では、`--selftest` が作る一時フォルダーのパスが長い (190 文字ほど) と、`git submodule add` が `'$GIT_DIR' too big` で失敗する。そのときは、TEMP を短いパスにして実行する。
 
 ## `make_release_notes.py`
@@ -127,7 +128,8 @@
 ```
 
 - 使うもの: `CHANGELOG.md` の、label の `x.y.z` の節 (`-rc` の接尾辞を除く。`1.0.0-rc1` も `1.0.0` も `## 1.0.0` を使う)、手順書の Markdown (rules の `target`。`guide/ja.md` と `guide/en.md`。言語は rules の `ini` の名前で決める) の「互換性」の節と「更新」の見出し、`--assets-dir` の `cordmux-<label>.zip` の中の 2 つの手順書 (zip にあることと、正式版の placeholder のチェック)、cordmux-build.txt、ソースコードの入手先.txt、`--assets-dir` に置いたファイルの名前、`release_notes_template.md`、`vencord.lock.json` の `tag` と、前のリリースのタグの上の同じファイルの `tag`。
-- リリースノートの形: 日本語の部分と英語の部分。どちらも (1) このバージョンの変更点 (プレリリースのときは「このバージョンはリリース候補です。」を先頭に置き、変更履歴の節の `####` の見出しと項目を続ける)、(2) 互換性 (手順書の節の Markdown をそのまま載せる。リンクはこのバージョンのタグの GitHub の URL にし、`###` の見出しは `####` にする)、(3) 添付するファイル (zip と、GitHub で読める手順書の URL、今使っている人への「更新」の節の案内とそのリンク、pdb の zip、ソースのアーカイブの名前の先頭 `cordmux-<label>-src-`) とソースコードの入手先の 1 文、の順。
+- リリースノートの形: 日本語の部分と英語の部分。どちらも (1) このバージョンの変更点 (プレリリースのときは「このバージョンはリリース候補です。」を先頭に置き、変更履歴の節の `####` の見出しと項目を続ける)、(2) 互換性 (手順書の節の Markdown をそのまま載せる。リンクはこのバージョンのタグの GitHub の URL にし、`###` の見出しは `####` にする)、(3) 添付するファイル (zip と、GitHub で読める手順書の URL、今使っている人への「更新」の節の案内とそのリンク、pdb の zip、ソースをまとめた zip) とソースコードの入手先の 1 文、の順。
+- 添付するファイルは `cordmux-<label>.zip`、`cordmux-<label>-pdb.zip`、`cordmux-<label>-sources.zip` の 3 つだけで、足りないものと、ほかのファイルやフォルダーがあれば問題にする。ソースをまとめた zip は、`cordmux-<label>.zip` の中のソースコードの入手先.txt と比べる: `SOURCE_PARTS_WITHOUT_TARBALL` のほかのコンポーネントの行ごとに `<コンポーネント>.<拡張子>` のアーカイブが 1 つあり、どの行にも当たらない項目と、最上位のフォルダーの外の項目がなく、`README.txt` にコンポーネントの行が全部同じ文字列であること。
 - `--pdb` を渡すと、先に `cordmux-<label>-pdb.zip` (中は `cordmux.pdb` 1 つ) を `--assets-dir` に作る。`--expect-commit` を渡すと、zip の cordmux-build.txt の `build_id` がその値の短いコミットで終わることと、`v<label>` のタグが checkout にあることを確認する。
 - 問題が 1 つでもあればリリースノートを書かない (問題になるものは `compose` のコメントにある)。正式版 (接尾辞のない label) では、`dist_common.formal_release_problems` の問題も加える。結果は 1 行の JSON (`ok`、`out`、`title`、`prerelease`、`problems`)。
 - 前のリリース: 現在の label の `x.y.z` より小さい `x.y.z` のタグのうち、最も新しいもの (同じ `x.y.z` なら正式版、次に接尾辞の新しいもの)。`git tag --list 'v*'` と `git show <タグ>:src-vencord/vencord.lock.json` で読む。前のリリースがなければ (最初のリリース)、同梱の Vencord のチェックはしない。
@@ -186,7 +188,8 @@
 | `source_url_for(label, cordmux_commit)` | このバージョンのソースの URL (label に `+` があればコミットのツリー) | make_dist_zip、make_release_notes、guide_to_text |
 | `guide_url_for(label, cordmux_commit, path)` | リポジトリの中のファイル (手順書) の、このバージョンの GitHub の URL (label に `+` があればコミット) | make_dist_zip、make_release_notes、guide_to_text |
 | `formal_release_problems(guide_texts, placeholders)` | 正式版のチェック (手順書に placeholder が残っていないか。空白と改行を除いて比べる。問題の文の並び。空なら公開してよい) | check_dist_zip (`--formal-release`)、make_release_notes |
-| `REPO_URL` / `RELEASE_*_FORMAT` / `source_part_slug(name)` | リポジトリの URL と、リリースに添付するファイルの名前 | fetch_sources、make_release_notes |
+| `REPO_URL` / `RELEASE_*` / `source_part_slug(name)` | リポジトリの URL と、リリースに添付するファイルの名前と、ソースをまとめた zip の中の名前 | fetch_sources、make_release_notes |
+| `zip_date_time(epoch)` / `fixed_zip_info(name, date_time, compression)` | 同じ入力から同じバイト列の zip を作るための、項目の時刻と、時刻と属性を固定した項目 | make_dist_zip、fetch_sources |
 | `parse_top_level` / `top_level_entries` / `fill_targets` | `top_level_files.txt` の読み方 | 全部 |
 | `run_ffmpeg_version` / `run_ffmpeg_in_copy` | DLL がそろっているかを確認してから `ffmpeg.exe -version` を実行する | check_dist_zip |
 
@@ -198,10 +201,23 @@
 |---|---|---|
 | 配布用の zip | `cordmux-<label>.zip` | dist.yml の成果物のまま (`zip_name` に `.zip` を付けた名前) |
 | pdb | `cordmux-<label>-pdb.zip` | `cordmux.pdb` を、名前を変えずに最上位に 1 つ (デバッガーは DLL の中に書かれた名前で探す) |
-| 同梱するソフトウェアのソース | `cordmux-<label>-src-<コンポーネント>.<拡張子>` | git のコンポーネントは `git archive` の `tar.gz`。上流のアーカイブは、obs-deps の checksums で照合したバイト列のまま、元の拡張子 (`tar.gz`、`tar.xz`、`zip` など) で |
+| 同梱するソフトウェアのソース | `cordmux-<label>-sources.zip` | 下の形 |
 
-- `<コンポーネント>` は、ソースコードの入手先.txt のコンポーネントの行の最初の語を `source_part_slug()` で変えたもの (小文字にし、`[a-z0-9._-]` のほかの文字を `-` にする。例: `FFmpeg` は `ffmpeg`、`nlohmann/json` は `nlohmann-json`)。英数字と `._-` のほかの文字を使わないのは、GitHub が、添付するファイルの名前の特殊な文字を置き換えるため (GitHub の REST API の文書の "Release assets")。前に `-src-` を付けるのは、pdb の zip と見分けるため。
-- 専用のアーカイブを添付しないコンポーネントの行は 3 つ: `cordmux` と `userplugin` (GitHub がタグに付ける Source code の zip と tar.gz)、`pnpm-lock.yaml` (Vencord のアーカイブの中)。
+添付はこの 3 つだけにする。リリースのページで、どれをダウンロードすればよいかを名前を全部見て確かめなくて済むようにするためである。
+
+ソースをまとめた zip の中:
+
+```
+cordmux-<label>-sources/
+  README.txt                    ソースコードの入手先.txt のコンポーネントの行ごとに、そのソースのあるファイル (日本語と英語)
+  <コンポーネント>.<拡張子>     コンポーネントごとのアーカイブ (例: ffmpeg.tar.gz、theora.zip、nlohmann-json.zip)
+```
+
+- 最上位のフォルダーは、配布用の zip と同じく、zip の名前から `.zip` を除いたもの。違うバージョンを同じ場所に展開しても混ざらない。
+- アーカイブは、git のコンポーネントは `git archive` の `tar.gz` (submodule も含む)。上流のアーカイブは、obs-deps の checksums か `ws_deps.cmake` の SHA256 で照合したバイト列のまま、元の拡張子 (`tar.gz`、`tar.xz`、`zip` など) で。どれも圧縮し直さずに (`ZIP_STORED`) 入れる。
+- `<コンポーネント>` は、ソースコードの入手先.txt のコンポーネントの行の最初の語を `source_part_slug()` で変えたもの (小文字にし、`[a-z0-9._-]` のほかの文字を `-` にする。例: `FFmpeg` は `ffmpeg`、`nlohmann/json` は `nlohmann-json`)。`/` のように、展開したときにフォルダーの区切りになる文字や、OS によって使えない文字を名前に残さないため。
+- `README.txt` は、ソースコードの入手先.txt のコンポーネントの行を同じ順、同じ文字列で全部並べ、行ごとに次の行にソースのある場所を書く。専用のアーカイブを入れない行は 3 つ: `cordmux` と `userplugin` (GitHub がタグに付ける Source code の zip と tar.gz)、`pnpm-lock.yaml` (Vencord のアーカイブの中。場所は `fetch_sources.py` の `WITHOUT_TARBALL_PLACES`)。一部だけを取得したもの (AMF) は、取得したパスも書く。
+- 同じ入力から同じ zip になるよう、`make_dist_zip.py` と同じく、時刻 (`--source-date-epoch`)、並び (名前の順)、作った OS と属性を固定する (`dist_common.fixed_zip_info`)。
 - SHA256SUMS は添付しない。
 
 ## `release` のジョブ
@@ -213,7 +229,7 @@
     (b) タグのコミットが main の履歴にある (git merge-base --is-ancestor)
     (e) 同じタグのリリースが公開済みなら失敗にする。途中で止まった実行が残した下書きは削除する
     zip と pdb の成果物をダウンロードする
-    fetch_sources.py --fetch でソースのアーカイブを作る
+    fetch_sources.py --fetch でソースを取得し、1 つの zip にまとめる
     make_release_notes.py でリリースノートを作り、pdb を zip にする ((d) の正式版のチェックもこの中)
     gh release create でタグのリリースを作る (プレリリースのときは --prerelease --latest=false)
 ```

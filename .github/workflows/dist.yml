@@ -149,6 +149,7 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
       LABEL: ${{ needs.meta.outputs.label }}
+      SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.source_date_epoch }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
@@ -208,9 +209,14 @@ jobs:
           name: ${{ needs.meta.outputs.zip_name }}-pdb
           path: _release/pdb
 
-      - name: 同梱するソフトウェアのソースコードを取得する (ソースコードの入手先.txt の一覧と照合する)
-        run: python3 test/tools/dist-zip/fetch_sources.py --fetch --label "$LABEL" --out _release/assets | tee _release/fetch.json
+      # 取得したソースは 1 つの zip (cordmux-<label>-sources.zip) にまとめ、_release/assets にはその zip だけを置く。
+      # zip の中の時刻は、配布用の zip と同じくコミットの時刻にする。
+      - name: 同梱するソフトウェアのソースコードを取得し、1 つの zip にまとめる (ソースコードの入手先.txt の一覧と照合する)
+        run: >
+          python3 test/tools/dist-zip/fetch_sources.py --fetch --label "$LABEL" --source-date-epoch "$SOURCE_DATE_EPOCH"
+          --out _release/assets | tee _release/fetch.json
 
+      # 添付が 3 つ (配布用の zip、pdb の zip、ソースをまとめた zip) だけであることも、ここで確認する。
       - name: リリースノートを作り、pdb を zip にする (正式なバージョンの (d) のチェックもここで行う)
         id: notes
         run: |

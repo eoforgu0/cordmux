@@ -13,7 +13,6 @@ import os
 import re
 import sys
 import tempfile
-import time
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -30,7 +29,6 @@ import install_guide  # noqa: E402  (手順書のセット (target、zip_name) �
 PLUGIN_FOLDER = "cordmux"
 TOP_PREFIX = "cordmux-"
 VENCORD_SUBDIRS = ("data/vencord-src", "data/vencord")
-ZIP_EPOCH_MIN = 315532800  # 1980-01-01T00:00:00Z (zip の形式が持てる最も古い時刻)
 
 
 def top_folder_for(out: Path) -> str:
@@ -203,31 +201,21 @@ def assemble(
     return entries
 
 
-def zip_date_time(epoch: int) -> tuple:
-    return time.gmtime(max(epoch, ZIP_EPOCH_MIN))[:6]
-
-
 def write_zip(entries: dict[str, bytes], out: Path, epoch: int, compression: int = zipfile.ZIP_DEFLATED) -> None:
     # 名前の順に、同じ時刻 (epoch。UTC) で書く。同じ入力から同じバイト列の zip を作るため。書き終えてから
     # 置き換える (途中で止まった zip を out に残さない)。
     #
     # - フォルダーの項目は入れず、ファイルの項目だけを入れる。エクスプローラーの展開は、途中のフォルダーを作る。
-    # - zip を作った OS (create_system) と属性 (external_attr) は 0 にする。Windows で作っても Linux で作っても、同じ
-    #   バイト列にするため。属性の 0 は、Python の zipfile が書くときに 0o600 << 16 (0x1800000) に置き換える
-    #   (writestr の既定。Python 3.12.9 で確認した) ので、zip の中ではどの項目もその値になる。
+    # - zip を作った OS と属性は 0 にする (dist_common.fixed_zip_info)。
     # - 名前の UTF-8 のフラグは、zipfile が ASCII でない名前 (はじめに.txt など) に付ける。ASCII だけの名前は、
     #   フラグがなくても同じ文字列として読まれる。zipfile は書くときにフラグを作り直すので、ASCII の名前に
     #   フラグを付ける方法はない。
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_name(out.name + ".partial")
-    date_time = zip_date_time(epoch)
+    date_time = dist_common.zip_date_time(epoch)
     with zipfile.ZipFile(partial, "w") as archive:
         for name in sorted(entries):
-            info = zipfile.ZipInfo(name, date_time=date_time)
-            info.compress_type = compression
-            info.create_system = 0
-            info.external_attr = 0
-            archive.writestr(info, entries[name])
+            archive.writestr(dist_common.fixed_zip_info(name, date_time, compression), entries[name])
     os.replace(partial, out)
 
 
@@ -412,7 +400,7 @@ def selftest() -> int:
                 failures.append("項目が名前の順に並んでいない")
             if any(not name.startswith(top + "/") for name in names):
                 failures.append("最上位のフォルダーの外に項目がある")
-            if any(info.date_time != zip_date_time(SAMPLE_EPOCH) for info in infos):
+            if any(info.date_time != dist_common.zip_date_time(SAMPLE_EPOCH) for info in infos):
                 failures.append("時刻の違う項目がある")
             non_ascii = [info for info in infos if not info.filename.isascii()]
             if not non_ascii or any(not info.flag_bits & dist_common.ZIP_UTF8_FLAG for info in non_ascii):
@@ -562,13 +550,13 @@ def fill_selftest(root: Path, sample: dict, refused, failures: list[str]) -> Non
     ):
         refused(label, lambda extra=extra: offer.write_bytes(saved_offer + ("\n" + extra + "\n").encode("utf-8")),
                 lambda: offer.write_bytes(saved_offer))
-    # 手順書の Markdown: ない、差し込みの書式がある (GitHub の表示にそのまま出る)、手で折り返した段落がある
+    # 手順書の Markdown: ない、差し込みの書式がある (GitHub の表示にそのまま出る)、使えない記法 (表) がある
     guide = sample["guide_dir"] / Path(blocks[0].target).name
     saved_guide = guide.read_bytes()
     refused("手順書の Markdown がない", guide.unlink, lambda: guide.write_bytes(saved_guide))
     for label, extra in (
         ("手順書の Markdown に差し込みの書式", "\n" + dist_common.FILL_OPEN + "source_url}}\n"),
-        ("手順書の Markdown に手で折り返した段落", "\na\nb\n"),
+        ("手順書の Markdown に表", "\n| a | b |\n"),
     ):
         refused(label, lambda extra=extra: guide.write_bytes(saved_guide + extra.encode("utf-8")),
                 lambda: guide.write_bytes(saved_guide))
