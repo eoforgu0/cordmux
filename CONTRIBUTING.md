@@ -9,7 +9,7 @@ This guide is in Japanese. The code comments and developer documents in this rep
 1. [必要なもの](#必要なもの)のツールを入れます。
 2. 変更する部分のビルドとテストを実行します。OBS のプラグインは「[OBS のプラグインのビルド](#obs-のプラグインのビルド)」と「[C++ の単体テスト](#c-の単体テスト)」、送信側は「[送信側のテストと型チェック](#送信側のテストと型チェック)」にあります。
 3. [lint](#lint) を実行します。
-4. [コミットメッセージ](#コミットメッセージ)の形でコミットし、[プルリクエスト](#プルリクエスト)を作ります。
+4. [コミットメッセージ](#コミットメッセージ)の形でコミットし、プルリクエストを作ります。
 
 ## リポジトリの構成
 
@@ -108,7 +108,7 @@ Visual Studio や Windows SDK のバージョンが windows-x64 と違うとき�
 ジェネレーターの名前は、`cmake --help` の Generators の一覧にあります (Visual Studio 2022 は `Visual Studio 17 2022`)。コマンドの `--preset` には、このプリセットの名前を渡します。
 
 - ローカルでも警告をエラーにするときは、`configurePresets` の `cacheVariables` に `"CMAKE_COMPILE_WARNING_AS_ERROR": true` を書きます。
-- 環境によっては、CMake がダウンロードのときに TLS の証明書を検証できずに失敗します。そのときは、`configurePresets` の `environment` で、環境変数 `SSL_CERT_FILE` に CA 証明書のファイル (Git for Windows の `C:/Program Files/Git/mingw64/etc/ssl/certs/ca-bundle.crt` など) を指定します。証明書の検証は無効にしないでください。
+- 環境によっては、CMake がダウンロードのときに TLS の証明書を検証できずに失敗します。そのときは、`configurePresets` の `environment` で、環境変数 `SSL_CERT_FILE` に CA 証明書のファイル (Git for Windows の `C:/Program Files/Git/mingw64/etc/ssl/certs/ca-bundle.crt` など) を指定します。
 
 C++ の単体テストのプリセットも、同じように src-obs/tests の中の CMakeUserPresets.json に、tests-x64 を継承して書きます。
 
@@ -196,8 +196,6 @@ python test/lint/<lint の名前>.py --selftest
 
 問題が見つかると、終了コード 1 で終わります。`--selftest` は、その lint が NG 例を検出し、OK 例を検出しないことを確認します。lint の一覧と引数は、docs/testing.md の「lint とセルフテスト」にあります。
 
-コメントや文書を変えたときは、references.py (リポジトリにないファイルや見出しへの参照) をローカルで実行してください。CI では実行していません。
-
 ## CI
 
 CI のワークフローは .github/workflows にあります。プルリクエストと main へのプッシュでは、checks.yml が OBS のプラグインと送信側をビルドして単体テストを実行し、lint.yml が lint とツールのセルフテストを実行します。ワークフローの一覧は、docs/testing.md の「テストの種類と実行する環境」にあります。
@@ -221,7 +219,7 @@ OBS と Vesktop を起動して確認する実機テストは、CI では実行�
 - 分野は変更した場所を表す語で、下の表から選びます。
 - 件名は 72 桁までにします。全角の文字は 2 桁に数えます。
 - 件名を句点で終えません。
-- 本文を書くときは、件名の後に空行を置きます。本文には、何が問題だったか、なぜその変更にしたかを書きます。確認した方法を書いてもかまいません。
+- 本文を書くときは、件名の後に空行を置きます。
 
 | 分野 | 対象 |
 |---|---|
@@ -240,10 +238,6 @@ OBS と Vesktop を起動して確認する実機テストは、CI では実行�
 件名に日本語があることは、CI で test/lint/commit_messages_japanese.py がチェックします。
 
 利用者に関わる変更は、CHANGELOG.md にも書きます (docs/release.md の「変更履歴の書き方」)。
-
-## プルリクエスト
-
-プルリクエストを作る前に、変更に関係するビルド、単体テスト、lint を実行してください。
 
 ## リリースと依存関係の更新
 

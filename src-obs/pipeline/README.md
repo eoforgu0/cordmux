@@ -50,8 +50,7 @@ OBS 側の処理の流れ。ws/ の Listener が受け取った映像と音声�
 
 ## 表示の緩衝 (display_buffer_ms)
 
-画面共有の映像を OBS に渡す時刻を、OBS の緩衝ではなく cordmux が決める渡し方である。画面共有の映像は **合成のソース** (sources/ の `composite_source.h`) の子にだけ渡す。設定の `display_buffer_ms` (ms。0 から 1000。既定値は
-100) で D を決める。既定値の 100 ms は、テスト用の送信側で映像の欠落が 0 になる値で、実際の通話の映像が届くまでの遅れ (平均約 17 ms、95 パーセンタイルで約 40 ms) を吸える。
+画面共有の映像を OBS に渡す時刻を、OBS の緩衝ではなく cordmux が決める渡し方である。画面共有の映像は **合成のソース** (sources/ の `composite_source.h`) の子にだけ渡す。設定の `display_buffer_ms` (ms。0 から 1000。既定値は 100) で D を決める。既定値の 100 ms は、テスト用の送信側で映像の欠落が 0 になる値で、実際の通話の映像が届くまでの遅れ (平均約 17 ms、95 パーセンタイルで約 40 ms) を吸える。
 
 D はドックの状態タブの「映像のバッファ」で選ぶ。値は `settings.json` から起動のときに読み、動いている間はドックが設定を渡し直したときに替わる (`Pipeline::set_display_buffer_ms`)。参加者ごとの直近 1 分の届き方が、状態タブの映像の受信の表に出る。届き方の列は常に記録し、`Pipeline::set_arrival_watch(true)` の間だけ `PipelineSnapshot::arrival_by_user` にコピーする。
 

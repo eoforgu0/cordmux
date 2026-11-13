@@ -187,14 +187,13 @@ python test/lint/<lint>.py --selftest   # セルフテスト
 どの lint も、セルフテストの NG 例と OK 例を `test/lint/fixtures/<lint>/` に持つ。`--selftest` は、NG 例が検出され、OK 例が検出されないことを確認する。どちらかが外れたとき、または例が 1 つもないときは、セルフテストが失敗する。検出の仕組みが壊れて、常に成功を返す状態になったことに気付くためである。
 
 - 外部からコピーしたファイルは、`test/lint/vendored.txt` に並べて、一部の lint (`identifiers_english.py`、`comments_japanese.py`、`windows_api_confinement.py`、`forbidden_libobs_usage.py`) の対象から外す。
-- `references.py` は CI では実行しない。
 - `commit_messages_japanese.py` に渡すコミットの範囲は、プルリクエストでは `origin/<base>..HEAD`、プッシュでは `<プッシュの前のコミット>..<プッシュしたコミット>` (前のコミットがないときは `HEAD~10..HEAD`) である。
 
 `lint.yml` のジョブ:
 
 | ジョブ | ランナー | 実行するもの |
 |---|---|---|
-| `lints` | ubuntu-24.04 | `test/lint` の 12 の lint とそれぞれの `--selftest`、`test/tools/wording/apply_ja_style.py --selftest`、`test/tools/obs-run/tool_text_ids.py` |
+| `lints` | ubuntu-24.04 | `test/lint` の 13 の lint とそれぞれの `--selftest`、`test/tools/wording/apply_ja_style.py --selftest`、`test/tools/obs-run/tool_text_ids.py` |
 | `judges-selfcheck` | ubuntu-24.04 | 判定スクリプトのセルフテスト。ffmpeg (Ubuntu のパッケージ) と numpy を入れて実行する |
 | `dist-tools-selftest` | ubuntu-24.04 | 配布用の zip とリリースを作るツールのセルフテストと、`test/tools/notice-count/notice_count.py --selftest` |
 | `cleanup-selftest` | windows-2022 | `test/tools/obs-run/cleanup.selftest.ps1` |
@@ -419,7 +418,7 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 - サブアカウント 1 は、製品の言うサブアカウント (Vesktop にログインして映像と声を受け取るアカウント) である。サブアカウント 2 と 3 は、通話のほかの参加者の代わりに使う。
 - Chrome は `test/tools/obs-run/launch-chrome-fake-mic.ps1` で起動し、テスト用の音のファイルをマイクの代わりに入力する。テスト用の音を使うのは声の確認 (使う声の置き換えと声のミュートの往復) だけなので、声の確認のない `call-1 --recheck` では、テスト動画のページを開いた Chrome でよい。
 - 通話に入るときは、テスト用の音を送る Chrome のほかは、マイクをミュートにする (`--recheck` は 4 つともミュート)。同じ PC のスピーカーから出たテスト動画の音をマイクが拾うと、声として配信の音に入り、映像と音のずれの測定の組が別の音と組になるため。
-- ボイスチャンネルの名前とメインアカウントのユーザー ID は、ツールに書かず、実行するときに `--voice-channel` と `--broadcaster-id` で渡す。
+- ボイスチャンネルの名前とメインアカウントのユーザー ID は、実行するときに `--voice-channel` と `--broadcaster-id` で渡す。
 
 ## 確認する項目
 
@@ -533,7 +532,7 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 | 配布用の zip の手順書とリリースノートに、「互換性」の節がある | CI (`check_dist_zip.py`、`make_release_notes.py`) |
 | 手順書に、通話のほかの参加者はインストールも設定も要らないことが書いてある | lint (`install_guide.py`) |
 | 手順書に、画面共有する人がする操作がない | lint (`install_guide.py`。依頼の形の語がないことと、「始める前に」に決まった文があること) |
-| 英語の画面と手順書を、英語を書いた人とは別の人が英語だけで読み、意味が通る | 目視 |
+| 英語の画面と手順書を英語だけで読み、意味が通る | 目視 |
 | 1 回の配信の間に利用者が触る操作が、チェックの付け外しと音量とミュートのほかにない (音量とミュートも触らなくてよい) | 実際の通話 (`call-1` が配信中の操作を種類ごとに数える) |
 | 一度決めた設定が、次の配信でもそのまま残っている | 単体テスト (`test_config_settings.cpp`) |
 | 長い配信で、表示したドックのメッセージがすべて実際の異常と対応していて、問題が解消したメッセージは消えている | 実際の通話 (`call-1` で、わざとファイルを書き換えてメッセージを出し、戻して消えることを見る)、`test/tools/notice-count` でメッセージの表示と消去をログから数える |
@@ -557,8 +556,6 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 | 配布用の zip の Vencord が、Vesktop が有効な Vencord とみなす形になっていることを、zip を作るときに確認する | CI (`check_dist.py`、`check_dist_zip.py`) |
 
 ## テストデータ
-
-テストデータの書き方は、CODESTYLE.md の「テストの名前とテストデータ」にある。タイムスタンプの差や SSRC のように、テストの意味が値に依存するものは、人や PC を特定できない値ならそのまま使う。
 
 | データ | 中身 |
 |---|---|
