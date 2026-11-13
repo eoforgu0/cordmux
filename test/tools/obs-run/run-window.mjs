@@ -1571,7 +1571,10 @@ async function runReal(args, steps, outDir) {
   function readFirstObsLogLines() {
     const latest = firstObsLogFile();
     if (!latest || !fs.existsSync(latest)) return [];
-    return fs.readFileSync(latest, "utf8").split(/\r?\n/);
+    // 終わりの改行の後の空の要素と、書きかけの最後の行は除く (行数を since の起点にするので、数えるのは書き終えた行だけ)。
+    const lines = fs.readFileSync(latest, "utf8").split(/\r?\n/);
+    lines.pop();
+    return lines;
   }
 
   // ---- 導入の往復の場所 (実行計画の名前 -> 現在の絶対パス) ----
