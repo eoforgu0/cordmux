@@ -72,15 +72,15 @@ stream_id は送信側が振る。番号は送信側のプラグインが動き�
 
 ### timestamp_us
 
-送信側の時計の値 (マイクロ秒) である。送信側の時計は `performance.timeOrigin + performance.now()` を us にした値で (`src-vencord/encode/sender_clock.ts`)、Windows の単調な時計 (QueryPerformanceCounter) で進み、システム時刻に合わせ直さない。値はエポック (1970 年 1 月 1 日 UTC) に近い大きさから始まるが、システム時刻ではない。原点は Vesktop のレンダラーを起動したときに決まり、起動し直すと変わる。
+送信側の時計の値 (マイクロ秒) である。送信側の時計は「ページの原点の値 + `performance.now()`」を us にした値で (`src-vencord/encode/sender_clock.ts`)、Windows の単調な時計 (QueryPerformanceCounter) で進み、システム時刻に合わせ直さない。ページの原点の値の決め方は 2 つあり、送信側はプラグインを起動したときに決め、プラグインが動いている間は変えない。送信側がページの原点の Chromium の TimeTicks の値を求められたとき (`src-vencord/encode/ticks_origin.ts`) は、その値を使う。このとき送信側の時計は QueryPerformanceCounter の us そのもので、OBS の `os_gettime_ns` / 1000 と同じ値になり、送信側は hello に clock_base の "qpc" を載せる。求められなかったときは `performance.timeOrigin` を使う。このときの値はエポック (1970 年 1 月 1 日 UTC) に近い大きさから始まるが、システム時刻ではなく、原点は Vesktop のレンダラーを起動したときに決まり、起動し直すと変わる。
 
-- 映像: エンコーダに渡したフレームの `VideoFrame.timestamp` を、送信側の時計に換算した値。
-- 音声: チャンクの先頭のサンプルが入っていた `AudioData` の `timestamp` を送信側の時計に換算した値に、その `AudioData` の中のサンプルの位置の時間を足した値。それまでに送ったサンプルの数からは計算しない。
+- 映像: エンコーダに渡したフレームの `VideoFrame.timestamp` を、送信側の時計にした値。タイムスタンプが WebRTC の描く予定の時刻で、送信側の時計が clock_base の "qpc" のときは、`VideoFrame.timestamp` そのもの。
+- 音声: チャンクの先頭のサンプルが入っていた `AudioData` の `timestamp` を送信側の時計にした値に、その `AudioData` の中のサンプルの位置の時間を足した値。それまでに送ったサンプルの数からは計算しない。
 - 黒埋め用のフレーム (「flags」のビット 1): そのまとまりの最初のフレームを作ったときの送信側の時計に、フレームの周期の倍数を加えた値。
 
-`VideoFrame.timestamp` と `AudioData.timestamp` は、Chromium のソースでは、どちらも単調な時計から作った値である。送信側は、映像と音声に同じ規則で、トラックごとの定数を足して換算する (`src-vencord/encode/clock_map.ts`)。定数は最初の「届いた時刻 - メディアのタイムスタンプ」で、その後は、2 秒の期間ごとに見たこの差の小さいほうから 3 番目が今の定数より小さければ、すぐその値まで下げる。直近 20 秒のどの期間でもこの値が今の定数より上 (2 ms 以上) なら、送信側の時計の 1 秒あたり 10 ms までの速さで少しずつ上げる (映像のタイムスタンプは WebRTC のデコードの時間の見積もりを含み、受信を始めた直後は届く時刻より先に出て、後で戻るため)。「届いた時刻 - 換算した時刻」が 200 ms 以上か -200 ms 以下の状態が 1 秒続いたときは、メディアの時計が替わったとみなして決め直す (docs/architecture.md の「送信側: 送信側の時計への換算」)。
+`AudioData.timestamp` はページの原点からの時間 (`performance.now()` と同じ基準) なので、送信側はページの原点の値を足して、見積もりなしに送信側の時計にする (`src-vencord/audio/chunk.ts`。基準はトラックの最初の断片で確かめる)。Discord の画面共有の `VideoFrame.timestamp` は、WebRTC が決めた描く予定の時刻の TimeTicks の値なので、送信側の時計が clock_base の "qpc" なら、そのまま使う。送信側は、映像のタイムスタンプが描く予定の時刻かを、読んだ時刻との差でストリームの途中も見分け続ける (`src-vencord/encode/video_time.ts`)。描く予定の時刻でないとき (受けた側が往復の時間を測れる接続での取り込みの時刻と、最初のフレームからの経過)、送信側の時計が "qpc" でないとき、音声の基準が分からないときは、トラックごとの定数を足す見積もりの換算を使う (`src-vencord/encode/clock_map.ts`)。定数は最初の「届いた時刻 - メディアのタイムスタンプ」で、その後は、2 秒の期間ごとに見たこの差の小さいほうから 3 番目が今の定数より小さければ、すぐその値まで下げる。直近 20 秒のどの期間でもこの値が今の定数より上 (2 ms 以上) なら、送信側の時計の 1 秒あたり 10 ms までの速さで少しずつ上げる (描く予定の時刻は WebRTC のデコードの時間の見積もりを含み、受信を始めた直後は届く時刻より先に出て、後で戻るため)。「届いた時刻 - 換算した時刻」が 200 ms 以上か -200 ms 以下の状態が 1 秒続いたときは、メディアの時計が替わったとみなして決め直す (docs/architecture.md の「送信側: 送信側の時計への換算」)。
 
-timestamp_us は単調に増えるとは限らない。定数を下げたときと決め直したときに、前の値より小さい値が来ることがある。受信側は、送信側の時計を OBS の時計に換算する差を、hello と pong の clock_us から接続ごとに決める (「ping と pong の扱い」)。受信側がこれらを吸収する方法は、docs/architecture.md の「タイムスタンプの合わせ方」と「録画ファイルの作成」にある。
+timestamp_us は単調に増えるとは限らない。見積もりの換算で定数を下げたときと決め直したとき、換算の方法を替えたとき、WebRTC が描く予定の時刻を早めたときに、前の値より小さい値が来ることがある。受信側は、clock_base が "qpc" の接続では送信側の時計をそのまま OBS の時計として使い、そうでない接続では、送信側の時計を OBS の時計に換算する差を、hello と pong の clock_us から接続ごとに決める (「ping と pong の扱い」)。受信側がこれらを吸収する方法は、docs/architecture.md の「タイムスタンプの合わせ方」と「録画ファイルの作成」にある。
 
 ### flags
 
@@ -147,7 +147,7 @@ timestamp_us は単調に増えるとは限らない。定数を下げたとき�
 
 | type | キー | 送るとき |
 |---|---|---|
-| hello | wire (整数)、version (文字列)、secret (文字列)、vesktop (文字列、任意)、clock_us (0 以上の整数、任意) | 接続して最初に 1 回 |
+| hello | wire (整数)、version (文字列)、secret (文字列)、vesktop (文字列、任意)、clock_us (0 以上の整数、任意)、clock_base (文字列、任意) | 接続して最初に 1 回 |
 | pong | seq (0 以上の整数)、clock_us (0 以上の整数、任意) | ping を受け取るたび |
 | configure | streams (配列) | 接続した直後と、ストリームの一覧か、ストリームの解像度、fps、音声の有無が変わったとき |
 | log | lines (文字列の配列)、alerts (文字列の配列、任意)、stats (文字列の配列、任意) | 接続した直後と、その後 5 秒ごと。送る行がなければ送らない。alerts の行を書いたときは、すぐに送る |
@@ -182,6 +182,7 @@ timestamp_us は単調に増えるとは限らない。定数を下げたとき�
 - secret はトークンファイルから読んだトークンである。
 - vesktop は Vesktop 自身のバージョンで、表示にだけ使う。送信側は、Vesktop から読めたときだけ載せる (`src-vencord/vesktop_version.ts`)。受信側は、値が文字列でなければこのキーだけをないものとし、hello は捨てない。
 - clock_us は、送信側が hello を作る直前に読んだ送信側の時計 (「timestamp_us」と同じ時計) である。受信側は、これを送信側の時計と OBS の時計の差を決めるのに使う (「ping と pong の扱い」)。0 以上の整数でなければ、このキーだけをないものとし、hello は捨てない。
+- clock_base は、送信側の時計の種類である。今の値は "qpc" だけで、送信側の時計が Windows の QueryPerformanceCounter の us (OBS の `os_gettime_ns` / 1000 と同じ値) であることを示す (「timestamp_us」)。送信側は、送信側の時計がページの原点の TimeTicks の上にあるときだけ載せる。受信側は、"qpc" なら送信側の時計と OBS の時計の差を 0 にし、hello と pong の clock_us は監視に使う (「ping と pong の扱い」)。監視で同じ時計という前提が崩れたと分かったら、差を決める扱いに戻る。キーがないとき、文字列でないとき、"qpc" でないときは、このキーだけをないものとし (差を決める扱い)、hello は捨てない。
 - 受信側は、ハンドシェイクを受け付けてから 5 秒以内に hello が届かなければ接続を切る (`ListenerConfig::hello_timeout_ms`)。
 - 受信側は、最初のメッセージがテキストでないとき、JSON でないとき、type が hello でないときは、hello_ng を送らずに接続を切る。hello のキーが足りないか型が違うときは reason が malformed の hello_ng を、wire が 1 でないときは bad_wire を、secret がトークンと一致しないときは bad_secret を返してから切る。secret とトークンは定数時間で比べる (`src-obs/ws/secret.h` の `constant_time_equals`)。
 - hello が通った後に届いた hello は、type が分からないメッセージと同じく捨てて数える。
@@ -199,7 +200,7 @@ timestamp_us は単調に増えるとは限らない。定数を下げたとき�
 - 受信側は 5 秒ごとに ping を送る。pong が返っていない ping が 2 つある状態で、次の ping を送る時刻になると、受信側は接続を切る (`ListenerConfig::ping_interval_ms` と `max_missed_pongs`)。
 - seq は 1 から始めて ping ごとに 1 ずつ増やす。送信側は、受け取った ping の seq をそのまま pong に入れる。
 - 受信側は、pong の seq が直近の ping と一致するかを見ない。どの pong が届いても、pong が返っていない ping の数を 0 に戻す。
-- pong の clock_us は、送信側が pong を作る直前に読んだ送信側の時計である (hello の clock_us と同じ扱い)。受信側は、hello と pong が運んだ clock_us と、それを受け取った時の OBS の時計 (`os_gettime_ns`) の差の、接続の間の最小値を、送信側の時計から OBS の時計への差とする (`src-obs/pipeline/sender_clock.h`)。送信側は時計を読んでから送るので、この差は本当の差に届くまでの遅れを足した値で、最小値には、最も早く届いたメッセージの遅れだけが残る。どちらの時計も Windows の単調な時計で進むので、差は接続の間は変わらない。clock_us を送らない送信側では差が決まらず、受信側は、届いたメッセージを、届いた時に生まれたものとして扱う。
+- pong の clock_us は、送信側が pong を作る直前に読んだ送信側の時計である (hello の clock_us と同じ扱い)。受信側は、hello と pong が運んだ clock_us と、それを受け取った時の OBS の時計 (`os_gettime_ns`) の差の、接続の間の最小値を、送信側の時計から OBS の時計への差とする (`src-obs/pipeline/sender_clock.h`)。送信側は時計を読んでから送るので、この差は本当の差に届くまでの遅れを足した値で、最小値には、最も早く届いたメッセージの遅れだけが残る。どちらの時計も Windows の単調な時計で進むので、差は接続の間は変わらない。clock_us を送らない送信側では差が決まらず、受信側は、届いたメッセージを、届いた時に生まれたものとして扱う。hello の clock_base が "qpc" の接続では、差は 0 で、この最小値は最も早く届いたメッセージの届くまでの遅れになる。受信側はこれを統計の行 (`Sender clock delay`) に書く。最小値が -1 ms (送信側がページの原点の TimeTicks を求めた誤差の上限) より小さいか、組が 12 個そろった後に 5 ms より大きければ、同じ時計という前提が崩れているとして、差をそれまでの最小値 (clock_base がないときと同じ見積もり) に戻し、警告の行を書く。
 - WebSocket のプロトコルの ping と pong (opcode 0x9 と 0xA) は使わない。プロトコルの pong はブラウザーのネットワークの処理が返すので、Vesktop のレンダラーが止まっていても返事が届き、止まったことに気付けないためである。
 
 #### configure の扱い
@@ -482,6 +483,7 @@ hello と hello_ok の wire が、ワイヤー形式のバージョンである�
 | facts の recording | 受信側は、送信側の録画の状態を分からないものとして扱う。OFF とはみなさない |
 | facts の sps_pps_prepended | 受信側は、録画ログに 0 と書く |
 | hello の vesktop | 受信側は、Vesktop のバージョンを分からないとして表示する |
+| hello の clock_base | 受信側は、送信側の時計と OBS の時計の差を hello と pong の clock_us から決める。古い受信側は clock_base を読まずに差を決めるが、"qpc" の送信側の clock_us とタイムスタンプは同じ時計の上にあるので、差は最も早く届いたメッセージの遅れに決まり、そのまま動く |
 
 wire を上げるのは、古い相手が別の意味に読む変更 (ヘッダーの並び、今あるキーの意味) をするときだけである。wire を上げると、新しい側と古い側は hello_ng (bad_wire) で接続できなくなる。追加するだけの変更で wire を上げると、上の表のように、キーがないことから古い相手だと見分ける扱いも使えなくなる。
 
@@ -498,8 +500,8 @@ wire を上げるのは、古い相手が別の意味に読む変更 (ヘッダ�
 | トークンファイル | `src-obs/platform/platform_win.cpp` の `write_session_file` と `read_session_file` | `src-vencord/native.ts`、`src-vencord/paths.ts` |
 | 映像のペイロード | `src-obs/decode/h264_decoder.h` | `src-vencord/encode/session.ts`、`src-vencord/encode/annexb.ts` |
 | 音声のペイロード | `src-obs/pipeline/pipeline.cpp` の `handle_audio_frame` | `src-vencord/audio/chunk.ts` |
-| timestamp_us | `src-obs/align/`、`src-obs/pipeline/sender_clock.h` | `src-vencord/encode/sender_clock.ts`、`src-vencord/encode/clock_map.ts`、`src-vencord/audio/chunk.ts` |
-| hello と pong の clock_us | `src-obs/ws/control_messages.h`、`src-obs/ws/listener.cpp`、`src-obs/pipeline/sender_clock.h` | `src-vencord/transport/client.ts`、`src-vencord/transport/control.ts`、`src-vencord/index.ts` |
+| timestamp_us | `src-obs/align/`、`src-obs/pipeline/sender_clock.h` | `src-vencord/encode/sender_clock.ts`、`src-vencord/encode/ticks_origin.ts`、`src-vencord/encode/video_time.ts`、`src-vencord/encode/clock_map.ts`、`src-vencord/audio/chunk.ts` |
+| hello と pong の clock_us、hello の clock_base | `src-obs/ws/control_messages.h`、`src-obs/ws/listener.cpp`、`src-obs/pipeline/sender_clock.h`、`src-obs/pipeline/pipeline.cpp` の `handle_sender_clock_base` | `src-vencord/transport/client.ts`、`src-vencord/transport/control.ts`、`src-vencord/index.ts`、`src-vencord/native.ts` の `hrtimeNs` |
 | facts | `src-obs/pipeline/facts_state.h` | `src-vencord/core/facts.ts`、`src-vencord/index.ts` (送る頻度) |
 | profiles | `src-obs/pipeline/profiles_state.h` | `src-vencord/core/facts.ts` |
 | avatar | `src-obs/ws/control_messages.h` の `parse_avatar`、`src-obs/pipeline/profiles_state.h` | `src-vencord/core/avatar.ts`、`src-vencord/core/facts.ts` の `AvatarOutbox`、`src-vencord/index.ts` |
@@ -513,4 +515,4 @@ wire を上げるのは、古い相手が別の意味に読む変更 (ヘッダ�
 テストは次のファイルにある。
 
 - 受信側: `src-obs/tests/test_ws_wire.cpp`、`test_ws_control_messages.cpp`、`test_ws_listener.cpp`、`test_ws_secret.cpp`、`test_pipeline_facts_state.cpp`、`test_pipeline_profiles_state.cpp`、`test_decode.cpp`、`test_pipeline_receive_scope.cpp`、`test_pipeline_stream_router.cpp`、`test_dock_build_observation.cpp`、`test_pipeline_receive_restart.cpp`、`test_pipeline_sender_clock.cpp`
-- 送信側: `src-vencord/tests/core_wire.test.ts`、`transport_control.test.ts`、`transport_client.test.ts`、`transport_socket.test.ts`、`core_facts.test.ts`、`core_avatar.test.ts`、`encode_annexb.test.ts`、`encode_clock_map.test.ts`、`encode_sender_clock.test.ts`、`audio_chunk.test.ts`、`adapter_call_info.test.ts`、`core_state_decisions.test.ts`、`core_logbook.test.ts`、`core_stream_check.test.ts`
+- 送信側: `src-vencord/tests/core_wire.test.ts`、`transport_control.test.ts`、`transport_client.test.ts`、`transport_socket.test.ts`、`core_facts.test.ts`、`core_avatar.test.ts`、`encode_annexb.test.ts`、`encode_clock_map.test.ts`、`encode_sender_clock.test.ts`、`encode_ticks_origin.test.ts`、`encode_video_time.test.ts`、`audio_chunk.test.ts`、`adapter_call_info.test.ts`、`core_state_decisions.test.ts`、`core_logbook.test.ts`、`core_stream_check.test.ts`

@@ -505,8 +505,10 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 | 設定ウィンドウで映像エンコーダとエンコードで優先する項目を変えると、次に始まる画面共有のエンコードが変わる (送信側のログの行の `preference` と `latencyMode` に出る) | 単体テスト (`encode_limits.test.ts`、`transport_control.test.ts`、`test_ws_control_messages.cpp`、`test_pipeline_wiring.cpp`)、ドックを操作するテスト (`windows`)、実機テスト (設定を変えて画面共有を始め直し、そのときの送信側のログの行を見る) |
 | 通話がない状態でも、ダミー映像で見た目を確認でき、その時間帯が録画ログで実際の映像と区別できる。ダミー映像の間は、自分の枠の条件 (チェック、映す映像、自分の画面共有、[先頭に配置]) に依らず自分の枠を描かず、4 つの枠すべてにダミーを描き、やめると自分の枠が戻る | 単体テスト (`test_pipeline_dummy_interval.cpp`、`test_sources_composite_input.cpp` の `dummy_composite_input`、`test_sources_dummy_tiles.cpp`)、実機テスト (`dock-view` の `dummy`) |
 | 映像と音声がずれない | 単体テスト (`test_align_audio_drift.cpp` と `encode_clock_map.test.ts` の 10 時間の模擬)、実機テスト (`integration`。`sync.py`)、実際の通話 (`call-1`。テスト動画を共有して `sync.py` で測る) |
+| 送信側の時計を、ページの原点の TimeTicks の上に、誤差の上限 1 ms 以内で置く。QueryPerformanceCounter を使わない経路と、はさんだ組の食い違いを見つけたら、今までの時計に戻る | 単体テスト (`encode_ticks_origin.test.ts`)、テスト用の送信側の clock-probe モード (`summary.calibrations[]` の `ok` と `withinBound`)、実際の通話 (送信側の `clock:` の行、受信側の `Sender clock delay` の行の min_us が -1 ms 以上) |
+| 画面共有の映像のタイムスタンプが描く予定の時刻なら、見積もりなしに送り、取り込みの時刻に変わったら 1 秒で、ほかの時計の値に変わったらすぐに今までの換算に戻る。エンコードが詰まっても戻らない (先行はフレームを受け取った時刻で測る)。音声はページの原点からの値をそのまま使う | 単体テスト (`encode_video_time.test.ts`、`encode_session.test.ts`、`audio_chunk.test.ts`)、テスト用の送信側の clock-probe モード (映像のタイムスタンプの見分け)、実際の通話 (送信側の `video time stream N: time=exact` の行と、`pc paired: ... rcvr_rtt=no`) |
 | 画面共有を受け取り始めた直後に、映像のタイムスタンプが届く時刻より先の値になり (WebRTC のデコードの時間の見積もりが大きい間)、後で戻っても、映像と音声のずれが残らない。受け取り始めてから 60 秒以内に、下がりのない場合と同じ関係に戻る | 単体テスト (`encode_clock_map.test.ts` の「上げる向き」と、「10 時間の模擬」の pushAudio を通す下がりの列)、実際の通話 (送信側のログの `clock lag` の行の 50 パーセンタイル) |
-| 1 時間や 10 時間続けても、映像と音声のずれが時間とともに開かない。音を取り出す時計と単調な時計の速さが +-100 ppm 違っても、システム時刻が飛んでも同じ | 単体テスト (`test_align_audio_drift.cpp` の「10 時間の模擬」、`encode_clock_map.test.ts` の「10 時間の模擬」、`encode_sender_clock.test.ts`、`test_pipeline_sender_clock.cpp`) |
+| 1 時間や 10 時間続けても、映像と音声のずれが時間とともに開かない。音を取り出す時計と単調な時計の速さが +-100 ppm 違っても、システム時刻が飛んでも同じ | 単体テスト (`test_align_audio_drift.cpp` の「10 時間の模擬」、`encode_clock_map.test.ts` の「10 時間の模擬」、`encode_sender_clock.test.ts`、`test_pipeline_sender_clock.cpp` (送信側の時計が OBS の時計と同じときの差 0 を含む)) |
 | チェックの付け外し、音量、ミュートの結果が、待たずに出力に反映される | 実際の通話、目視 |
 
 ### 録画
