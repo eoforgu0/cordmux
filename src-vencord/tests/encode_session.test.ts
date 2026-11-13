@@ -568,6 +568,12 @@ describe("createEncodeSession: 元から読んだ時刻で見分け、黒埋め�
         expect(modes).toHaveLength(1);
         expect(modes[0]?.change.mode).toBe("exact");
         expect(realFrames(recording.records).map((r) => r.header.timestampUs)).toEqual(media.map((m) => BigInt(m)));
+        // 診断の先行 (takeVideoLead) も元から読んだ時刻で測るので、詰まりの 40 ms を入れず 12 ms になる。
+        const lead = session.takeVideoLead();
+        expect(lead.count).toBe(media.length);
+        expect(lead.estimated).toBe(0);
+        expect(lead.sumUs / lead.count).toBe(12_000);
+        expect(session.takeVideoLead()).toEqual({ sumUs: 0, count: 0, estimated: 0 });
         session.stop();
     });
 

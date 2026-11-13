@@ -9,6 +9,7 @@
 // MediaStreamTrackProcessor をテスト用の実装に置き換えて実行する。
 
 import type { MediaStreamTrackLike } from "../adapter/types";
+import { readProcessorCount } from "../encode/av_diag";
 import type { AudioSource } from "./audio_source";
 import { AUDIO_CHANNELS, AUDIO_SAMPLE_RATE_HZ } from "./chunk";
 
@@ -40,6 +41,9 @@ interface AudioDataReadableStream {
 
 interface MediaStreamTrackProcessorLike {
     readonly readable: AudioDataReadableStream;
+    /** 渡した数と、待ち行列が満ちて捨てた数 (Chromium 156 で status stable の MediaStreamTrackProcessorStats)。 */
+    readonly totalFrames?: number;
+    readonly discardedFrames?: number;
 }
 
 /** MediaStreamTrackProcessor のコンストラクター。Vesktop のレンダラーにだけある。 */
@@ -51,6 +55,11 @@ declare const MediaStreamTrackProcessor: {
 export interface TrackAudioSource extends AudioSource {
     /** サンプルレートが 48 kHz でないので、中身を読まずに捨てた AudioData の数。 */
     readonly droppedForSampleRate: number;
+    /**
+     * MediaStreamTrackProcessor の累計の数 (診断にだけ使う。encode/av_diag.ts)。待ち行列 (既定 10 個) が満ちたまま次の
+     * AudioData が来ると、いちばん古いものが捨てられ、discarded が増える。読めない (古い Chromium、例外) 値は undefined。
+     */
+    processorCounts(): { discarded: number | undefined; total: number | undefined };
 }
 
 function interleave(data: AudioDataLike): Float32Array {
@@ -95,6 +104,12 @@ export function createAudioTrackSource(track: MediaStreamTrackLike): TrackAudioS
     return {
         get droppedForSampleRate(): number {
             return droppedForSampleRate;
+        },
+        processorCounts() {
+            return {
+                discarded: readProcessorCount(processor, "discardedFrames"),
+                total: readProcessorCount(processor, "totalFrames"),
+            };
         },
         async next(): Promise<{ samples: Float32Array; mediaTimestampUs: number } | null> {
             for (;;) {

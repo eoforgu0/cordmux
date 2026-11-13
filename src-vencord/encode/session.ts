@@ -9,6 +9,7 @@
 import type { FrameHeader } from "../core/wire";
 import { FrameType } from "../core/wire";
 import { applyParameterSetInsurance, NO_PARAMETER_SETS, type ParameterSets } from "./annexb";
+import { addVideoLead, createVideoLeadSpan, takeVideoLeadSpan, type VideoLeadSpan } from "./av_diag";
 import { addClockLag, createClockLagSamples, takeClockLagSummary, type ClockLagSummary } from "./clock_lag";
 import type { SenderTimebase } from "./sender_clock";
 import {
@@ -216,6 +217,11 @@ export interface EncodeSessionHandle {
      * 空に戻す (encode/clock_lag.ts)。定期のログの行を書くときに呼ぶ。
      */
     takeClockLag(): ClockLagSummary;
+    /**
+     * 前に呼んでから今までに読んだフレームの、先行 (換算したタイムスタンプ - フレームを元から読んだ時刻) の合計と数を
+     * 取り出し、空に戻す (encode/av_diag.ts)。1 秒ごとの診断で、受け取る側の映像の待ちの一部として使う。
+     */
+    takeVideoLead(): VideoLeadSpan;
     /** 最初の段階の確保が終わる (成功するか、Unavailable になる) まで待つ。その後の読み出しは中で続く。 */
     start(): Promise<void>;
     /** 次にエンコードするフレームをキーフレームにする。 */
@@ -501,6 +507,8 @@ export function createEncodeSession(
     const latencySpan: EncodeLatencySpan = createEncodeLatencySpan();
     // 読み出した時刻 - 換算したタイムスタンプ の値 (takeClockLag が取り出して空に戻す)。
     const clockLag = createClockLagSamples();
+    // 換算したタイムスタンプ - フレームを元から読んだ時刻 の合計 (takeVideoLead が取り出して空に戻す)。
+    const videoLead = createVideoLeadSpan();
     // メディアの時計と送信側の時計の対応 (encode/video_time.ts)。フォールバックでエンコーダが替わっても、フレームの
     // 読み出し元 (source) とメディアの時計は同じなので、作り直さない。
     let videoTime: VideoTimeState = createVideoTime();
@@ -1008,6 +1016,9 @@ export function createEncodeSession(
             addDuration(latencySpan.read, Number(arrivalUs - mapped.timeUs));
             // 同じ差を、負の値も残して、パーセンタイルのために足す (encode/clock_lag.ts)。
             addClockLag(clockLag, Number(arrivalUs - mapped.timeUs));
+            // 先行は、元から読んだ時刻 (readUs) で測る (encode/video_time.ts の見分けと同じ)。捨てるフレームと間引くフレームも
+            // 数える。受け取る側の映像の待ちは、この時刻までの長さなので、エンコードの詰まりを入れない。
+            addVideoLead(videoLead, Number(mapped.timeUs - readUs), videoTime.mode === "exact");
 
             // 到着と換算した時刻の差が 200 ms を超えた状態が 1 秒続いたので、メディアの時計が替わったとみなして定数を
             // 決め直した (encode/clock_map.ts)。決め直した後のタイムスタンプは、決め直す前に最後に送ったフレームから
@@ -1235,6 +1246,9 @@ export function createEncodeSession(
             return taken;
         },
 
+        takeVideoLead(): VideoLeadSpan {
+            return takeVideoLeadSpan(videoLead);
+        },
         takeClockLag(): ClockLagSummary {
             return takeClockLagSummary(clockLag);
         },

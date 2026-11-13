@@ -159,8 +159,8 @@ export function readInboundRtp(report: StatsReportLike | undefined, kind: TrackK
     };
 }
 
-/** readInboundRtp() と readRtpCounts() が使う、指定した種類の inbound-rtp の行を 1 つ探す関数。 */
-function findInboundRtpRow(report: StatsReportLike | undefined, kind: TrackKind): Record<string, unknown> | undefined {
+/** readInboundRtp() と readRtpCounts() と encode/av_diag.ts が使う、指定した種類の inbound-rtp の行を 1 つ探す関数。 */
+export function findInboundRtpRow(report: StatsReportLike | undefined, kind: TrackKind): Record<string, unknown> | undefined {
     if (report === undefined) return undefined;
     const matches: Record<string, unknown>[] = [];
     try {
@@ -301,7 +301,9 @@ export function shouldReportOnTick(state: PlayoutDiagState, nowMs: number): bool
  * - a.jbAll、v.jbAll: 同じ比の通算 (トラックの始めから)。長い期間の値と比べるために並べる。
  * - v.dec: 映像の totalDecodeTime の増分 / framesDecoded の増分 (ms)。cordmux は映像をデコードの後で取る
  *   (MediaStreamTrackProcessor) ので、映像の再生の遅延は jitter buffer とデコードの合計になる。音声は NetEQ の後で
- *   取る。totalProcessingDelay は使わない。音声の側で値があるかが Chromium のバージョンで違うためである。
+ *   取る。この行は totalProcessingDelay を使わない (音声の側で値があるかが Chromium のバージョンで違うため)。
+ *   届いてから取り出すまでの長さは、Chromium 156 のソースで音声と映像の両方に値があることを確かめたうえで、
+ *   `av diag` の行 (encode/av_diag.ts) が totalProcessingDelay で出す。
  * - v.dropped: 映像の framesDropped の「+期間/通算」。最初の行と、トラックが替わったか数が戻った後の行では、期間の値は
  *   そのトラックの始めからの数 (通算と同じ)。
  * - lead.jb: v.jb - a.jb (ms)。正は音声が映像より先 (映像のほうが jitter buffer に長くいれば、同じ時刻に作られた

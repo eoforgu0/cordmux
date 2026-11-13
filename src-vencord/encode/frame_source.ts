@@ -30,6 +30,13 @@ export interface VideoFrameSource {
     takeReadAtUs?(): bigint | undefined;
 
     /**
+     * 読み出し口の累計の数 (診断にだけ使う。encode/av_diag.ts)。discarded と total は MediaStreamTrackProcessor の
+     * discardedFrames と totalFrames、replaced は、次の next() を待たずに次のフレームが来たので実装が閉じたフレームの数。
+     * 読めない値は undefined。実装がこの数を持たないときは省く。
+     */
+    readCounts?(): { discarded: number | undefined; total: number | undefined; replaced: number };
+
+    /**
      * 閉じる。next() を待っている Promise があれば、null で解決する (encode/session.ts の stop() が
      * close() を呼んだときに、読み出しのループが next() で待ち続けないようにするため)。
      * 2 回以上呼んでも、2 回目からは何もしない。

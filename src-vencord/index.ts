@@ -20,7 +20,15 @@ import type {
     TrackEvent,
     TrackKind,
 } from "./adapter/types";
-import { audioOriginUs, createAudioChunker, pushAudio, type AudioChunk } from "./audio/chunk";
+import {
+    AUDIO_CHANNELS,
+    AUDIO_SAMPLE_RATE_HZ,
+    audioOriginUs,
+    createAudioChunker,
+    pushAudio,
+    type AudioChunk,
+    type AudioTimeDomain,
+} from "./audio/chunk";
 import type { AudioSource } from "./audio/audio_source";
 import { createAudioTrackSource } from "./audio/track_source";
 import {
@@ -66,6 +74,21 @@ import {
     type EncodeSessionSink,
 } from "./encode/session";
 import {
+    AV_DIAG_SAMPLE_INTERVAL_MS,
+    avDiagInterval,
+    avDiagReport,
+    createAudioReadSpan,
+    createAvDiagState,
+    createVideoLeadSpan,
+    noteAudioRead,
+    readAudioArrival,
+    readMediaPlayout,
+    readVideoArrival,
+    takeAudioReadSpan,
+    type AudioReadSpan,
+    type AvDiagState,
+} from "./encode/av_diag";
+import {
     addClockLag,
     clockLagLine,
     createClockLagSamples,
@@ -94,6 +117,7 @@ import {
     shouldReportOnTick,
     type PlayoutDiagResult,
     type PlayoutDiagState,
+    type PlayoutKindSnapshot,
 } from "./encode/playout_diag";
 import { pageTimebase, qpcTimebase, timebaseNowUs, type SenderTimebase } from "./encode/sender_clock";
 import {
@@ -209,6 +233,17 @@ interface ScreenVideoComponent {
     readonly startedAtMs: number;
     readonly getStats?: ReceiverStats;
     readonly peerState?: PeerStateReader;
+    /** 読み出し口の id (nextReaderId)。受信のやり直しで同じトラックから読み直すと変わる。`av diag` の行にだけ使う。 */
+    readonly readerId: string;
+    /** 読み出し口の累計の数 (encode/track_source.ts の readCounts)。`av diag` の行にだけ使う。 */
+    readonly readCounts?: () => { discarded: number | undefined; total: number | undefined; replaced: number };
+}
+
+/** 画面共有の音声の読み出しの診断 (encode/av_diag.ts)。pumpAudio() が書き、`av diag` の行と 1 秒ごとの区間が読む。 */
+interface ScreenAudioDiag {
+    readonly read: AudioReadSpan;
+    /** 音声のタイムスタンプの基準 (audio/chunk.ts)。最初の断片で決まる。 */
+    domain: AudioTimeDomain | undefined;
 }
 
 interface ScreenAudioComponent {
@@ -217,6 +252,11 @@ interface ScreenAudioComponent {
     readonly getStats?: ReceiverStats;
     /** 受け取った時刻 - 換算した時刻 の値 (encode/clock_lag.ts)。pumpAudio() が足し、reportPlayout() が取り出す。 */
     readonly clockLag: ClockLagSamples;
+    readonly diag: ScreenAudioDiag;
+    /** 読み出し口の id (nextReaderId)。`av diag` の行にだけ使う。 */
+    readonly readerId: string;
+    /** MediaStreamTrackProcessor の累計の数 (audio/track_source.ts)。`av diag` の行にだけ使う。 */
+    readonly processorCounts: () => { discarded: number | undefined; total: number | undefined };
 }
 
 /** 1 つの画面共有。Go Live の接続 1 つが 1 人に当たるので、pcId でまとめる。 */
@@ -433,8 +473,6 @@ const clockOriginLogStateByStreamId = new Map<number, ClockOriginLogState>();
  * 作り、ストリームがなくなったら消す。診断は測るだけで、動作は変えない。
  */
 const playoutDiagByStreamId = new Map<number, PlayoutDiagState>();
-/** 今 getStats() を待っているストリーム。同じストリームの読み取りを重ねない。 */
-const playoutReportsInFlight = new Set<number>();
 /**
  * 確立している間、60 秒ごとに再生の遅延の行を書くタイマー。ログを送るタイマー (logFlushTimer) と同じく、
  * handleEstablished() で始め、handleClosed() と stop() で止める。接続していない間は統計も取らない。
@@ -442,6 +480,27 @@ const playoutReportsInFlight = new Set<number>();
  * 呼び続けるためである。
  */
 let playoutTimer: ReturnType<typeof setInterval> | null = null;
+/**
+ * streamId -> 音声と映像の関係の診断 (encode/av_diag.ts) の、ストリームごとの状態。playoutDiagByStreamId と同じときに
+ * 作って消す。診断は測るだけで、動作は変えない。
+ */
+const avDiagByStreamId = new Map<number, AvDiagState>();
+/** 今 1 秒ごとの getStats() を待っているストリーム。同じストリームの読み取りを重ねない (1 秒に 1 回まで)。 */
+const avStatsInFlight = new Set<number>();
+/**
+ * streamId -> 1 秒ごとに読んだ統計のうち、最後の inbound-rtp の値 (トラックの id と組)。60 秒ごとの playout の行は、
+ * getStats() を自分で呼ばずにこれを使う。診断と playout の行で getStats() を読むのを、ストリームごとに 1 秒に 1 回までにするため。
+ */
+const latestPlayoutStatsByStreamId = new Map<number, { audio?: PlayoutKindSnapshot; video?: PlayoutKindSnapshot }>();
+/** 確立している間、AV_DIAG_SAMPLE_INTERVAL_MS ごとに統計を読むタイマー (playoutTimer と同じ扱い)。 */
+let avDiagTimer: ReturnType<typeof setInterval> | null = null;
+/** 読み出し口の id の次の番号。`av diag` の行で、前の行の累計が同じ読み出し口のものかを見分けるためだけに使う。 */
+let readerSeq = 0;
+
+function nextReaderId(): string {
+    readerSeq += 1;
+    return `r${readerSeq}`;
+}
 
 const logBook = new LogBook();
 
@@ -454,7 +513,7 @@ function log(line: string): void {
     logBook.event(`${new Date().toISOString()} ${line}`);
 }
 
-/** 数秒から 60 秒ごとの統計の行を 1 行書く (clock origin の細かい変化、playout、latency、clock lag)。受信側は直近の行だけを保つ (discord-stats.log)。 */
+/** 数秒から 60 秒ごとの統計の行を 1 行書く (clock origin の細かい変化、playout、latency、clock lag、av diag)。受信側は直近の行だけを保つ (discord-stats.log)。 */
 function logStats(line: string): void {
     logBook.stat(`${new Date().toISOString()} ${line}`);
 }
@@ -708,36 +767,31 @@ function notePlayoutReanchor(streamId: number, shiftUs: bigint): void {
 }
 
 /**
- * 画面共有のストリーム 1 つの、再生の遅延の行を書く。getStats() は readStatsSafely() (encode/playout_diag.ts) で
- * 待つ。getStats() が例外を投げても、reject しても、返らなくても、readStatsSafely() は undefined を返すので、ほかの
- * 処理は止まらない。同じストリームの読み取りは重ねない (playoutReportsInFlight)。待った後は、世代と、ストリームが
- * 同じエントリーのままかを確認し、待つ間に数えた値を落とさないように、待った後の最新の状態を更新する。
+ * 画面共有のストリーム 1 つの、再生の遅延の行と、その後の latency、clock lag、av diag の行を書く。getStats() はここでは
+ * 呼ばず、1 秒ごとの読み取り (sampleAvStats()) が最後に読んだ inbound-rtp の値を使う。診断と playout の行で getStats() を読むのを、
+ * ストリームごとに 1 秒に 1 回までにするためである (届いているかの確認は、もとから別に読む)。今のトラックと違うトラックの値は使わない (読めなかったことになる)。
+ * 待つ処理がないので、同じストリームの行が重なることはない。
  */
-async function reportPlayout(pcId: number, entry: ScreenEntry): Promise<void> {
+function reportPlayout(pcId: number, entry: ScreenEntry): void {
     const streamId = entry.streamId;
-    if (playoutReportsInFlight.has(streamId) || !playoutDiagByStreamId.has(streamId)) return;
-    const requestedEpoch = epoch;
-    playoutReportsInFlight.add(streamId);
+    if (screenEntries.get(pcId) !== entry) return;
     try {
-        // 待つ前に、どのトラックの統計かを決めておく。待つ間にトラックが替わっても、統計とトラックの組み合わせが
-        // ずれないようにするためである。
         const audio = entry.audio;
         const video = entry.video;
-        const [audioReport, videoReport] = await Promise.all([
-            readStatsSafely(audio?.getStats),
-            readStatsSafely(video?.getStats),
-        ]);
-        if (epoch !== requestedEpoch || screenEntries.get(pcId) !== entry) return;
-        const state = playoutDiagByStreamId.get(streamId); // 待つ間に数えた値を含む、最新の状態。
+        const latest = latestPlayoutStatsByStreamId.get(streamId);
+        const state = playoutDiagByStreamId.get(streamId);
         if (state === undefined) return;
+        const audioSample = latest?.audio?.trackId === audio?.trackId ? latest?.audio?.sample : undefined;
+        const videoSample = latest?.video?.trackId === video?.trackId ? latest?.video?.sample : undefined;
+        const nowMs = Date.now();
         applyPlayoutResult(
             streamId,
             playoutReport(
                 state,
                 streamId,
-                Date.now(),
-                audio === undefined ? undefined : { trackId: audio.trackId, sample: readInboundRtp(audioReport, "audio") },
-                video === undefined ? undefined : { trackId: video.trackId, sample: readInboundRtp(videoReport, "video") },
+                nowMs,
+                audio === undefined ? undefined : { trackId: audio.trackId, sample: audioSample },
+                video === undefined ? undefined : { trackId: video.trackId, sample: videoSample },
             ),
         );
         // 送信側の段階ごとの所要時間 (encode/latency_span.ts)。playout の行の直後に別の行で書く。足されたものが
@@ -753,11 +807,33 @@ async function reportPlayout(pcId: number, entry: ScreenEntry): Promise<void> {
             entry.audio === undefined ? undefined : takeClockLagSummary(entry.audio.clockLag),
         );
         if (lagText !== undefined) logStats(lagText);
+        // 音声と映像の関係の診断 (encode/av_diag.ts)。clock lag の行の直後に書く。
+        const avState = avDiagByStreamId.get(streamId);
+        if (avState !== undefined) {
+            const videoCounts = entry.video?.readCounts?.();
+            const av = avDiagReport(avState, streamId, nowMs, {
+                audio:
+                    entry.audio === undefined
+                        ? undefined
+                        : {
+                              readerId: entry.audio.readerId,
+                              read: takeAudioReadSpan(entry.audio.diag.read),
+                              drops: entry.audio.processorCounts(),
+                          },
+                video:
+                    entry.video === undefined
+                        ? undefined
+                        : {
+                              readerId: entry.video.readerId,
+                              drops: { discarded: videoCounts?.discarded, total: videoCounts?.total },
+                              replaced: videoCounts?.replaced ?? 0,
+                          },
+            });
+            avDiagByStreamId.set(streamId, av.state);
+            logStats(av.line);
+        }
     } catch (e) {
         log(`playout stream ${streamId}: 行を作れなかった (${String(e)})`);
-    } finally {
-        // stop() と start() をはさんだときは消さない。新しい世代が、同じ streamId で読み取っている最中かもしれない。
-        if (epoch === requestedEpoch) playoutReportsInFlight.delete(streamId);
     }
 }
 
@@ -767,7 +843,61 @@ function reportPlayoutOnTick(): void {
     for (const [pcId, entry] of screenEntries) {
         const state = playoutDiagByStreamId.get(entry.streamId);
         if (state === undefined || !shouldReportOnTick(state, nowMs)) continue;
-        void reportPlayout(pcId, entry);
+        reportPlayout(pcId, entry);
+    }
+}
+
+/**
+ * 画面共有のストリーム 1 つの、音声と映像のレシーバーの getStats() を読み、1 秒の区間として足す (encode/av_diag.ts)。
+ * 読んだ inbound-rtp の値は、60 秒ごとの playout の行のために残す。getStats() は readStatsSafely() で待つので、例外を
+ * 投げても返らなくても reject しない。映像と音声の送信の処理はこの待ちを待たない (タイマーから呼び、結果は待たない)。
+ * 同じストリームの読み取りは重ねない (avStatsInFlight)。
+ */
+async function sampleAvStats(pcId: number, entry: ScreenEntry): Promise<void> {
+    const streamId = entry.streamId;
+    if (avStatsInFlight.has(streamId)) return;
+    const requestedEpoch = epoch;
+    avStatsInFlight.add(streamId);
+    try {
+        // 待つ前に、どのトラックの統計かを決めておく。待つ間にトラックが替わっても、統計とトラックの組み合わせが
+        // ずれないようにするためである。
+        const audio = entry.audio;
+        const video = entry.video;
+        const [audioReport, videoReport] = await Promise.all([
+            readStatsSafely(audio?.getStats),
+            readStatsSafely(video?.getStats),
+        ]);
+        if (epoch !== requestedEpoch || screenEntries.get(pcId) !== entry) return;
+        latestPlayoutStatsByStreamId.set(streamId, {
+            audio: audio === undefined ? undefined : { trackId: audio.trackId, sample: readInboundRtp(audioReport, "audio") },
+            video: video === undefined ? undefined : { trackId: video.trackId, sample: readInboundRtp(videoReport, "video") },
+        });
+        const state = avDiagByStreamId.get(streamId);
+        if (state === undefined) return;
+        // 先行は読んだ直後に取り出す (統計の区間とそろえる)。待つ間にセッションが替わっても、読み始めたときの映像の
+        // セッションから取り出す。
+        const lead = video?.session.takeVideoLead() ?? createVideoLeadSpan();
+        const domain = audio?.diag.domain;
+        const result = avDiagInterval(state, {
+            audio: audio === undefined ? undefined : { trackId: audio.trackId, sample: readAudioArrival(audioReport) },
+            video: video === undefined ? undefined : { trackId: video.trackId, sample: readVideoArrival(videoReport) },
+            playout: readMediaPlayout(audioReport),
+            lead,
+            audioTimeIsFetch: domain === "page" || domain === "ticks",
+        });
+        avDiagByStreamId.set(streamId, result.state);
+    } catch {
+        // 診断が失敗しても、映像と音声の送信は止めない。1 秒ごとなので、ログの行にもしない。
+    } finally {
+        if (epoch === requestedEpoch) avStatsInFlight.delete(streamId);
+    }
+}
+
+/** AV_DIAG_SAMPLE_INTERVAL_MS ごとのタイマーで呼ぶ。 */
+function sampleAvStatsOnTick(): void {
+    for (const [pcId, entry] of screenEntries) {
+        if (!avDiagByStreamId.has(entry.streamId)) continue;
+        void sampleAvStats(pcId, entry);
     }
 }
 
@@ -872,6 +1002,7 @@ async function pumpAudio(
     streamId: number,
     onReanchor?: (shiftUs: bigint) => void,
     clockLag?: ClockLagSamples,
+    diag?: ScreenAudioDiag,
 ): Promise<void> {
     let chunker = createAudioChunker(timebase);
     for (;;) {
@@ -880,6 +1011,15 @@ async function pumpAudio(
         // 届いた時刻は、断片を受け取ったここで測る。タイムスタンプはメディアのタイムスタンプから作る
         // (audio/chunk.ts と encode/clock_map.ts)。
         const arrivalUs = nowUs();
+        if (diag !== undefined) {
+            try {
+                // 断片の飛びと読む間隔 (encode/av_diag.ts)。audio/track_source.ts は 48 kHz でない断片を渡さない。
+                const frames = block.samples.length / AUDIO_CHANNELS;
+                noteAudioRead(diag.read, block.mediaTimestampUs, frames, AUDIO_SAMPLE_RATE_HZ, arrivalUs);
+            } catch {
+                // 診断が失敗しても、音声の読み出しは止めない。
+            }
+        }
         const before = chunker;
         const result = pushAudio(chunker, block.samples, block.mediaTimestampUs, arrivalUs);
         chunker = result.state;
@@ -887,6 +1027,7 @@ async function pumpAudio(
             // 時刻の基準は最初の断片で決まる (audio/chunk.ts)。page と ticks は見積もりなしの換算、estimated は今までの換算。
             const lagMs = (Number(arrivalUs - result.timeUs) / 1000).toFixed(1);
             log(`audio time stream ${streamId}: domain=${chunker.domain} lag=${lagMs}ms`);
+            if (diag !== undefined) diag.domain = chunker.domain;
         }
         if (onReanchor !== undefined && chunker.clockMap.restarts !== before.clockMap.restarts) {
             const shiftUs = reanchorShiftUs(before, chunker);
@@ -1050,7 +1191,16 @@ function startScreenVideo(
         videoSink(entry, choice),
     );
     // getStats は再生の遅延の診断と受信の確認に、peerState はログにだけ使う。
-    entry.video = { trackId: track.id, track, session, startedAtMs: Date.now(), getStats, peerState };
+    entry.video = {
+        trackId: track.id,
+        track,
+        session,
+        startedAtMs: Date.now(),
+        getStats,
+        peerState,
+        readerId: nextReaderId(),
+        readCounts: source.readCounts?.bind(source),
+    };
     // start() より前に、録画が ON かを伝える。ON なら、encoder-created の黒埋め用のフレームを作る。
     session.setRecording(recordingOn);
     void session.start().catch((e) => {
@@ -1074,9 +1224,11 @@ function startScreenAudio(entry: ScreenEntry, track: MediaStreamTrackLike, getSt
     }
     const source = createAudioTrackSource(track);
     const clockLag = createClockLagSamples();
-    entry.audio = { trackId: track.id, source, getStats, clockLag }; // getStats は再生の遅延の診断にだけ使う。
+    const diag: ScreenAudioDiag = { read: createAudioReadSpan(), domain: undefined };
+    // getStats は再生の遅延の診断にだけ使う。
+    entry.audio = { trackId: track.id, source, getStats, clockLag, diag, readerId: nextReaderId(), processorCounts: () => source.processorCounts() };
     const streamId = entry.streamId;
-    void pumpAudio(source, streamId, (shiftUs) => notePlayoutReanchor(streamId, shiftUs), clockLag).catch((e) => {
+    void pumpAudio(source, streamId, (shiftUs) => notePlayoutReanchor(streamId, shiftUs), clockLag, diag).catch((e) => {
         // audio/track_source.ts の next() は reject しないが、pumpAudio() と sendAudioChunk() の想定外の失敗で
         // reject したときのためにログに書く。
         log(`screen audio stream ${entry.streamId}: pumpAudioが失敗して止まった (${String(e)})`);
@@ -1156,13 +1308,14 @@ function handleScreenTrackAdded(
         log(`screen entry: pcId=${pcId} userId=${userId} streamId=${entry.streamId} tracks=${current.map((c) => c.kind).join(",")}`);
         // 再生の遅延の診断の状態を、映像と音声より先に作る。最初のフレームとチャンクから数えるためである。
         playoutDiagByStreamId.set(entry.streamId, createPlayoutDiagState(Date.now()));
+        avDiagByStreamId.set(entry.streamId, createAvDiagState(Date.now()));
         for (const item of current) attachScreenComponent(entry, item.kind, item.track, item.getStats, item.peerState);
         // ストリームを作ってから 10 秒後に、再生の遅延の行を 1 回書く。このタイマーは止めず、時間になったときに、世代と、
         // ストリームが同じエントリーのままかを確認する。
         const firstReportEpoch = epoch;
         setTimeout(() => {
             if (epoch !== firstReportEpoch || screenEntries.get(pcId) !== entry) return;
-            void reportPlayout(pcId, entry);
+            reportPlayout(pcId, entry);
         }, PLAYOUT_FIRST_REPORT_MS);
     });
 }
@@ -1193,6 +1346,8 @@ function stopScreenEntry(
         screenEntries.delete(pcId);
         clockOriginLogStateByStreamId.delete(entry.streamId);
         playoutDiagByStreamId.delete(entry.streamId);
+        avDiagByStreamId.delete(entry.streamId);
+        latestPlayoutStatsByStreamId.delete(entry.streamId);
         videoSentByStreamId.delete(entry.streamId);
         streamCheckOutcomeByStreamId.delete(entry.streamId);
         videoWatchAlerted.delete(entry.streamId);
@@ -1994,6 +2149,9 @@ function handleEstablished(): void {
     // 再生の遅延の行は、確立している間だけ 60 秒ごとに書く (playoutTimer)。
     if (playoutTimer !== null) clearInterval(playoutTimer);
     playoutTimer = setInterval(reportPlayoutOnTick, PLAYOUT_REPORT_INTERVAL_MS);
+    // playout の行と av diag の行が使う統計は、1 秒ごとに読む (avDiagTimer)。
+    if (avDiagTimer !== null) clearInterval(avDiagTimer);
+    avDiagTimer = setInterval(sampleAvStatsOnTick, AV_DIAG_SAMPLE_INTERVAL_MS);
     // 映像を送れているかの確認も、確立している間だけ行う (受信側がいなければ、送れなくても困らない)。
     if (videoWatchTimer !== null) clearInterval(videoWatchTimer);
     videoWatchTimer = setInterval(watchVideoOnTick, VIDEO_WATCH_INTERVAL_MS);
@@ -2044,6 +2202,10 @@ function handleClosed(): void {
         // 確立が切れたら、再生の遅延の行も止める (ストリームは、この下でゲートがすべて止める)。
         clearInterval(playoutTimer);
         playoutTimer = null;
+    }
+    if (avDiagTimer !== null) {
+        clearInterval(avDiagTimer);
+        avDiagTimer = null;
     }
     if (videoWatchTimer !== null) {
         clearInterval(videoWatchTimer);
@@ -2252,7 +2414,9 @@ export default definePlugin({
         videoClockOriginByStreamId.clear();
         clockOriginLogStateByStreamId.clear();
         playoutDiagByStreamId.clear();
-        playoutReportsInFlight.clear();
+        avDiagByStreamId.clear();
+        avStatsInFlight.clear();
+        latestPlayoutStatsByStreamId.clear();
         videoSentByStreamId.clear();
         videoWatchByStreamId.clear();
         streamChecksInFlight.clear();
@@ -2309,6 +2473,10 @@ export default definePlugin({
             clearInterval(playoutTimer);
             playoutTimer = null;
         }
+        if (avDiagTimer !== null) {
+            clearInterval(avDiagTimer);
+            avDiagTimer = null;
+        }
         if (videoWatchTimer !== null) {
             clearInterval(videoWatchTimer);
             videoWatchTimer = null;
@@ -2357,7 +2525,9 @@ export default definePlugin({
         videoClockOriginByStreamId.clear();
         clockOriginLogStateByStreamId.clear();
         playoutDiagByStreamId.clear();
-        playoutReportsInFlight.clear();
+        avDiagByStreamId.clear();
+        avStatsInFlight.clear();
+        latestPlayoutStatsByStreamId.clear();
         videoSentByStreamId.clear();
         videoWatchByStreamId.clear();
         streamChecksInFlight.clear();

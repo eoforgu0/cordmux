@@ -8,6 +8,7 @@
 // 構造型と、adapter/types.ts の MediaStreamTrackLike を使う。
 
 import type { MediaStreamTrackLike } from "../adapter/types";
+import { readProcessorCount } from "./av_diag";
 import type { VideoFrameSource } from "./frame_source";
 import type { SourceFormat } from "./ladder";
 import type { VideoFrame } from "./webcodecs_types";
@@ -24,6 +25,9 @@ interface VideoFrameReadableStream {
 
 interface MediaStreamTrackProcessorLike {
     readonly readable: VideoFrameReadableStream;
+    /** 渡した数と、待ち行列 (既定 1 個) が満ちて捨てた数 (Chromium 156 で status stable の MediaStreamTrackProcessorStats)。 */
+    readonly totalFrames?: number;
+    readonly discardedFrames?: number;
 }
 
 /** MediaStreamTrackProcessor のコンストラクター (ブラウザーの中、つまり Vesktop のレンダラーにだけある)。 */
@@ -72,6 +76,7 @@ export function createVideoTrackSource(track: VideoMediaStreamTrack, nowUs?: () 
     let heldReadUs: bigint | undefined; // held を MediaStreamTrackProcessor から読んだ時刻
     let lastReadUs: bigint | undefined; // 最後に next() で渡したフレームを読んだ時刻 (takeReadAtUs)
     let waiter: ((frame: VideoFrame | null) => void) | undefined; // next() が待っている間の resolve
+    let replaced = 0; // 渡す前に次のフレームが来たので閉じた数 (readCounts)
 
     function deliver(frame: VideoFrame | null, readUs: bigint | undefined): void {
         if (waiter) {
@@ -81,7 +86,10 @@ export function createVideoTrackSource(track: VideoMediaStreamTrack, nowUs?: () 
             resolve(frame);
             return;
         }
-        if (frame && held) held.close(); // 前の 1 枚を渡す前に次が来た。古いほうを捨てる。
+        if (frame && held) {
+            held.close(); // 前の 1 枚を渡す前に次が来た。古いほうを捨てる。
+            replaced++;
+        }
         held = frame ?? undefined;
         heldReadUs = readUs;
     }
@@ -125,6 +133,13 @@ export function createVideoTrackSource(track: VideoMediaStreamTrack, nowUs?: () 
             return new Promise((resolve) => {
                 waiter = resolve;
             });
+        },
+        readCounts() {
+            return {
+                discarded: readProcessorCount(processor, "discardedFrames"),
+                total: readProcessorCount(processor, "totalFrames"),
+                replaced,
+            };
         },
         takeReadAtUs(): bigint | undefined {
             const readUs = lastReadUs;
