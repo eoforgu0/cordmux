@@ -2,8 +2,8 @@
 
 // dock/self_frame_check.h の単体テスト。ドックが自分の行のチェックを Pipeline に渡し、Pipeline の答えを受ける所
 // (DockPoll::push_assign_policy と carry_self_frame_check) の判断を、製品の関数のまま確かめる。Pipeline の代わりに、Pipeline が
-// 割り当て表と同じロック (Impl::mu) の中で呼ぶ関数 (pipeline/stream_router.h の accepted_self_frame_in_use、pipeline/pipeline.h の
-// move_self_frame_in) を持つ FakePipeline を間に挟み、Pipeline のスレッドが configure を適用することを決まった順に割り込ませる。
+// 割り当て表と同じロック (Impl::mu) の中で呼ぶ関数 (pipeline/pipeline.h の set_assign_policy_in と move_self_frame_in) を呼ぶ
+// FakePipeline を間に挟み、Pipeline のスレッドが configure を適用することを決まった順に割り込ませる。
 // Pipeline の側の判断そのもの (上限、付け替え) は test_pipeline_stream_router.cpp が確かめる。
 
 #include "doctest.h"
@@ -37,6 +37,8 @@ using cordmux::dock::SelfFrameLogLine;
 using cordmux::dock::SelfFrameMoveKind;
 using cordmux::dock::SelfFrameStep;
 using cordmux::pipeline::AssignPolicy;
+using cordmux::pipeline::AssignPolicyUpdate;
+using cordmux::pipeline::FactsSnapshot;
 using cordmux::pipeline::Pipeline;
 using cordmux::pipeline::PipelineSnapshot;
 using cordmux::pipeline::StreamRouter;
@@ -66,13 +68,17 @@ ConfigureMessage screens_of(const std::vector<std::string> &users)
 	return msg;
 }
 
-// Pipeline の代わり。割り当て表、経路、決め方を持つ。自分の枠に関わる 2 つの呼び出しは、Pipeline と同じく、割り当て表と同じ
-// ロックの中の関数を呼び、変えた後に直前の configure を適用し直す (pipeline.cpp の set_assign_policy と move_self_frame)。選び方は
-// 「自動」。
+// Pipeline の代わり。割り当て表、経路、決め方、facts を持つ。自分の枠に関わる 2 つの呼び出しは、Pipeline と同じく、割り当て表と
+// 同じロックの中で呼ぶ製品の関数 (pipeline.h の set_assign_policy_in と move_self_frame_in。自分の枠の人は self_frame_owner_of) を
+// 呼び、変えたときは、画面共有している人を載せ直してから (Impl::admit_sharers_from_facts_locked が呼ぶ StreamRouter::admit_sharers)、
+// 直前の configure を適用し直す (pipeline.cpp の set_assign_policy と move_self_frame)。受け取る範囲は既定の Slots、選び方は
+// 「自動」で、「自動で載せる」の人と使う声はない。ログ、ミキサー、視聴する人の範囲など、割り当て表と決め方を変えない後処理は
+// 持たない。
 struct FakePipeline {
 	AllocationTable table;
 	StreamRouter router;
 	AssignPolicy policy;
+	FactsSnapshot facts;
 	ConfigureMessage last;
 
 	explicit FakePipeline(bool selected, bool in_use)
@@ -82,32 +88,47 @@ struct FakePipeline {
 		policy.receiver_user_id = kSub;
 		policy.self_frame_selected = selected;
 		policy.self_frame_in_use = in_use;
+		facts.received = true;
+		facts.sharing_valid = true;
+		facts.self_user_id = kSub;
 	}
 
-	// Pipeline のスレッドが configure を適用する (自動で載せる経路)。
+	// Pipeline のスレッドが configure を適用する (自動で載せる経路)。画面のストリームを送ってきた人は、facts の sharing にもいる。
 	void configure(const ConfigureMessage &msg)
 	{
 		last = msg;
+		facts.sharing.user_ids.clear();
+		for (const StreamConfig &c : msg.streams)
+			facts.sharing.user_ids.push_back(c.user_id);
+		facts.sharing.sent_count = static_cast<int>(facts.sharing.user_ids.size());
 		router.apply_configure(msg, table, policy);
 	}
 
-	// Pipeline::set_assign_policy の、自分の枠の値 (ほかの値は変えない)。
 	bool set_assign_policy(bool selected, bool in_use)
 	{
-		policy.self_frame_in_use =
-			cordmux::pipeline::accepted_self_frame_in_use(table, policy.self_frame_in_use, in_use, kMain);
-		policy.self_frame_selected = selected;
-		router.apply_configure(last, table, policy);
-		return policy.self_frame_in_use;
+		const AssignPolicyUpdate update = cordmux::pipeline::set_assign_policy_in(
+			table, router, policy, facts, cordmux::config::AssignMode::Auto, {}, {}, kMain, selected,
+			in_use);
+		if (update.changed)
+			readmit_and_replay();
+		return update.self_frame_in_use;
 	}
 
 	Pipeline::SelfFrameMove move_self_frame(const std::string &user_id, bool to_self_frame,
 					       std::optional<std::int64_t> after_order)
 	{
 		const Pipeline::SelfFrameMove moved = cordmux::pipeline::move_self_frame_in(
-			table, router, policy, kMain, user_id, to_self_frame, after_order);
-		router.apply_configure(last, table, policy);
+			table, router, policy,
+			cordmux::pipeline::self_frame_owner_of(policy.main_account_user_id, facts), user_id,
+			to_self_frame, after_order);
+		readmit_and_replay();
 		return moved;
+	}
+
+	void readmit_and_replay()
+	{
+		router.admit_sharers(facts.sharing.user_ids, table, policy);
+		router.apply_configure(last, table, policy);
 	}
 
 	// ドックが取るスナップショット (画面の枠、facts の sharing、Vesktop のアカウント)。

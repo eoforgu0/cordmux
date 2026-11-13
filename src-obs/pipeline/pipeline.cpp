@@ -324,15 +324,6 @@ const char *on_off(bool on)
 
 // ---- 自分の枠を使っているか ----
 
-// 自分の枠の人。メインアカウント、メインアカウントが空なら Vesktop のアカウント (ドックの self_frame_user_id と同じ決め方)。
-// 自分の枠を使い始めてよいかを数えるとき (stream_router.h の accepted_self_frame_in_use) に、この人の枠を数えない。
-std::string self_frame_owner_of(const std::string &main_account_user_id, const FactsSnapshot &facts)
-{
-	if (!main_account_user_id.empty())
-		return main_account_user_id;
-	return facts.self_user_id.value_or(std::string());
-}
-
 // 自分の枠を使っているかが変わったときのログ。画面の枠に載せられる人数も書く。
 void log_self_frame_in_use(bool in_use)
 {
@@ -3737,36 +3728,18 @@ bool Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> 
 {
 	std::optional<ws::ConfigureMessage> replay;
 	std::uint64_t generation = 0;
+	AssignPolicyUpdate update;
 	{
 		std::lock_guard<std::mutex> lock(impl_->mu);
-		const bool automatic = mode == config::AssignMode::Auto;
-		// 自分の枠を使い始めることは、割り当て表と同じこのロックの中で受け付けるか断る (pipeline.h の宣言)。断ったら、
-		// 使っていないことにして、ほかの値と同じく比べる (ほかに変わった値がなければ何もしない)。
-		self_frame_in_use =
-			accepted_self_frame_in_use(impl_->table, impl_->assign_policy.self_frame_in_use, self_frame_in_use,
-						   self_frame_owner_of(main_account_user_id, impl_->facts));
-		// 値が変わっていなければ何もしない。ドックはポーリングのたびにコピーを渡すので、ここで比べないと、
-		// ドックの周期ごとに configure を適用し直すことになる。使う声も比べる (比べないと、変えた瞬間に
-		// 適用し直さず、次の configure まで声が変わらない)。
-		if (impl_->assign_policy.automatic == automatic && impl_->assign_policy.always_on == always_on &&
-		    impl_->assign_policy.voice_links == voice_links &&
-		    impl_->assign_policy.main_account_user_id == main_account_user_id &&
-		    impl_->assign_policy.self_frame_selected == self_frame_selected &&
-		    impl_->assign_policy.self_frame_in_use == self_frame_in_use)
-			return self_frame_in_use;
-		if (impl_->assign_policy.self_frame_in_use != self_frame_in_use)
-			log_self_frame_in_use(self_frame_in_use);
-		// 自動から手動に戻しても、いま画面の枠に載っている人は外さない (手動の割り当ては、枠に載っている人の
-		// 経路を保つ。stream_router.h の AssignPolicy の (1))。
-		// 選び方を切り替えたら、外した人の一覧を捨てる (stream_router.h の exclude_user)。
-		if (impl_->assign_policy.automatic != automatic)
-			impl_->router.clear_excluded();
-		impl_->assign_policy.automatic = automatic;
-		impl_->assign_policy.always_on = std::move(always_on);
-		impl_->assign_policy.voice_links = std::move(voice_links);
-		impl_->assign_policy.main_account_user_id = std::move(main_account_user_id);
-		impl_->assign_policy.self_frame_selected = self_frame_selected;
-		impl_->assign_policy.self_frame_in_use = self_frame_in_use;
+		// 決め方を書き換える。自分の枠を使い始めることは、割り当て表と同じこのロックの中で受け付けるか断る (pipeline.h の宣言)。
+		// 値が変わっていなければ何もしない (set_assign_policy_in)。
+		update = set_assign_policy_in(impl_->table, impl_->router, impl_->assign_policy, impl_->facts, mode,
+					      std::move(always_on), std::move(voice_links), std::move(main_account_user_id),
+					      self_frame_selected, self_frame_in_use);
+		if (!update.changed)
+			return update.self_frame_in_use;
+		if (update.in_use_changed)
+			log_self_frame_in_use(update.self_frame_in_use);
 		impl_->refresh_main_account_locked();
 		// 決め方が変わったので、受け取る範囲が Slots のときは、すでに画面共有している人を載せ直す。
 		impl_->admit_sharers_from_facts_locked();
@@ -3787,7 +3760,7 @@ bool Pipeline::set_assign_policy(config::AssignMode mode, std::set<std::string> 
 	if (replay)
 		impl_->safe_call("the stream list after Slot Assignment changed",
 				 [&] { impl_->handle_configure(*replay, generation); });
-	return self_frame_in_use;
+	return update.self_frame_in_use;
 }
 
 Pipeline::SelfFrameMove Pipeline::move_self_frame(const std::string &user_id, bool to_self_frame,

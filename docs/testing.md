@@ -66,7 +66,7 @@ C++ の単体テストは doctest で書き、実行ファイルを 2 つ作る�
 | 確認する部分 | テスト |
 |---|---|
 | 周期ごとに、Pipeline の状態、OS への問い合わせの結果、ドックの設定から、表示の規則の入力 (Observation) を作る (`src-obs/dock/build_observation.h`) | `test_dock_build_observation.cpp` |
-| 自分の行のチェックを Pipeline に渡して答えを受ける所: Pipeline が自分の枠を使い始めることを断ったときに、チェックと配置の入力から自分の枠を外して settings.json に残すこと、[自分の枠に映す映像] を替えたときの引き継ぎ (`self_frame_check.h`)。Pipeline の代わりに、割り当て表と同じロックの中で呼ぶ関数を挟む | `test_dock_self_frame_check.cpp` |
+| 自分の行のチェックを Pipeline に渡して答えを受ける所: Pipeline が自分の枠を使い始めることを断ったときに、チェックと配置の入力から自分の枠を外して settings.json に残すこと、[自分の枠に映す映像] を替えたときの引き継ぎ (`self_frame_check.h`)。Pipeline の代わりに、Pipeline が割り当て表と同じロックの中で呼ぶ製品の関数 (`set_assign_policy_in`、`move_self_frame_in`) を呼ぶ物を挟む | `test_dock_self_frame_check.cpp` |
 | [Vesktopに追加] で、ほかの Vencord から切り替える確認のダイアログを表示する条件、[再インストール] のコピー、[Vesktopから削除] の結果をドックに残す失敗に変える表、アンインストールの結果と残ったものの並び、確認と結果のダイアログの中身 (`install_flow.h`、`install_dialog_plan.h`) | `test_dock_install_flow.cpp` |
 | 参加者の一覧の行: 名前の見分け方、2 行目に残す部分、状態のテキストと解像度を表示する幅の境目、名前と状態のテキストの幅の分け方、クリックを無視する時間 (`name_check.h`) | `test_dock_rows_calc.cpp` |
 | settings.json のキーごとに、値を変更できる場所 (設定ウィンドウ、ドックなど) を決めた表が、すべてのキーを持つこと。設定ウィンドウがどの値をどのページに置き、どの値の変更に再起動が必要か (`settings_fields.h`) | `test_dock_settings_fields.cpp` |
@@ -498,7 +498,7 @@ cordmux は OBS 33 の置き方で置く (OBS のフォルダーの `plugins\cor
 | 自分の枠に OBS の既存のソースかシーンを選ぶと、4 つの枠の 1 つに入り、その映像の画質のまま表示される。選んでいる間は、Discord での自分の画面共有を枠に載せない。cordmux を含むシーンは候補にしない (`test_sources_self_frame_plan.cpp`) | 単体テスト (`test_sources_composite_layout.cpp`、`test_pipeline_stream_router.cpp`)、実際の通話 |
 | 自分の枠は、ドックの自分の行のチェックが付いている間に出る。チェックは、ドックで付けたとき、またはほかの人と同じ規則 (枠に載せる人の選び方が自動、[自動で枠に載せる]) で自分の共有を始めたときに付く。共有の終わりでは外れず、ドックで外した後は始め直すまで付かない。共有の状態が分からない間は変わらない。Discord の人で枠が埋まっていれば、自分の枠を出さない (付けた直後に、同じ瞬間に自動で 4 人目が載っていたときも、チェックを外す) | 単体テスト (`test_sources_self_frame_plan.cpp` の `plan_self_frame`、`test_pipeline_stream_router.cpp` の `accepted_self_frame_in_use`、`test_dock_self_frame_check.cpp`、`test_ledger_actions.cpp`、`test_ledger_dock_rules.cpp`)、ドックを操作するテスト (`selfframe`) |
 | 自分の枠を使っている間は、Discord の人を 3 人まで枠に載せる (手動、「自動」、[自動で枠に載せる] のどれでも)。ドックが押せると判断した直後に自動で人が載っても、[自分の枠に映す映像] を替えても、描く物は 4 つを超えない | 単体テスト (`test_pipeline_stream_router.cpp` の「競合」と「どの経路を通っても」、`test_dock_self_frame_check.cpp` の「競合」、`test_ledger_actions.cpp`)、ドックを操作するテスト (`selfframe`。競合は Pipeline を組み込めないので単体テストだけ) |
-| 枠のチェックを押した直後に枠が埋まって載せられなかったときは、その人の行に「空いている枠がありません。」と出し、その人が載るか、枠が空くか、その人が画面共有をやめるか通話を抜けるか、接続が切れたら消える。消えた後に枠がまた埋まっても出ない | 単体テスト (`test_ledger_dock_rules.cpp`) |
+| 枠のチェックを押した直後に枠が埋まって載せられなかったときは、その人の行に「空いている枠がありません。」と出し、その人が載るか、枠が空くか、その人が画面共有をやめたか通話を抜けたと分かるか、接続が切れたら消える。画面共有の事実や参加者の一覧を読めない間は、それだけでは消えない。消えた後に枠がまた埋まっても出ない | 単体テスト (`test_ledger_dock_rules.cpp`) |
 | 自分の枠のチェックの状態が、次に OBS を起動したときに残る (付いたり外れたりするたびに書く) | 単体テスト (`test_config_settings.cpp`、`test_dock_settings_fields.cpp`)、ドックを操作するテスト (`selfframe`) |
 | 自分の枠に映す映像を OBS から選んでいる間、メインアカウントの Discord の画面共有を枠に載せない。声と録画は変わらない。選択を外したら、ほかの人と同じに扱う | 単体テスト (`test_pipeline_stream_router.cpp` の `self_frame_selected`) |
 | 画質の上限を下げると、出力の解像度か fps が実際に下がる。画質を上げる操作はどこにもない | 単体テスト (`encode_limits.test.ts`、`encode_session.test.ts`)、実機テスト (`dock-view` の `degraded`) |

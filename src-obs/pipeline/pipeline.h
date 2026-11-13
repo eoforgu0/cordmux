@@ -1030,8 +1030,9 @@ public:
 	// 値は、main_account_user_id と同じく、コンストラクターが settings からコピーする (シーンの読み込みが終わる前に届く facts で
 	// 枠に載せる人を決めるときに、もう分かっている)。
 	// 偽から真に変える (自分の枠を使い始める) ときは、割り当て表と同じロックの中で、Discord の人が画面の枠をもう 4 つとも
-	// 埋めていれば断り、偽のままにする (stream_router.h の accepted_self_frame_in_use)。ドックが付ける判断はスナップショット
-	// (最大 1 周期前) の人数で行うので、その後に自動で載せる経路が 4 人目を載せていると、自分の枠と合わせて 5 つになるためである。
+	// 埋めていれば断り、偽のままにする (set_assign_policy_in と stream_router.h の accepted_self_frame_in_use)。ドックが付ける
+	// 判断はスナップショット (最大 1 周期前) の人数で行うので、その後に自動で載せる経路が 4 人目を載せていると、自分の枠と合わせて
+	// 5 つになるためである。
 	// ほかの値は、断ったときも渡されたとおりにする。戻り値は、受け付けた self_frame_in_use (渡した値が偽なら偽、断ったら偽)。
 	// ドックは、真を渡して偽が返ったら、自分の行のチェックを外す (dock/self_frame_check.h の assign_policy_pushed)。
 	//
@@ -1400,6 +1401,60 @@ inline Pipeline::SlotChange release_slot_in(config::AllocationTable &table, Stre
 	out.outcome = Pipeline::SlotChange::Outcome::Released;
 	out.slot = slot;
 	out.retargeted = router.retarget_user(user_id, kind, 0);
+	return out;
+}
+
+// 自分の枠の人。メインアカウント、メインアカウントが空なら Vesktop のアカウント (ドックの self_frame_user_id と同じ決め方)。
+// 自分の枠を使い始めてよいかを数えるとき (stream_router.h の accepted_self_frame_in_use) に、この人の枠を数えない。
+inline std::string self_frame_owner_of(const std::string &main_account_user_id, const FactsSnapshot &facts)
+{
+	if (!main_account_user_id.empty())
+		return main_account_user_id;
+	return facts.self_user_id.value_or(std::string());
+}
+
+// set_assign_policy_in の結果。
+struct AssignPolicyUpdate {
+	bool changed = false;           // 決め方の値が 1 つでも変わり、書き換えたか (偽なら何も書き換えていない)
+	bool self_frame_in_use = false; // 受け付けた self_frame_in_use (set_assign_policy の戻り値)
+	bool in_use_changed = false;    // self_frame_in_use が変わったか
+};
+
+// set_assign_policy の、決め方 (policy) と外した人の一覧 (router) を書き換える部分。呼び出し元は Impl::mu を持っていること。
+// facts は Impl::facts (自分の枠の人を self_frame_owner_of で決める)。自分の枠を使い始めることは、ここで受け付けるか断る
+// (stream_router.h の accepted_self_frame_in_use)。断ったら、使っていないことにして、ほかの値と同じく比べる。値が 1 つも
+// 変わっていなければ何も書き換えず、changed を偽で返す (ドックはポーリングのたびにコピーを渡すので、比べないと、ドックの周期
+// ごとに configure を適用し直すことになる)。変わったときに呼び出し元が行うこと (ログ、メインアカウントを送信側に送る、画面共有
+// している人を載せ直す、自分の声、直前の configure を適用し直す) は、ここでは行わない。
+inline AssignPolicyUpdate set_assign_policy_in(const config::AllocationTable &table, StreamRouter &router,
+					       AssignPolicy &policy, const FactsSnapshot &facts,
+					       config::AssignMode mode, std::set<std::string> always_on,
+					       std::map<std::string, std::string> voice_links,
+					       std::string main_account_user_id, bool self_frame_selected,
+					       bool self_frame_in_use)
+{
+	AssignPolicyUpdate out;
+	const bool automatic = mode == config::AssignMode::Auto;
+	out.self_frame_in_use = accepted_self_frame_in_use(table, policy.self_frame_in_use, self_frame_in_use,
+							   self_frame_owner_of(main_account_user_id, facts));
+	// 使う声も比べる (比べないと、変えた瞬間に適用し直さず、次の configure まで声が変わらない)。
+	if (policy.automatic == automatic && policy.always_on == always_on && policy.voice_links == voice_links &&
+	    policy.main_account_user_id == main_account_user_id && policy.self_frame_selected == self_frame_selected &&
+	    policy.self_frame_in_use == out.self_frame_in_use)
+		return out;
+	out.changed = true;
+	out.in_use_changed = policy.self_frame_in_use != out.self_frame_in_use;
+	// 自動から手動に戻しても、いま画面の枠に載っている人は外さない (手動の割り当ては、枠に載っている人の
+	// 経路を保つ。stream_router.h の AssignPolicy の (1))。
+	// 選び方を切り替えたら、外した人の一覧を捨てる (stream_router.h の exclude_user)。
+	if (policy.automatic != automatic)
+		router.clear_excluded();
+	policy.automatic = automatic;
+	policy.always_on = std::move(always_on);
+	policy.voice_links = std::move(voice_links);
+	policy.main_account_user_id = std::move(main_account_user_id);
+	policy.self_frame_selected = self_frame_selected;
+	policy.self_frame_in_use = out.self_frame_in_use;
 	return out;
 }
 
