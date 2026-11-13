@@ -19,6 +19,7 @@ plugin-main.cpp が、OBS の UI スレッドで次の順に呼ぶ。
 | `dock_bind.h` | ドックを OBS に追加する関数と、cordmux の設定フォルダーのパスを返す関数 |
 | `dock_poll.h`、`dock_poll_config.h` | `DockPoll` と、plugin-main.cpp が渡す設定 `DockPollConfig`。`DockPoll` の実装は、処理ごとに `dock_poll.cpp`、`dock_poll_layout.*`、`dock_poll_install.*`、`dock_poll_settings.*`、`dock_poll_export.*` に分けてある |
 | `build_observation.h` | ポーリングで読んだ値から `ledger::Observation` を作る純粋関数と、合成のソースの配置の入力に入れる値を決める純粋関数 (名前ラベルを出す人 `composite_roster_people`、自分の枠の人の声を聞けるか `self_frame_hears_voice`、自分の枠の人 `self_frame_user_id`) |
+| `self_frame_check.h` | `DockPoll` が持つ自分の枠の値 (`SelfFrameCheck`) と、自分の行のチェックを Pipeline に渡して答えを受ける所の判断 (Pipeline が使い始めることを断ったときの `assign_policy_pushed`、映す映像を替えたときの引き継ぎ `plan_self_frame_carry` と `settle_self_frame_carry`)。Qt を含まず、単体テストが製品の関数のまま確かめる |
 | `dock_widget.h`、`dock_look.h` | ドックのウィジェット `DockWidget` (1 行目、メインとサブの行、タブ、下のバー) と、テーマから読んだ見た目の値 |
 | `first_line.h`、`accounts_bar.h`、`dock_tabs.h`、`bottom_bar.h` | 1 行目、メインとサブの行、タブのバーとタブの中身のページ、下のバー (録画のボタンとドックのメニューのボタン) |
 | `inline_confirm.h` | 押した場所の隣の確認 (判断は `ledger/inline_confirm.h`) |

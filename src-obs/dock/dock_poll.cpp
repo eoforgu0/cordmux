@@ -187,7 +187,8 @@ void open_location_of(const std::string &path_utf8, ledger::dockview::LocationKi
 
 // 画面共有の枠を埋めている Discord の人の数。自分の枠の人 (self_owner) は数えない (自分の枠を出している間は、その人の画面を
 // Discord の枠に載せないため)。自分の枠を付けるかの判断 (DockPoll::step_self_frame) が使う。この数はスナップショットの
-// 値なので、付けてよいかを最後に決めるのは Pipeline である (Pipeline::set_assign_policy。断られたら refuse_self_frame)。
+// 値なので、付けてよいかを最後に決めるのは Pipeline である (Pipeline::set_assign_policy。断られたら、
+// dock/self_frame_check.h の assign_policy_pushed がチェックを外す)。
 int discord_slotted_of(const pipeline::PipelineSnapshot &snapshot, const std::string &self_owner)
 {
 	int count = 0;
@@ -196,6 +197,34 @@ int discord_slotted_of(const pipeline::PipelineSnapshot &snapshot, const std::st
 			++count;
 	}
 	return count;
+}
+
+// 自分の枠の判断 (dock/self_frame_check.h) が返した、ログに書く行。
+void log_self_frame_line(const SelfFrameLogLine &line)
+{
+	switch (line.what) {
+	case SelfFrameLog::TurnedOnVideoChanged:
+		diag::logf(LOG_INFO, "Self frame turned on: video changed");
+		return;
+	case SelfFrameLog::TurnedOffVideoChanged:
+		diag::logf(LOG_INFO, "Self frame turned off: video changed to the screen share");
+		return;
+	case SelfFrameLog::TurnedOffRefused:
+		diag::logf(LOG_INFO, "Self frame turned off: all screen slots are in use");
+		return;
+	case SelfFrameLog::KeptNotSharing:
+		diag::logf(LOG_INFO, "Self frame check kept: the account isn't sharing its screen");
+		return;
+	case SelfFrameLog::KeptNoFreeSlot:
+		diag::logf(LOG_INFO, "Self frame check kept: no slot is free for the screen share");
+		return;
+	case SelfFrameLog::RemovedFromSlot:
+		diag::logf(LOG_INFO, "Removed a person from slot %d", line.slot);
+		return;
+	case SelfFrameLog::NotInSlot:
+		diag::logf(LOG_INFO, "Couldn't remove the person from a slot: they're no longer in one");
+		return;
+	}
 }
 
 } // namespace
@@ -210,10 +239,10 @@ DockPoll::DockPoll(pipeline::Pipeline &pipeline, platform::OsProbe &probe, DockW
 	settings_written_json_ = config::settings_to_json(settings_);
 	// 自分の枠のチェックは、残してある値で始める。外したかと直前の共有は覚えておらず、共有の最中に起動したときは、
 	// 最初のポーリングが共有の始まりとして、ほかの人と同じ規則で見る。
-	self_frame_state_.on = settings_.self_frame_on;
+	self_frame_.state.on = settings_.self_frame_on;
 	// 自分の枠を載せた順の印は、自分の枠が映った時に決める (update_self_added_mark)。割り当て表は起動のたびに空から始まるので、
 	// 起動したときからチェックが付いていて、ほかの人より先に映れば、誰よりも先に載せた人 (印 0) になる。
-	self_order_mark_ = sources::SelfOrderMark{};
+	self_frame_.mark = sources::SelfOrderMark{};
 
 	// 設定ファイルを読めなかった起動では、settings.json に一切書き込まない (write_settings)。そのことは、ここで
 	// 1 回だけログに書く。書き込もうとするたびに書くと、設定を変えるたびや枠を手で動かすたびに、
@@ -414,7 +443,7 @@ DockFacts DockPoll::current_facts(bool frozen) const
 	facts.broadcaster_user_id = settings_.broadcaster_user_id;
 	facts.slot_order = settings_.slot_order;
 	facts.self_slot_first = settings_.self_slot_first;
-	facts.self_frame_added_mark = self_order_mark_.mark;
+	facts.self_frame_added_mark = self_frame_.mark.mark;
 	// 全画面。全画面にできる人と、全画面の人の配信に出している名前は、合成のソースに最後に渡した配置の入力と、配置に描いて
 	// いない画面共有している人から取る。
 	facts.focus_user_id = focus_user_id_;
@@ -536,14 +565,14 @@ void DockPoll::layout_step()
 	// 5 人分の配置になる。
 	const bool bound_known = loading_finished_ && !snapshot.frozen;
 	const bool bound = bound_known && sources::self_frame_shown();
-	step_self_frame(snapshot, bound, &self_frame_facts_);
+	step_self_frame(snapshot, bound);
 	// 自分の行のチェックが変わったら (共有の始まりで付いた、など)、画面の枠に載せられる人数を Pipeline に渡し直す。付ける判断は
 	// スナップショットの人数で行ったので、その後に自動で 4 人目が載っていれば Pipeline が断り、チェックを外して、下の配置の
-	// 入力からも自分の枠を外す (refuse_self_frame)。
+	// 入力からも自分の枠を外す (dock/self_frame_check.h の assign_policy_pushed)。
 	push_self_frame_in_use_if_changed();
 
 	// 合成のソースへの配置の入力を渡す。
-	push_layout_now(snapshot, self_frame_facts_.self_frame_shown);
+	push_layout_now(snapshot, self_frame_.facts.self_frame_shown);
 }
 
 void DockPoll::tick()
@@ -617,10 +646,10 @@ void DockPoll::tick()
 	// 自分の枠の判断の結果は layout_step が出したものを使う (状態は tick では進めない)。配置の入力も layout_step が渡す。
 	// 映す映像を OBS から選んでいるかは設定の値なので、設定を替えたらすぐ反映する (layout_step を待たない)。
 	facts.self_frame_selected = self_frame_selected();
-	facts.self_frame_bound = self_frame_facts_.self_frame_bound;
-	facts.self_frame_on = self_frame_facts_.self_frame_on;
-	facts.self_frame_shown = self_frame_facts_.self_frame_shown;
-	facts.self_frame_share = self_frame_facts_.self_frame_share;
+	facts.self_frame_bound = self_frame_.facts.self_frame_bound;
+	facts.self_frame_on = self_frame_.facts.self_frame_on;
+	facts.self_frame_shown = self_frame_.facts.self_frame_shown;
+	facts.self_frame_share = self_frame_.facts.self_frame_share;
 
 	last_observation_ = build_observation(snapshot, probe, facts);
 	// 接続している間の参加者を覚えておく。接続が切れても、参加者タブの行を消さずに残すためである。
@@ -636,13 +665,13 @@ void DockPoll::tick()
 	}
 	// DockPoll が持つ値をコピーする。操作の結果、最初のフレームを待つ時間、
 	// 残り時間を警告するしきい値 (設定を変えたらすぐに反映される)。
-	// 押した [移動] と [退出] は、結果が出たか、接続が切れたら忘れる (忘れないと、後で通話が変わったときに失敗と誤る)。
+	// 押した操作の返事 ([移動] と [退出]、載せられなかった枠のチェック) は、結果が出たか、原因がなくなったか、接続が切れたら
+	// 忘れる (ledger::settle_operation_facts)。忘れないと、後で状態が変わったときに、前に押した操作の返事が出る (通話が変わった
+	// ときに失敗と誤る、しばらく前に押した人の行に「空いている枠がありません。」が出る)。
 	ops_.call_action_timeout_us = static_cast<std::int64_t>(settings_.call_action_timeout_ms) * 1000;
 	last_observation_.ops = ops_;
-	if (ledger::call_action_finished(last_observation_)) {
-		ops_.call_action.reset();
-		last_observation_.ops.call_action.reset();
-	}
+	ops_ = ledger::settle_operation_facts(last_observation_);
+	last_observation_.ops = ops_;
 	last_observation_.first_frame_wait_threshold_us =
 		static_cast<std::int64_t>(settings_.first_frame_wait_ms) * 1000;
 	// 映像を受け取ると決めていない状態から戻った時刻。待ち時間はこの時刻から数える。
@@ -1021,13 +1050,13 @@ void DockPoll::push_assign_policy()
 	// メインアカウントの userId も渡す。自分の声の扱い (合成のソースがあるときだけ声の枠に入れ、ミキサーでは既定で
 	// ミュートにする) が、この人の声に適用される (pipeline/stream_router.h の AssignPolicy、pipeline/mixer_roster.h の
 	// MixerLevels)。自分の枠を使っているかも渡す (自動で載せる経路が、手動の操作と同じ人数までしか載せない)。使い始めることは
-	// Pipeline が割り当て表と同じロックの中で受け付けるか断り、断られたら自分の行のチェックを外す (refuse_self_frame)。
+	// Pipeline が割り当て表と同じロックの中で受け付けるか断り、断られたら自分の行のチェックを外す
+	// (dock/self_frame_check.h の assign_policy_pushed)。
 	const bool in_use = self_frame_in_use_now();
-	pushed_self_frame_in_use_ =
+	const bool accepted =
 		pipeline_.set_assign_policy(settings_.assign_mode, std::move(always_on), std::move(voice_links),
 		                            settings_.broadcaster_user_id, self_frame_selected(), in_use);
-	if (in_use && !pushed_self_frame_in_use_)
-		refuse_self_frame();
+	apply_self_frame_step(assign_policy_pushed(self_frame_, settings_.self_frame_on, in_use, accepted));
 	// 受け取る範囲も同じ周期で渡す (設定を変えたら、OBS を再起動せずに反映される)。
 	pipeline_.set_receive_scope(settings_.receive_scope);
 }
@@ -1135,43 +1164,40 @@ void DockPoll::update_self_added_mark(const pipeline::PipelineSnapshot &snapshot
 	}
 	// ダミー映像の間は自分の枠を描かない (sources/composite_input.h の dummy_composite_input) ので、映っていない間と同じに扱う。
 	const bool shown = self_frame_shown_now() && !sources::dummy_mode_active();
-	self_order_mark_ = sources::next_self_order_mark(self_order_mark_, self_frame_state_.on, shown, max_order);
+	self_frame_.mark = sources::next_self_order_mark(self_frame_.mark, self_frame_.state.on, shown, max_order);
 }
 
 bool DockPoll::self_frame_shown_now() const
 {
-	return self_frame_state_.on && sources::self_frame_shown();
+	return self_frame_.state.on && sources::self_frame_shown();
 }
 
 bool DockPoll::self_frame_in_use_now() const
 {
-	return config::self_frame_in_use(self_frame_selected(), self_frame_state_.on);
+	return self_frame_in_use_of(self_frame_, self_frame_selected());
 }
 
 void DockPoll::push_self_frame_in_use_if_changed()
 {
-	if (self_frame_in_use_now() != pushed_self_frame_in_use_)
+	if (self_frame_push_due(self_frame_, self_frame_selected()))
 		push_assign_policy();
 }
 
-void DockPoll::refuse_self_frame()
+void DockPoll::apply_self_frame_step(const SelfFrameStep &step)
 {
-	sources::SelfFrameInput in;
-	in.state = self_frame_state_;
-	in.event = sources::SelfFrameEvent::Refused;
-	const sources::SelfFrameResult result = sources::plan_self_frame(in);
-	self_frame_state_ = result.state;
-	if (settings_.self_frame_on != result.state.on) {
-		settings_.self_frame_on = result.state.on;
+	// 値を先に置き換えてから、ログ、settings.json、空けた枠の片付けを行う。片付けの並べ直し (push_layout_now) が、置き換えた後の
+	// 自分の枠の状態で配置の入力を作る。
+	self_frame_ = step.next;
+	settings_.self_frame_on = step.settings_on;
+	for (const SelfFrameLogLine &line : step.logs)
+		log_self_frame_line(line);
+	if (step.write_settings)
 		write_settings();
-	}
-	// layout_step の中で断られたときは、この後の配置の入力に自分の枠を入れない (入れると、この周期だけ 5 つになる)。
-	self_frame_facts_.self_frame_on = result.state.on;
-	self_frame_facts_.self_frame_shown = result.shown;
-	diag::logf(LOG_INFO, "Self frame turned off: all screen slots are in use");
+	if (step.released_slot != 0)
+		after_slot_release(config::SlotKind::Screen, step.released_slot);
 }
 
-void DockPoll::step_self_frame(const pipeline::PipelineSnapshot &snapshot, bool bound, DockFacts *facts)
+void DockPoll::step_self_frame(const pipeline::PipelineSnapshot &snapshot, bool bound)
 {
 	// 自分の Discord の共有。facts の sharing を信じてよく、自分の枠の人が決まっているときだけ分かる。そうでなければ
 	// 分からないままにし、「共有していない」とは扱わない。
@@ -1198,7 +1224,7 @@ void DockPoll::step_self_frame(const pipeline::PipelineSnapshot &snapshot, bool 
 	}
 
 	sources::SelfFrameInput in;
-	in.state = self_frame_state_;
+	in.state = self_frame_.state;
 	in.share = share;
 	in.event = sources::SelfFrameEvent::Poll;
 	in.selected = selected;
@@ -1218,14 +1244,15 @@ void DockPoll::step_self_frame(const pipeline::PipelineSnapshot &snapshot, bool 
 	if (result.deferred && !self_frame_deferred_logged_)
 		diag::logf(LOG_INFO, "Self frame not turned on: all screen slots are in use");
 	self_frame_deferred_logged_ = result.deferred;
-	self_frame_state_ = result.state;
+	self_frame_.state = result.state;
 
-	facts->self_frame_bound = bound;
-	facts->self_frame_on = result.state.on;
-	facts->self_frame_shown = result.shown;
-	facts->self_frame_share = share == sources::SelfShare::On    ? ledger::SelfShareState::On
-				  : share == sources::SelfShare::Off ? ledger::SelfShareState::Off
-								     : ledger::SelfShareState::Unknown;
+	SelfFrameFacts &facts = self_frame_.facts;
+	facts.self_frame_bound = bound;
+	facts.self_frame_on = result.state.on;
+	facts.self_frame_shown = result.shown;
+	facts.self_frame_share = share == sources::SelfShare::On    ? ledger::SelfShareState::On
+				 : share == sources::SelfShare::Off ? ledger::SelfShareState::Off
+								    : ledger::SelfShareState::Unknown;
 }
 
 void DockPoll::set_self_frame(bool on)
@@ -1233,17 +1260,17 @@ void DockPoll::set_self_frame(bool on)
 	// ドックのチェックの操作。共有の始まりと終わりは見ない (直前の共有の値は変えない)。on が変わったら settings.json に
 	// 残す。
 	sources::SelfFrameInput in;
-	in.state = self_frame_state_;
+	in.state = self_frame_.state;
 	in.event = on ? sources::SelfFrameEvent::DockOn : sources::SelfFrameEvent::DockOff;
 	const sources::SelfFrameResult result = sources::plan_self_frame(in);
-	self_frame_state_ = result.state;
+	self_frame_.state = result.state;
 	if (result.persist) {
 		settings_.self_frame_on = result.state.on;
 		write_settings();
 	}
 	diag::logf(LOG_INFO, "Self frame turned %s: dock", on ? "on" : "off");
 	// 次の周期を待たずに、画面の枠に載せられる人数を渡し直す (付けた直後に、自動で 4 人目が載らないように)。押せる判断の後に
-	// 自動で 4 人目が載っていれば、Pipeline が断り、チェックを外す (refuse_self_frame)。
+	// 自動で 4 人目が載っていれば、Pipeline が断り、チェックを外す (dock/self_frame_check.h の assign_policy_pushed)。
 	push_self_frame_in_use_if_changed();
 }
 
@@ -1254,87 +1281,17 @@ bool DockPoll::self_frame_selected() const
 
 void DockPoll::carry_self_frame_check(bool now_selected)
 {
-	// 自分の枠に映す映像を替えたときに、メインアカウントのチェックを引き継ぐ。起動の途中の結び付きでは呼ばない。
-	// サブアカウントがない構成 (自分の枠の人が Vesktop のアカウント) では、その人の Discord の画面共有は受信側に届かず、
-	// Pipeline も画面の枠に載せない (pipeline/stream_router.h の AssignPolicy::receiver_user_id) ので、引き継ぐものがない。
-	const pipeline::PipelineSnapshot snapshot = pipeline_.snapshot();
-	const std::string owner = self_frame_user_id(settings_, snapshot);
-	const bool has_sub_account =
-		!settings_.broadcaster_user_id.empty() && settings_.broadcaster_user_id != snapshot.facts.self_user_id.value_or("");
-	const bool carries = !owner.empty() && has_sub_account;
-
-	if (now_selected) {
-		// Discord の画面共有からメインアカウントを枠に載せていたら、そのチェックを自分の枠のチェックに移す。
-		int slot = 0;
-		std::int64_t order = 0;
-		for (const pipeline::SlotSnapshot &row : snapshot.slots) {
-			if (carries && row.kind == config::SlotKind::Screen && row.owner_user_id == owner) {
-				slot = row.slot;
-				order = row.added_order;
-			}
-		}
-		if (slot == 0) {
-			// 前から付いていたチェック (「Discordの画面共有」か「(なし)」に替えたときに、メインアカウントを枠に載せられずに
-			// 残したチェック) は、そのまま自分の枠のチェックになる。その間に Discord の人が枠を 4 つとも埋めていたら、自分の枠を
-			// 足すと 5 つになり、1 つを描けないので、この後の push_assign_policy で Pipeline が断り、チェックを外す
-			// (refuse_self_frame。ドックで付けられないのと同じ規則)。外すだけで excluded にはしないので、ほかの人と同じ規則で
-			// 後から付く (自動なら枠が空いたとき)。
-			return;
-		}
-		self_frame_state_.on = true;
-		self_frame_state_.excluded = false;
-		settings_.self_frame_on = true;
-		// 載せた順の位置は、メインアカウントの行にチェックを付けた時のまま引き継ぐ (映像の種類を替えても並びの位置を変えない)。
-		// 自分の枠を、メインアカウントの枠の番号 order の人がいた位置 (order - 1 の人の後、order + 1 の人の前) に置く。
-		self_order_mark_ = sources::self_order_mark_from_share(order);
-		diag::logf(LOG_INFO, "Self frame turned on: video changed");
-		// メインアカウントの枠を空けるのと、自分の枠を使い始めるのを、Pipeline の 1 回のロックの中で行う
-		// (Pipeline::move_self_frame)。分けると、その間に自動で待っていた人が空いた枠に載り、自分の枠を使い始められなくなる。
-		const pipeline::Pipeline::SelfFrameMove moved = pipeline_.move_self_frame(owner, true);
-		pushed_self_frame_in_use_ = moved.self_frame_in_use;
-		if (moved.change.outcome == pipeline::Pipeline::SlotChange::Outcome::Released) {
-			diag::logf(LOG_INFO, "Removed a person from slot %d", moved.change.slot);
-			after_slot_release(config::SlotKind::Screen, moved.change.slot);
-		} else {
-			// スナップショットの後に、メインアカウントが画面共有をやめて枠が空いていた。
-			diag::logf(LOG_INFO, "Couldn't remove the person from a slot: they're no longer in one");
-		}
-		// 空けた枠の分で使うので普通は断られないが、メインアカウントの枠がスナップショットの後に空いて、自動で待っていた人が
-		// 載っていれば断られる。
-		if (!moved.self_frame_in_use)
-			refuse_self_frame();
+	// 引き継ぎ方は dock/self_frame_check.h の plan_self_frame_carry が決め、Pipeline の答えを受けた後の扱いは
+	// settle_self_frame_carry が決める。付け替え (メインアカウントの枠と自分の枠) は、Pipeline の 1 回のロックの中で行う
+	// (Pipeline::move_self_frame)。
+	const SelfFrameCarryPlan plan = plan_self_frame_carry(
+		self_frame_, settings_.self_frame_on, self_frame_carry_facts(settings_, pipeline_.snapshot()), now_selected);
+	apply_self_frame_step(plan.before);
+	if (plan.move == SelfFrameMoveKind::None)
 		return;
-	}
-
-	// 自分の枠のチェックが付いていたら、Discord の画面共有の枠に載せる。枠が空いていないか、その人が画面共有を
-	// していなければ、チェックは残す (画面共有していない人は枠に載せられない)。
-	// 自分の枠を使うのをやめるのと、メインアカウントを載せるのを、Pipeline の 1 回のロックの中で行う
-	// (Pipeline::move_self_frame)。自分の枠を使っている間に載せると上限 (3 人) で断られ、先にやめると、空いた 4 つ目の枠に
-	// 自動で待っていた人が先に載る。
-	if (!carries || !self_frame_state_.on)
-		return;
-	if (snapshot.facts.sharing_valid) {
-		const std::vector<std::string> &sharing = snapshot.facts.sharing.user_ids;
-		if (std::find(sharing.begin(), sharing.end(), owner) == sharing.end()) {
-			diag::logf(LOG_INFO, "Self frame check kept: the account isn't sharing its screen");
-			return;
-		}
-	}
-	// 載せた順の位置は、自分の枠の位置を引き継ぐ (自分の枠を載せた順の印の人の後に置く。印をまだ決めていなければ、ほかの人と
-	// 同じく今の最後)。
-	const std::optional<std::int64_t> after =
-		self_order_mark_.decided ? std::optional<std::int64_t>(self_order_mark_.mark) : std::nullopt;
-	const pipeline::Pipeline::SelfFrameMove moved = pipeline_.move_self_frame(owner, false, after);
-	pushed_self_frame_in_use_ = moved.self_frame_in_use;
-	const pipeline::Pipeline::SlotChange &change = moved.change;
-	if (change.outcome == pipeline::Pipeline::SlotChange::Outcome::Assigned ||
-	    change.outcome == pipeline::Pipeline::SlotChange::Outcome::AlreadyOwned) {
-		self_frame_state_.on = false;
-		settings_.self_frame_on = false;
-		diag::logf(LOG_INFO, "Self frame turned off: video changed to the screen share");
-	} else {
-		diag::logf(LOG_INFO, "Self frame check kept: no slot is free for the screen share");
-	}
+	const pipeline::Pipeline::SelfFrameMove moved =
+		pipeline_.move_self_frame(plan.owner, plan.move == SelfFrameMoveKind::ToSelfFrame, plan.after_order);
+	apply_self_frame_step(settle_self_frame_carry(plan, moved));
 }
 
 void DockPoll::replace_slot(const ledger::ActionArgs &args)
@@ -1348,8 +1305,6 @@ void DockPoll::replace_slot(const ledger::ActionArgs &args)
 		return;
 	}
 	diag::logf(LOG_INFO, "Replaced the person in slot %d", change.slot);
-	if (ops_.last_slot_refused_user_id == args.user_id)
-		ops_.last_slot_refused_user_id.clear();
 	// 外した人の画面と名前ラベルを枠に残さない。載せた人の名前ラベルは、次のポーリングが渡す。
 	after_slot_release(config::SlotKind::Screen, change.slot);
 }
@@ -1392,13 +1347,9 @@ void DockPoll::set_slot(const ledger::ActionArgs &args)
 	switch (change.outcome) {
 	case pipeline::Pipeline::SlotChange::Outcome::Assigned:
 		diag::logf(LOG_INFO, "Added a person to slot %d", change.slot);
-		if (ops_.last_slot_refused_user_id == args.user_id)
-			ops_.last_slot_refused_user_id.clear();
 		break;
 	case pipeline::Pipeline::SlotChange::Outcome::AlreadyOwned:
 		diag::logf(LOG_INFO, "The person was already in slot %d", change.slot);
-		if (ops_.last_slot_refused_user_id == args.user_id)
-			ops_.last_slot_refused_user_id.clear();
 		break;
 	case pipeline::Pipeline::SlotChange::Outcome::Insufficient:
 	case pipeline::Pipeline::SlotChange::Outcome::Released:
@@ -1406,8 +1357,9 @@ void DockPoll::set_slot(const ledger::ActionArgs &args)
 		diag::logf(LOG_WARNING, "Couldn't add the person to a slot: no slot is free");
 		// 押した直後に空きがなくなって、載せられなかった (競合。自分の枠を使っている間に、自動で載せる経路 (選び方が「自動」の
 		// とき、[自動で枠に載せる] の人) が 3 人目を載せていたときも含む。Pipeline::assign_slot)。押した所の近く (その人の行) に
-		// 表示するために記録する。消すのは、その人が載ったとき (ここと replace_slot) だけである (別の人が載せられなかったときは、
-		// その人に替わる)。空きができても消さず、空いている枠がある間は、ledger が表示しない (ledger/rules_dock.cpp の refused_note)。
+		// 表示するために記録する。別の人が載せられなかったときは、その人に替わる。押した操作への返事なので、その人が載るか、空いて
+		// いる枠ができるか、その人の行のチェックの意味が変わるか、接続が切れたら、tick が忘れる (ledger/observation.h の
+		// slot_refusal_finished と settle_operation_facts)。忘れた後に枠がまた埋まっても、行には出ない。
 		ops_.last_slot_refused_user_id = args.user_id;
 		break;
 	}

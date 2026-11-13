@@ -31,9 +31,9 @@ include("${CORDMUX_DOCK_DIR}/windows.cmake" OPTIONAL)
 include("${CORDMUX_DOCK_DIR}/install_ui.cmake" OPTIONAL)
 
 # Qt を含まないソースだけを追加する (src-obs/tests もこれを呼ぶ)。settings_fields.* (settings.json のキーごとに、
-# 値を書き換える所を決めた表) と install_flow.* (インストールに関わる判断) も、build_observation.* と同じく、
-# 判断を単体テストで確認するために Qt の側から分けてある。install_flow.h が DockPollConfig を受け取るので、
-# DockPollConfig は Qt を含まない dock_poll_config.h にある。
+# 値を書き換える所を決めた表)、install_flow.* (インストールに関わる判断)、self_frame_check.* (自分の行のチェックを Pipeline に
+# 渡し、Pipeline の答えを受ける所の判断) も、build_observation.* と同じく、判断を単体テストで確認するために Qt の側から分けて
+# ある。install_flow.h が DockPollConfig を受け取るので、DockPollConfig は Qt を含まない dock_poll_config.h にある。
 function(cordmux_add_dock_observation target)
   target_sources(
     ${target}
@@ -45,6 +45,8 @@ function(cordmux_add_dock_observation target)
       "${CORDMUX_DOCK_DIR}/dock_poll_config.h"
       "${CORDMUX_DOCK_DIR}/install_flow.h"
       "${CORDMUX_DOCK_DIR}/install_flow.cpp"
+      "${CORDMUX_DOCK_DIR}/self_frame_check.h"
+      "${CORDMUX_DOCK_DIR}/self_frame_check.cpp"
   )
 
   # 部分ごとの .cmake の、Qt を含まない側 (このファイルの上の「ドックの部分ごとの .cmake」)。

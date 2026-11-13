@@ -2084,10 +2084,11 @@ dockview::PersonRow make_person_row(const Observation &obs, const PersonFact &pe
 		row.audio.screen_volume_pct = person.audio.screen_volume_pct;
 	}
 
-	// 押した直後に空いている枠がなくなって、載せられなかった。原因が続く間だけ表示する。短い形にするのは、
-	// 同じ理由の全文を一覧の上の 1 行 (list_reason) が伝えるためで、押した所のそばには結果だけを置く。
+	// 押した直後に空いている枠がなくなって、載せられなかった。押した操作への返事なので、押した後に原因 (空いている枠がない) が
+	// 途切れずに続く間だけ表示する (observation.h の slot_refusal_finished。枠が空いたら終え、後でまた埋まっても出さない)。
+	// 短い形にするのは、同じ理由の全文を一覧の上の 1 行 (list_reason) が伝えるためで、押した所のそばには結果だけを置く。
 	if (!obs.ops.last_slot_refused_user_id.empty() && obs.ops.last_slot_refused_user_id == person.user_id &&
-	    !person.slot.has_value() && free_screen_slot(obs) == 0)
+	    !slot_refusal_finished(obs))
 		row.refused_note = ref(keys::kDockNoFreeSlotShortText);
 	return row;
 }

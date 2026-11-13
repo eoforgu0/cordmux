@@ -873,12 +873,13 @@ struct OperationFacts {
 	std::optional<VesktopRemoveFailure> vesktop_remove_failure;
 	// 診断情報のエクスポートの結果。持たない = 結果を表示していない (設定ウィンドウを閉じると消す)。
 	std::optional<ExportResultFact> export_result;
-	// 押した直後に空きがなくて枠に載せられなかった人の userId。空 = いない (その人が載ったら空に戻す。DockPoll)。空きができても
-	// 消さず、空いている枠がある間は、行に表示しない (rules_dock.cpp の refused_note)。
-	// 押した結果は、押した所のそば (その人の行) で伝える。
+	// 押した直後に空きがなくて枠に載せられなかった人の userId。空 = いない。押した結果は、押した所のそば (その人の行) で伝える。
+	// 別の人が載せられなかったときは、その人に替わる。その人が載るか、空いている枠ができるか、その人の行のチェックの意味が
+	// 変わるか、接続が切れると消える (slot_refusal_finished と settle_operation_facts。DockPoll)。消えた後に枠がまた埋まっても、
+	// 行には出ない。
 	std::string last_slot_refused_user_id;
 	// 押して、結果をまだ見ていない [移動] か [退出]。持たない = ない。もう一度押すと押し直した時刻に替わり、結果が出るか、
-	// 接続が切れると消える (DockPoll)。
+	// 接続が切れると消える (call_action_finished と settle_operation_facts。DockPoll)。
 	std::optional<CallActionPress> call_action;
 	// 押してから、通話が変わらなければ失敗とみなすまでの時間 (設定の call_action_timeout_ms をマイクロ秒にした値)。
 	std::int64_t call_action_timeout_us = 5'000'000;
@@ -1248,6 +1249,47 @@ inline bool call_action_failed(const Observation &obs)
 	if (!press.has_value() || obs.link.state != LinkState::Connected || call_action_done(obs))
 		return false;
 	return obs.now_us - press->pressed_at_us >= obs.ops.call_action_timeout_us;
+}
+
+// 枠のチェックを押して載せられなかったことの返事 (その人の行のそばの「空いている枠がありません。」。
+// OperationFacts::last_slot_refused_user_id) を終えてよいか。返事は押した操作に答えるもので、押した後に原因 (空いている枠が
+// 1 つもない) が途切れずに続き、その人の行のチェックが押したときと同じ意味の間だけ出す。次のどれかで終える。
+//   - その人が枠に載った (どの経路でも。押した操作の結果が出た)
+//   - 空いている枠ができた (「空いている枠がありません」が事実でなくなった)
+//   - その人が画面共有していないと分かったか、参加者の一覧にいない (チェックを押せない理由が別のものになった)
+//   - 接続が切れた (結果を見られない。[移動] と [退出] と同じ)
+// 終えた返事は DockPoll が忘れる (settle_operation_facts) ので、後でまた枠が埋まっても出さない。後で埋まったことは、押した操作と
+// 関係がない。行に出すか (rules_dock.cpp の refused_note) も、この関数で決める。押していなければ false。
+inline bool slot_refusal_finished(const Observation &obs)
+{
+	const std::string &user_id = obs.ops.last_slot_refused_user_id;
+	if (user_id.empty())
+		return false;
+	if (obs.link.state != LinkState::Connected)
+		return true;
+	const PersonFact *person = nullptr;
+	for (const PersonFact &p : obs.people) {
+		if (p.user_id == user_id) {
+			person = &p;
+			break;
+		}
+	}
+	if (person == nullptr || person->slot.has_value() || person_known_not_sharing(obs, user_id))
+		return true;
+	return free_screen_slot(obs) != 0;
+}
+
+// 返事を終えた操作の結果 (押した [移動] と [退出]、載せられなかった枠のチェック) を忘れた OperationFacts を返す。DockPoll が
+// 周期ごとに、Observation を作った直後に通し、返った値を持ち続ける。忘れないと、後で状態が変わったときに、前に押した操作の
+// 返事が出る ([移動] を失敗と誤る、しばらく前に押した人の行に「空いている枠がありません。」が出る)。
+inline OperationFacts settle_operation_facts(const Observation &obs)
+{
+	OperationFacts out = obs.ops;
+	if (call_action_finished(obs))
+		out.call_action.reset();
+	if (slot_refusal_finished(obs))
+		out.last_slot_refused_user_id.clear();
+	return out;
 }
 
 // アンインストールを始めた後か。始めた後は、OBS を終了するまで何も書き込まない。primary の表の Uninstalled の

@@ -67,7 +67,7 @@ void DockPoll::on_settings_changed(const config::Settings &settings)
 	if (was_selected != self_frame_selected())
 		carry_self_frame_check(self_frame_selected());
 	if (assign_mode_changed)
-		self_frame_state_.excluded = false;
+		self_frame_.state.excluded = false;
 
 	write_settings();
 	push_assign_policy();
@@ -117,7 +117,7 @@ void DockPoll::on_look_changed(const config::Settings &from_tab)
 	if (was_selected != self_frame_selected())
 		carry_self_frame_check(self_frame_selected());
 	if (assign_mode_changed)
-		self_frame_state_.excluded = false;
+		self_frame_.state.excluded = false;
 
 	push_assign_policy();
 	// 名前ラベルの見た目と、枠の並べ方 (間隔、並び順) を、次の周期を待たずに渡す。

@@ -1033,7 +1033,7 @@ public:
 	// 埋めていれば断り、偽のままにする (stream_router.h の accepted_self_frame_in_use)。ドックが付ける判断はスナップショット
 	// (最大 1 周期前) の人数で行うので、その後に自動で載せる経路が 4 人目を載せていると、自分の枠と合わせて 5 つになるためである。
 	// ほかの値は、断ったときも渡されたとおりにする。戻り値は、受け付けた self_frame_in_use (渡した値が偽なら偽、断ったら偽)。
-	// ドックは、真を渡して偽が返ったら、自分の行のチェックを外す (dock/dock_poll.cpp の refuse_self_frame)。
+	// ドックは、真を渡して偽が返ったら、自分の行のチェックを外す (dock/self_frame_check.h の assign_policy_pushed)。
 	//
 	// どのスレッドから呼んでもよい (ドックの UI のスレッドから呼ぶ)。
 	bool set_assign_policy(config::AssignMode mode, std::set<std::string> always_on,

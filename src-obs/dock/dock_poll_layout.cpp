@@ -247,7 +247,7 @@ void DockPollLayoutPart::push_composite_input(DockPoll &self, const pipeline::Pi
 	}
 	// 1 つのときの全面は常に有効にする (設定の項目はない)。ダミー映像の間は、自分の枠の条件に依らず自分の枠を描かず、4 つの
 	// ダミーを自分の枠がないときと同じ配置で描く (sources/composite_input.h の dummy_composite_input)。自分の枠のチェックと
-	// 状態 (self_frame_state_) はダミーの間も変えないので、ダミーをやめると、自分の枠は前のとおりに描かれる。
+	// 状態 (self_frame_.state) はダミーの間も変えないので、ダミーをやめると、自分の枠は前のとおりに描かれる。
 	sources::CompositeInput input =
 		dummy ? sources::dummy_composite_input(people, ledger::kFullWhenSingle, settings.tile_gap_px)
 		      : sources::make_composite_input(visible_slots, people, self_frame_shown, ledger::kFullWhenSingle,
@@ -255,7 +255,7 @@ void DockPollLayoutPart::push_composite_input(DockPoll &self, const pipeline::Pi
 	input.self_hears_voice = self_frame_hears_voice(snapshot.slots, self_owner);
 	input.slot_order = settings.slot_order;
 	input.self_first = settings.self_slot_first;
-	input.self_added_mark = self.self_order_mark_.mark;
+	input.self_added_mark = self.self_frame_.mark.mark;
 	// 自分の枠の人。メインアカウントだけの構成で Vesktop との接続が切れている間は、最後に分かった Vesktop のアカウントにする。
 	// 自分の枠は接続が切れても描き続けるので、自分の枠の全画面も続ける。行の枠の位置 (Observation の Choices) と同じ関数で決める。
 	const SelfFrameIdentity self_identity =

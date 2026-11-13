@@ -32,6 +32,7 @@
 #include "dock/dock_poll_layout.h"
 #include "dock/dock_poll_settings.h"
 #include "dock/dock_widget.h"
+#include "dock/self_frame_check.h"
 #include "install/build_mark.h"
 #include "install/uninstall.h"
 #include "install/vencord_dir.h"
@@ -110,8 +111,8 @@ private:
 
 	void tick();
 	// 枠の並べ方と自分の枠を出すかの判断を 1 回進める。ドックの表示の更新 (tick) とは別のタイマー (layout_timer_) が
-	// kLayoutStepIntervalMs ごとに呼ぶ。自分の枠の状態 (self_frame_state_) を進めるのは、ここだけである。tick は
-	// 結果 (self_frame_facts_) を読むだけで、状態を進めない。
+	// kLayoutStepIntervalMs ごとに呼ぶ。周期ごとに自分の枠の状態 (self_frame_.state) を進めるのは、ここだけである。tick は
+	// 結果 (self_frame_.facts) を読むだけで、状態を進めない。
 	void layout_step();
 	// layout_step の直後に tick を行う。起動時、シーンの読み込みの終わり、押した操作の後のように、次の周期を待たずに
 	// 画面と配置をそろえるときに使う。
@@ -197,15 +198,15 @@ private:
 	// 合成のソースに配置の入力を 1 回渡す。合成のソースがないシーンコレクションでは何もしない。
 	void push_layout_now(const pipeline::PipelineSnapshot &snapshot, bool self_frame_shown);
 
-	// 自分の枠を載せた順の印 (self_order_mark_) を、まだ決めていなくて自分の枠が映っていれば決める。チェックが外れて
+	// 自分の枠を載せた順の印 (self_frame_.mark) を、まだ決めていなくて自分の枠が映っていれば決める。チェックが外れて
 	// いれば、決め直す印にする。行の位置 (facts) と配信の配置 (push_composite_input) に同じ値を渡すために、どちらも作る前に
 	// 呼ぶ。チェックを変える所 (set_self_frame、step_self_frame) ごとに書かず、ここ 1 か所で見る。
 	void update_self_added_mark(const pipeline::PipelineSnapshot &snapshot);
 
-	// 自分の枠を出すかの状態 (self_frame_state_) を、layout_step のたびに進める。自分の Discord の共有の始まりと、
-	// ほかの人と同じ規則で点け (sources/self_frame_plan.h の plan_self_frame)、結果を facts に入れる。bound は、自分の枠に
-	// 映す映像が結び付いているか (シーンの読み込みが終わっていて、切り替えの途中でないときだけ判断する)。
-	void step_self_frame(const pipeline::PipelineSnapshot &snapshot, bool bound, DockFacts *facts);
+	// 自分の枠を出すかの状態 (self_frame_.state) を、layout_step のたびに進める。自分の Discord の共有の始まりと、
+	// ほかの人と同じ規則で点け (sources/self_frame_plan.h の plan_self_frame)、結果を self_frame_.facts に入れる。bound は、
+	// 自分の枠に映す映像が結び付いているか (シーンの読み込みが終わっていて、切り替えの途中でないときだけ判断する)。
+	void step_self_frame(const pipeline::PipelineSnapshot &snapshot, bool bound);
 
 	// 自分の行のチェックで、自分の枠を出すか消す。ドックで付け外しした値は settings.json に残す。
 	void set_self_frame(bool on);
@@ -214,26 +215,28 @@ private:
 	bool self_frame_selected() const;
 
 	// 映す映像を「Discord の画面共有」と OBS のソースかシーンの間で替えたときに、メインアカウントの行のチェックを引き継ぐ
-	// (設定を替えた直後に呼ぶ。起動の途中の結び付きでは呼ばない)。now_selected は替えた後の値。
+	// (設定を替えた直後に呼ぶ。起動の途中の結び付きでは呼ばない)。now_selected は替えた後の値。引き継ぎ方と、Pipeline の答え
+	// (Pipeline::move_self_frame の戻り値) を受けた後の扱いは、dock/self_frame_check.h の plan_self_frame_carry と
+	// settle_self_frame_carry が決める。
 	void carry_self_frame_check(bool now_selected);
 
 	// 自分の枠が配置に数えられるか (自分の枠を出す状態で、映すソースが結び付いている)。ポーリングの外で並べ直すときに使う。
 	bool self_frame_shown_now() const;
 
-	// 自分の枠を使っているか (config::self_frame_in_use。映像を OBS から選んでいて、自分の行のチェックが付いている。映像が
-	// 結び付いているかは見ない)。Pipeline に渡し、画面の枠に新しく載せられる人数を 1 つ減らす (push_assign_policy)。
+	// 自分の枠を使っているか (dock/self_frame_check.h の self_frame_in_use_of。映像を OBS から選んでいて、自分の行のチェックが
+	// 付いている。映像が結び付いているかは見ない)。Pipeline に渡し、画面の枠に新しく載せられる人数を 1 つ減らす
+	// (push_assign_policy)。
 	bool self_frame_in_use_now() const;
 
 	// 自分の枠を使っているかが、最後に Pipeline に渡した値から変わっていれば、渡し直す (push_assign_policy)。自分の行の
 	// チェックが変わる所 (layout_step、set_self_frame) から呼ぶ。設定を替えたときは、設定の後処理が push_assign_policy を呼ぶ。
 	void push_self_frame_in_use_if_changed();
 
-	// 自分の枠を使い始めることを Pipeline が断ったときに、自分の行のチェックを外す (Pipeline::set_assign_policy と
-	// move_self_frame の戻り値)。付ける判断はスナップショット (最大 1 周期前) の人数で行うので、その後に自動で載せる経路が
-	// 4 人目を載せていると断られる。外し方は、付けるはずの枠が埋まっていて見送ったときと同じで、excluded にはしない
-	// (sources/self_frame_plan.h の SelfFrameEvent::Refused。自動なら枠が空けば付く)。settings.json にも残し、この周期の
-	// 配置の入力 (self_frame_facts_) からも自分の枠を外す。
-	void refuse_self_frame();
+	// 自分の枠の判断 (dock/self_frame_check.h) が返した結果を当てる。self_frame_ を置き換え、settings の self_frame_on を
+	// 合わせ、ログを順に書き、settings.json を書き (write_settings が真のとき)、空けた枠を片付ける (after_slot_release)。
+	// 自分の枠を使い始めることを Pipeline が断ったときのチェックの外し方 (この周期の配置の入力からも外す) も、結果に入っている
+	// (refuse_self_frame_step)。
+	void apply_self_frame_step(const SelfFrameStep &step);
 
 	// ダミーの表示をオンかオフにする。ダミーを表示していた時間帯は Pipeline が記録する。
 	void set_dummy_mode(bool on);
@@ -264,6 +267,8 @@ private:
 	// (その人の userId -> 使う声のアカウントの userId) を、Pipeline に渡し直す。元の値は seen_people.json と
 	// settings.json にあり、Pipeline が持つのはそのコピーである。中身が変わっていなければ Pipeline は何もしない
 	// ので、ポーリングのたびに呼んでよい。
+	// 自分の枠を使っているか (self_frame_in_use_now) も渡す。使い始めることは Pipeline が割り当て表と同じロックの中で受け付けるか
+	// 断り、断られたら自分の行のチェックを外す (dock/self_frame_check.h の assign_policy_pushed)。
 	// 「自動」から「手動」に戻したときに、枠を空ける関数は持たない。今載っている人はそのまま残る (理由は
 	// dock_poll_settings.cpp の on_settings_changed)。
 	void push_assign_policy();
@@ -323,9 +328,6 @@ private:
 	std::unique_ptr<QTimer> timer_;
 	// 枠の並べ方と自分の枠の判断を進めるタイマー (layout_step)。timer_ と同じく、親を持たない。
 	std::unique_ptr<QTimer> layout_timer_;
-	// layout_step が最後に出した自分の枠の結果 (DockFacts の self_frame_ で始まる 4 つの値だけを使う)。tick が facts に
-	// コピーする。
-	DockFacts self_frame_facts_;
 	bool loading_finished_ = false;
 	// DockPollConfig::maintain_listener を最後に呼んだ時刻 (システム時刻のマイクロ秒)。
 	std::int64_t last_maintain_listener_us_ = 0;
@@ -336,20 +338,12 @@ private:
 	bool was_video_expected_ = true;
 	std::optional<std::int64_t> video_expected_since_us_;
 
-	// 自分の枠を出すかの状態。起動時の on は settings の self_frame_on。外したか (excluded) と、直前の自分の共有 (prev) は
-	// 残さない。
-	sources::SelfFrameState self_frame_state_;
+	// 自分の枠の値 (出すかの状態、最後に Pipeline が受け付けた使っているか、載せた順の印、layout_step が出した結果)。中身は
+	// dock/self_frame_check.h の SelfFrameCheck にある。Pipeline に渡して答えを受ける所 (push_assign_policy、
+	// carry_self_frame_check) は、そこの関数の結果を apply_self_frame_step で当てる。
+	SelfFrameCheck self_frame_;
 	// 枠が埋まっていて自分の枠を付けられない間に、そのログを書いたか。
 	bool self_frame_deferred_logged_ = false;
-	// 最後に Pipeline が受け付けた、自分の枠を使っているか (push_assign_policy と carry_self_frame_check が、Pipeline の戻り値を
-	// 書く)。
-	bool pushed_self_frame_in_use_ = false;
-	// 自分の枠を載せた順の印 (ledger/observation.h の Choices::self_frame_added_mark)。チェックが付いている間に、自分の枠が
-	// 初めて実際に映った時 (self_frame_shown_now が真になった時) に、その時の割り当て表の画面共有の枠の載せた順の番号の最大を
-	// 入れて決める (sources/self_frame_plan.h の next_self_order_mark)。チェックが外れたら決め直す。映像を
-	// 「Discordの画面共有」から OBS のソースに替えてチェックを引き継ぐときは、メインアカウントの枠の番号から決める
-	// (carry_self_frame_check)。
-	sources::SelfOrderMark self_order_mark_;
 
 	// 最後に作った Observation。押された操作を実行できるかは、これで判断する。画面に表示していた状態と同じ
 	// Observation で判断するためである。

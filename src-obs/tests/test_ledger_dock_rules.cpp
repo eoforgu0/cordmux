@@ -1351,6 +1351,152 @@ TEST_CASE("枠がすべて使用中のときは、枠に載せていない人の
 	CHECK(r->refused_note->id == keys::kDockNoFreeSlotShortText);
 }
 
+namespace {
+
+// 枠が 4 つとも埋まっていて、画面共有している hanako (200) を押したが載せられなかった直後。
+Observation refused_with_full_slots()
+{
+	Observation obs = healthy();
+	obs.people.push_back(showing("300", "b", 2));
+	obs.people.push_back(showing("400", "c", 3));
+	obs.people.push_back(showing("500", "d", 4));
+	obs.call.roster_count = 5;
+	obs.people[1].sharing = true;
+	obs.ops.last_slot_refused_user_id = "200";
+	return obs;
+}
+
+// DockPoll の周期と同じく、Observation を作った直後に返事を終えるかを決め、持ち続ける値を返す (dock/dock_poll.cpp の tick)。
+// 返った ops を次の周期の Observation に入れるのは、テストの側で行う。
+OperationFacts settle_ops(Observation *obs)
+{
+	obs->ops = settle_operation_facts(*obs);
+	return obs->ops;
+}
+
+bool refused_note_shown(const Observation &obs, const std::string &user_id)
+{
+	const dockview::DockViewV2 v = decide_dock(obs);
+	const dockview::PersonRow *row = row_of(v, user_id);
+	return row != nullptr && row->refused_note.has_value();
+}
+
+} // namespace
+
+TEST_CASE("載せられなかった返事は、空いている枠ができたら終え、後でまた枠が埋まっても、前に押した人の行に出さない")
+{
+	// 押した直後は、枠が埋まっている間ずっと出る (周期を重ねても消えない)。
+	Observation obs = refused_with_full_slots();
+	CHECK_FALSE(slot_refusal_finished(obs));
+	for (int i = 0; i < 3; ++i) {
+		CHECK(settle_ops(&obs).last_slot_refused_user_id == "200");
+		CHECK(refused_note_shown(obs, "200"));
+	}
+
+	// d (500) が画面共有をやめて枠が空いた。返事は事実でなくなるので終え、この周期から出さない。
+	Observation freed = obs;
+	freed.people.pop_back();
+	freed.call.roster_count = 4;
+	CHECK(slot_refusal_finished(freed));
+	CHECK(settle_ops(&freed).last_slot_refused_user_id.empty());
+	CHECK_FALSE(refused_note_shown(freed, "200"));
+
+	// しばらく後に、別の人 (600) が自動で空いた枠に載り、また埋まった。hanako は押し直していないので出さない。
+	Observation refilled = freed;
+	refilled.people.push_back(showing("600", "e", 4));
+	refilled.call.roster_count = 5;
+	CHECK_FALSE(slot_refusal_finished(refilled));
+	CHECK(settle_ops(&refilled).last_slot_refused_user_id.empty());
+	CHECK_FALSE(refused_note_shown(refilled, "200"));
+	// 枠が埋まっていることは、ほかの人と同じ押せないチェックと一覧の上の 1 行が伝える。
+	const dockview::DockViewV2 v = decide_dock(refilled);
+	const dockview::PersonRow *hanako = row_of(v, "200");
+	REQUIRE(hanako != nullptr);
+	REQUIRE(hanako->check_action.disabled_reason.has_value());
+	CHECK(hanako->check_action.disabled_reason->id == keys::kDockNoFreeSlotText);
+	REQUIRE(v.list_reason.has_value());
+	CHECK(v.list_reason->text.id == keys::kDockNoFreeSlotText);
+}
+
+TEST_CASE("載せられなかった返事は、その人が載った、画面共有をやめた、通話を抜けた、接続が切れたときにも終える")
+{
+	SUBCASE("その人が枠に載った (入れ替えで載った。押した操作の結果が出た)")
+	{
+		Observation obs = refused_with_full_slots();
+		obs.people[2].slot.reset();
+		obs.people[1].slot = 2;
+		obs.people[1].slot_visible = true;
+		CHECK(slot_refusal_finished(obs));
+		CHECK(settle_ops(&obs).last_slot_refused_user_id.empty());
+		// 後でその人が枠から外れ、枠がまた埋まっても出さない。
+		obs.people[1].slot.reset();
+		obs.people[2].slot = 2;
+		CHECK_FALSE(refused_note_shown(obs, "200"));
+	}
+	SUBCASE("その人が画面共有をやめた (チェックを押せない理由が、画面共有していないことになった)")
+	{
+		Observation obs = refused_with_full_slots();
+		obs.people[1].sharing = false;
+		CHECK(slot_refusal_finished(obs));
+		CHECK_FALSE(refused_note_shown(obs, "200"));
+		CHECK(settle_ops(&obs).last_slot_refused_user_id.empty());
+		// 画面共有を始め直しても、押し直すまで出さない。
+		obs.people[1].sharing = true;
+		CHECK_FALSE(refused_note_shown(obs, "200"));
+	}
+	SUBCASE("その人が通話を抜けた (参加者の一覧にいない)")
+	{
+		Observation obs = refused_with_full_slots();
+		obs.people.erase(obs.people.begin() + 1);
+		CHECK(slot_refusal_finished(obs));
+		CHECK(settle_ops(&obs).last_slot_refused_user_id.empty());
+	}
+	SUBCASE("接続が切れた ([移動] と [退出] と同じく、結果を見られない)")
+	{
+		Observation obs = refused_with_full_slots();
+		obs.link.state = LinkState::Disconnected;
+		CHECK(slot_refusal_finished(obs));
+		CHECK(settle_ops(&obs).last_slot_refused_user_id.empty());
+	}
+	SUBCASE("画面共有しているかが分からない間は、終えない (分からないことを、やめたとは扱わない)")
+	{
+		Observation obs = refused_with_full_slots();
+		obs.people[1].sharing = false;
+		obs.people[1].sharing_known = false;
+		CHECK_FALSE(slot_refusal_finished(obs));
+		CHECK(settle_ops(&obs).last_slot_refused_user_id == "200");
+	}
+}
+
+TEST_CASE("返事を終えるかを決めても、終えていない返事と、ほかの操作の結果は変えない")
+{
+	// 別の人が載せられなかったときは、DockPoll がその人に替える。返事を終えるかは、替わった人で決める。
+	Observation obs = refused_with_full_slots();
+	obs.people.push_back(present("600", "e"));
+	obs.people.back().sharing = true;
+	obs.call.roster_count = 6;
+	obs.ops.last_slot_refused_user_id = "600";
+	CHECK(settle_ops(&obs).last_slot_refused_user_id == "600");
+	CHECK(refused_note_shown(obs, "600"));
+	CHECK_FALSE(refused_note_shown(obs, "200"));
+
+	// 押した [移動] は、結果が出ていなければ持ち続け、載せられなかった返事を終えても残る。
+	obs.ops.call_action = CallActionPress{CallActionKind::Move, kNow - kSec};
+	obs.ops.call_action_timeout_us = 7 * kSec;
+	obs.people.pop_back();
+	const OperationFacts kept = settle_ops(&obs);
+	CHECK(kept.last_slot_refused_user_id.empty());
+	REQUIRE(kept.call_action.has_value());
+	CHECK(kept.call_action->kind == CallActionKind::Move);
+	CHECK(kept.call_action->pressed_at_us == kNow - kSec);
+	CHECK(kept.call_action_timeout_us == 7 * kSec);
+
+	// 押していなければ、終える返事もない。
+	Observation none = healthy();
+	CHECK_FALSE(slot_refusal_finished(none));
+	CHECK(settle_ops(&none).last_slot_refused_user_id.empty());
+}
+
 TEST_CASE("自分の枠を使っている間は枠に載せられるのが 3 人までで、一覧の上の 1 行と押せないチェックになる")
 {
 	Observation obs = healthy();
