@@ -1,5 +1,27 @@
 # 変更履歴 (Changelog)
 
+## 1.0.3
+
+### ja
+
+#### 変更点
+
+- 画面共有を受け取り始めた直後などに、映像が音より早く表示されるずれを小さくしました。
+
+#### 不具合の修正
+
+- 4Kなどの大きな画面共有を受け取り始めた直後などに、映像がほとんど表示されなくなることがある問題を修正しました。
+
+### en
+
+#### Changes
+
+- Reduced how far video can be shown ahead of audio, such as right after a screen share starts to be received
+
+#### Bug Fixes
+
+- Fixed an issue where video from a large screen share such as 4K could almost stop being shown, such as right after it started to be received
+
 ## 1.0.2
 
 ### ja
