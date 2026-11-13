@@ -400,9 +400,6 @@ ARG_TOKEN_RE = re.compile(r"%\d+")
 WHITESPACE_RE = re.compile(r"[\s\u3000]+")
 # [ ] で囲んだ名前 (1 行の中で閉じるもの)。
 BUTTON_RE = re.compile(r"\[([^\[\]\n]+)\]")
-# 作業の中だけで通じる番号 (AC-<数字> の形)。手順書の全体で探す (大文字と小文字を区別する)。
-INTERNAL_ID_SOURCE = r"\bAC-[0-9]+\b"
-INTERNAL_ID_RE = re.compile(INTERNAL_ID_SOURCE, re.ASCII)
 # placeholder の外側の括弧 (半角と全角)。placeholder の中の文字列を取り出すときに外す。
 PLACEHOLDER_BRACKETS = "()\uff08\uff09"
 # [ ] だけで書くときに許す、キーの種類の語 (ボタン、メニューの項目、選択肢)
@@ -679,7 +676,6 @@ def contains_copied(section_text, value):
 def mask_buttons(text):
     # [ ] の中の文字を同じ数の空白に置き換える。[ ] の中は ini と照合したボタンの名前なので、禁止語と forbidden_all の
     # チェックでは見ない。括弧を残して同じ数の空白にするのは、伏せた所から行頭の > や $ が新しくできないようにするため。
-    # 内部の番号のチェックは伏せない文字列を見る。
     return BUTTON_RE.sub(lambda m: "[" + " " * len(m.group(1)) + "]", text)
 
 
@@ -884,7 +880,6 @@ def check_guide(label, guide_text, ini_entries, rules, base_dir=None, spacing_pa
     #   - [ ] の名前が、ini のボタン、メニューの項目、選択肢の名前 (後ろに component_word が続くときは、その種類の名前)
     #     か outside_button のどれか。1 行の中で閉じない [ か ] も問題にする
     #   - copied の節に ini の値が、contains の節に定型の文がある (%N の所は何でもよく、空白は比べない)
-    #   - ファイル全体に、作業の中だけで通じる番号 (AC-<数字> の形) がない
     #   - placeholder の中の文字列が、placeholder のまま書いた所のほかにない
     #   - [ ]、「」とインラインのコードの外に、forbidden_ui_words.txt の spacing のセットに一致する書き方がない
     #   - ini の値が手順書を指す所 (ini_ref) の見出しと手順の番号が、手順書にある (ini_reference_problems)
@@ -1002,11 +997,6 @@ def check_guide(label, guide_text, ini_entries, rules, base_dir=None, spacing_pa
     for section_name, sentence in rules.contains:
         if section_name in found_names and WHITESPACE_RE.sub("", sentence) not in WHITESPACE_RE.sub("", section_text(section_name)):
             violations.append(f"{label}: 節 '{section_name}' に定型の文がない: {sentence}")
-
-    # 内部の番号 (ファイル全体。[ ] も伏せない)
-    for start, source, word in find_words(guide_text, [(INTERNAL_ID_SOURCE, INTERNAL_ID_RE)]):
-        line_no = 1 + guide_text.count("\n", 0, start)
-        violations.append(f"{label}:{line_no}: 内部の番号: '{word.strip()}' (規則 {source})")
 
     # placeholder の書き換え。リリースのツールは placeholder を探すので、括弧を全角にした placeholder を見落とす。
     # placeholder の括弧の中の文字列 (空白を除く) が、placeholder のまま書いた所のほかにあれば問題にする。
@@ -1183,10 +1173,6 @@ def find_sample_in_lines(lines, pattern, rules):
     return next((line for line in lines if pattern.search(mask_for_words(line, rules))), None)
 
 
-# AC-<数字> の形の番号のテストデータ。
-SAMPLE_INTERNAL_ID = "AC-61"
-
-
 def markdown_mutations(good_text, rules, ins, install, after, stats):
     # 記法のチェックの書き換えた例。[(名前, 文字列, 期待)]。
     doc = parse_markdown(good_text)
@@ -1311,9 +1297,6 @@ def build_mutations(good_text, ini_entries, rules, stats, spacing_patterns=()):
         ("mut_unknown_button_in_heading", ins(good_text, after, "### [NoSuchButton] x"), "ボタンの名前でない"),
         ("mut_link_is_not_button", ins(good_text, install, "[NoSuchButton](https://example.com/)"), None),
         ("mut_button_in_code_ignored", ins(good_text, install, "`[NoSuchButton]`"), None),
-        # 内部の番号 (全体)
-        ("mut_internal_id_in_last", ins(good_text, after, f"See {SAMPLE_INTERNAL_ID}."), "内部の番号"),
-        ("mut_internal_id_in_title", ins_title(good_text, f"See {SAMPLE_INTERNAL_ID}."), "内部の番号"),
         # placeholder: そのままの形なら手順の部分でも問題にならず、括弧を全角にしたものは問題になる
         ("mut_placeholder_in_steps", ins(good_text, install, rules.placeholder), None),
         # 本文で見出しの名前を指しても、依頼の語や禁止語に数えない (見出しが依頼の形の文字列を含むことがある)

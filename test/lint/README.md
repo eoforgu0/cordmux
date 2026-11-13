@@ -84,7 +84,7 @@ C と C++ (`.h .hpp .c .cc .cpp`) と TypeScript と JavaScript (`.ts .tsx .mjs 
 
 手順書 (`guide/ja.md` と `guide/en.md`。Markdown) の lint。見出しと語は `install_guide_rules.txt` にあり、手順書ごとに 1 つのセットを持つ。キーの書き方は `install_guide_rules.txt` の先頭のコメントに、チェックの中身は `install_guide.py` の `check_guide` と `syntax_problems` のコメントにある。手順書の書き方は docs/ui_guidelines.md の「手順書の書き方」に、Markdown の形と zip のテキストへの変換は dist/README.md の「手順書の形」にある。
 
-主なチェックは、使ってよい記法の範囲 (使えない記法と、項目と段落の間の空行)、同じファイルの見出しへのリンクのアンカーと相対リンクの行き先、タイトルと `##` の見出しの並び、手順の数、手順の部分の禁止語、`[ ]` の名前と ini の照合、引用の中の文字列、ini からコピーした文と決まった文、画面の文言 (ini の値) が手順書の見出しと手順の番号を指す所、作業の中だけで通じる番号 (`AC-<数字>` の形)、`forbidden_ui_words.txt` の `spacing` のセット、CR である。引数なしで実行すると、日本語と英語の構成 (`##` の数、節ごとの `###` の数と番号付きの項目の数) が同じかも見る。アンカーは GitHub の作り方 (小文字にし、文字・数字・空白・`-`・`_` のほかを除き、空白を `-` にする。重なれば `-1`、`-2` を付ける) で作る。
+主なチェックは、使ってよい記法の範囲 (使えない記法と、項目と段落の間の空行)、同じファイルの見出しへのリンクのアンカーと相対リンクの行き先、タイトルと `##` の見出しの並び、手順の数、手順の部分の禁止語、`[ ]` の名前と ini の照合、引用の中の文字列、ini からコピーした文と決まった文、画面の文言 (ini の値) が手順書の見出しと手順の番号を指す所、`forbidden_ui_words.txt` の `spacing` のセット、CR である。引数なしで実行すると、日本語と英語の構成 (`##` の数、節ごとの `###` の数と番号付きの項目の数) が同じかも見る。アンカーは GitHub の作り方 (小文字にし、文字・数字・空白・`-`・`_` のほかを除き、空白を `-` にする。重なれば `-1`、`-2` を付ける) で作る。
 
 Markdown の読み方 (行の種類、インラインのコードとリンク、見出しのアンカー) は `install_guide.py` にあり、`test/tools/dist-zip` のツール (`guide_to_text.py`、`check_dist_zip.py`、`make_dist_zip.py`、`make_release_notes.py`) が import して同じ読み方で読む。使う名前は、`load_rules`、`parse_rules`、`GuideRules` とその属性 (`target`、`zip_name`、`title`、`headings`、`roles`、`placeholder`)、`guide_lang`、`sections_by_heading`、`render_heading`、`parse_markdown`、`split_inline`、`render_inline`、`plain_text`、`syntax_problems`、`display_width`、`MARKER_LINE`、`HEADING_KINDS`、`ITEM_KINDS` である。ツールは見出しの文字列を持たず、手順書の節を role から探す。名前を変えるときは、読む側も一緒に修正する。
 
