@@ -72,7 +72,7 @@ stream_id は送信側が振る。番号は送信側のプラグインが動き�
 
 ### timestamp_us
 
-送信側の時計の値 (マイクロ秒) である。送信側の時計は「ページの原点の値 + `performance.now()`」を us にした値で (`src-vencord/encode/sender_clock.ts`)、Windows の単調な時計 (QueryPerformanceCounter) で進み、システム時刻に合わせ直さない。ページの原点の値の決め方は 2 つあり、送信側はプラグインを起動したときに決め、プラグインが動いている間は変えない。送信側がページの原点の Chromium の TimeTicks の値を求められたとき (`src-vencord/encode/ticks_origin.ts`) は、その値を使う。このとき送信側の時計は QueryPerformanceCounter の us そのもので、OBS の `os_gettime_ns` / 1000 と同じ値になり、送信側は hello に clock_base の "qpc" を載せる。求められなかったときは `performance.timeOrigin` を使う。このときの値はエポック (1970 年 1 月 1 日 UTC) に近い大きさから始まるが、システム時刻ではなく、原点は Vesktop のレンダラーを起動したときに決まり、起動し直すと変わる。
+送信側の時計の値 (マイクロ秒) である。送信側の時計は「ページの原点の値 + `performance.now()`」を us にした値で (`src-vencord/encode/sender_clock.ts`)、Windows の単調な時計 (QueryPerformanceCounter) で進み、システム時刻に合わせ直さない。ページの原点の値の決め方は 2 つあり、送信側は初めて接続を試す直前に決め、ページが続く間は変えない (決めるまでは接続しない)。送信側がページの原点の Chromium の TimeTicks の値を求められたとき (`src-vencord/encode/ticks_origin.ts`) は、その値を使う。このとき送信側の時計は QueryPerformanceCounter の us そのもので、OBS の `os_gettime_ns` / 1000 と同じ値になり、送信側は hello に clock_base の "qpc" を載せる。求められなかったときは `performance.timeOrigin` を使う。このときの値はエポック (1970 年 1 月 1 日 UTC) に近い大きさから始まるが、システム時刻ではなく、原点は Vesktop のレンダラーを起動したときに決まり、起動し直すと変わる。
 
 - 映像: エンコーダに渡したフレームの `VideoFrame.timestamp` を、送信側の時計にした値。タイムスタンプが WebRTC の描く予定の時刻で、送信側の時計が clock_base の "qpc" のときは、`VideoFrame.timestamp` そのもの。
 - 音声: チャンクの先頭のサンプルが入っていた `AudioData` の `timestamp` を送信側の時計にした値に、その `AudioData` の中のサンプルの位置の時間を足した値。それまでに送ったサンプルの数からは計算しない。
@@ -200,7 +200,7 @@ timestamp_us は単調に増えるとは限らない。見積もりの換算で�
 - 受信側は 5 秒ごとに ping を送る。pong が返っていない ping が 2 つある状態で、次の ping を送る時刻になると、受信側は接続を切る (`ListenerConfig::ping_interval_ms` と `max_missed_pongs`)。
 - seq は 1 から始めて ping ごとに 1 ずつ増やす。送信側は、受け取った ping の seq をそのまま pong に入れる。
 - 受信側は、pong の seq が直近の ping と一致するかを見ない。どの pong が届いても、pong が返っていない ping の数を 0 に戻す。
-- pong の clock_us は、送信側が pong を作る直前に読んだ送信側の時計である (hello の clock_us と同じ扱い)。受信側は、hello と pong が運んだ clock_us と、それを受け取った時の OBS の時計 (`os_gettime_ns`) の差の、接続の間の最小値を、送信側の時計から OBS の時計への差とする (`src-obs/pipeline/sender_clock.h`)。送信側は時計を読んでから送るので、この差は本当の差に届くまでの遅れを足した値で、最小値には、最も早く届いたメッセージの遅れだけが残る。どちらの時計も Windows の単調な時計で進むので、差は接続の間は変わらない。clock_us を送らない送信側では差が決まらず、受信側は、届いたメッセージを、届いた時に生まれたものとして扱う。hello の clock_base が "qpc" の接続では、差は 0 で、この最小値は最も早く届いたメッセージの届くまでの遅れになる。受信側はこれを統計の行 (`Sender clock delay`) に書く。最小値が -1 ms (送信側がページの原点の TimeTicks を求めた誤差の上限) より小さいか、組が 12 個そろった後に 5 ms より大きければ、同じ時計という前提が崩れているとして、差をそれまでの最小値 (clock_base がないときと同じ見積もり) に戻し、警告の行を書く。
+- pong の clock_us は、送信側が pong を作る直前に読んだ送信側の時計である (hello の clock_us と同じ扱い)。受信側は、hello と pong が運んだ clock_us と、それを受け取った時の OBS の時計 (`os_gettime_ns`) の差の、接続の間の最小値を、送信側の時計から OBS の時計への差とする (`src-obs/pipeline/sender_clock.h`)。送信側は時計を読んでから送るので、この差は本当の差に届くまでの遅れを足した値で、最小値には、最も早く届いたメッセージの遅れだけが残る。どちらの時計も Windows の単調な時計で進むので、差は接続の間は変わらない。clock_us を送らない送信側では差が決まらず、受信側は、届いたメッセージを、届いた時に生まれたものとして扱う。hello の clock_base が "qpc" の接続では、差は 0 で、この最小値は最も早く届いたメッセージの届くまでの遅れになる。受信側はこれを統計の行 (`Sender clock delay`) に書く。最小値が -1.101 ms (送信側の誤差の上限。ページの原点の TimeTicks の誤差の上限 1 ms と `performance.now()` の丸め 100 us と 1 us) より小さいか、組が 12 個そろった後に 1 秒より大きければ、同じ時計という前提が崩れているとして、差をそれまでの最小値 (clock_base がないときと同じ見積もり) に戻し、警告の行を書く。
 - WebSocket のプロトコルの ping と pong (opcode 0x9 と 0xA) は使わない。プロトコルの pong はブラウザーのネットワークの処理が返すので、Vesktop のレンダラーが止まっていても返事が届き、止まったことに気付けないためである。
 
 #### configure の扱い
