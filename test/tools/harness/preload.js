@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('harness', {
   // 画面のストリームに描く画像のファイルを読む (screen_image_file.js)。読むのは主プロセスで、HARNESS_SCREEN_IMAGES に書かれた
   // 場所だけを読む。
   readScreenImage: (filePath) => ipcRenderer.invoke('read-screen-image', filePath),
+  // clock-probe モードが、メインのプロセスの process.hrtime.bigint() (ナノ秒) を 10 進の文字列で受け取る。往復の時間を
+  // 短くするため同期の IPC にする (main.js の hrtime-sync)。
+  hrtimeNs: () => ipcRenderer.sendSync('hrtime-sync'),
   // レンダラーは process.env に触れないため、モード切り替えに要る値だけここで渡す。
   env: {
     mode: process.env.HARNESS_MODE || null,
@@ -90,6 +93,8 @@ contextBridge.exposeInMainWorld('harness', {
     // src-vencord/version.ts の CORDMUX_BUILD_ID を使う。CI の zip で実行するときは、実行スクリプトが zip の
     // 同梱の印 (cordmux-build.txt) の build_id を渡すと、バージョンの食い違いの行が出ない。
     helloVersion: process.env.HARNESS_HELLO_VERSION || null,
+    // clock-probe モードの長さ (秒)。名前は product モードと同じ HARNESS_SECONDS で、既定だけが違う (60 秒)。
+    clockProbeSeconds: Number(process.env.HARNESS_SECONDS) || 60,
     // HARNESS_STREAM は運ばない: --stream は OBS 側 (obs-websocket の StartStream/StopStream) と
     // 受け口 (ffmpeg -listen) だけで完結するため、この送信側には渡さない。
   },

@@ -2,7 +2,7 @@
 
 cordmux の受信側 (OBS のプラグイン) に、映像と音声を送るテスト用の Electron アプリである。Vesktop 1.6.9 と同じ Electron 45.2.3 (Chromium 156) で動くので、Vesktop 1.6.9 と同じ WebCodecs のエンコーダを使う。Discord にも Vesktop にも接続しない。実機テストで、送信側の代わりに使う。
 
-動作のモードは 4 つあり、環境変数 `HARNESS_MODE` で選ぶ。
+動作のモードは 5 つあり、環境変数 `HARNESS_MODE` で選ぶ。
 
 | `HARNESS_MODE` | 中身 |
 |---|---|
@@ -10,28 +10,32 @@ cordmux の受信側 (OBS のプラグイン) に、映像と音声を送るテ�
 | `sustain` | 決めた数のエンコーダで、決めた時間だけエンコードを続け、毎秒の出力の数を測る |
 | `send` | エンコードした映像と正弦波の音声を、WebSocket でそのまま送る。製品の送信側のコードは使わない |
 | `product` | 製品の送信側のコードを動かして、受信側に映像と音声を送る。主に使うのはこのモード |
+| `clock-probe` | 受けた映像と音声のタイムスタンプが何の時計かを、同じページの中の WebRTC の接続で確かめる。受信側には送らない |
 
 ## ファイル
 
 | ファイル | 役割 |
 |---|---|
-| `main.js` | Electron のメインプロセス。隠しウィンドウを開き、結果の JSON を書き、レンダラーに代わってファイルを読み書きする |
+| `main.js` | Electron のメインプロセス。隠しウィンドウを開き、結果の JSON を書き、レンダラーに代わってファイルを読み書きする。clock-probe モードには `process.hrtime` の値を返す |
 | `preload.js` | 環境変数と、メインプロセスの機能を、レンダラーに渡す |
 | `index.html` | tests、sustain、send のモードで読み込むページ (`renderer.js` を読む) |
 | `renderer.js` | tests、sustain、send のモードの本体 |
 | `index-product.html` | product モードで読み込むページ (`dist/sender.js` を読む) |
+| `index-clock-probe.html` | clock-probe モードで読み込むページ (`dist/clock_probe.js` を読む) |
 | `sender.ts` | product モードの本体。esbuild で `dist/sender.js` にバンドルされる |
 | `sender_pure.ts` | `sender.ts` から切り出した、DOM に触れない処理 (環境変数の解釈、同期用のマーカー、待ち、facts の組み立てなど) |
 | `voice_tone.ts` | 声のストリームに音を乗せるかを決める処理 |
+| `clock_probe.ts` | clock-probe モードの本体。esbuild で `dist/clock_probe.js` にバンドルされる |
+| `clock_probe_pure.ts` | `clock_probe.ts` から切り出した、DOM に触れない計算 (フレームの組、ページの原点の値、分布の要約、SDP の書き換えなど) |
 | `frame_pause_file.js` | フレームを止めるファイルと、声に音を乗せるファイルを、メインプロセスで読む処理 |
 | `avatar_export_file.js` | 送ったアバターの PNG を、メインプロセスで書き出す処理 |
 | `screen_image_file.js` | 画面共有のフレームに描く画像のファイルを、メインプロセスで読む処理 |
-| `*.test.ts` | 上の `sender_pure.ts`、`voice_tone.ts`、`frame_pause_file.js`、`avatar_export_file.js`、`screen_image_file.js` の単体テスト |
+| `*.test.ts` | 上の `sender_pure.ts`、`voice_tone.ts`、`clock_probe_pure.ts`、`frame_pause_file.js`、`avatar_export_file.js`、`screen_image_file.js` の単体テスト |
 | `fake-sink.mjs` | send モードで、受信側がないときに受信側の代わりに動かし、届いたフレームを数える |
 | `run.ps1` | tests モードの起動スクリプト。nvidia-smi の出力を環境変数に入れて Electron を起動する |
 | `summarize.py` | tests モードの結果の JSON を、1 つにつき 1 行にまとめる |
 | `summarize-send.py` | send モードの結果の JSON を要約する |
-| `tsconfig.json` | `sender.ts` の型チェックの設定 (`src-vencord` の tsconfig とは別) |
+| `tsconfig.json` | `sender.ts` と `clock_probe.ts` の型チェックの設定 (`src-vencord` の tsconfig とは別) |
 | `package.json` | 依存関係 (Electron、ws、esbuild) と `npm run build` |
 
 ## 前提
@@ -45,7 +49,7 @@ cordmux の受信側 (OBS のプラグイン) に、映像と音声を送るテ�
 
 ## ビルド
 
-ビルドが要るのは product モードだけである。
+ビルドが要るのは product モードと clock-probe モードだけである。
 
 ```
 cd test/tools/harness
@@ -53,7 +57,7 @@ npm install
 npm run build
 ```
 
-`npm run build` は、`esbuild` で `sender.ts` を `dist/sender.js` (1 つの classic script) にバンドルする。`src-vencord` の `transport/socket.ts`、`encode/session.ts`、`encode/serial.ts`、`audio/chunk.ts`、`core/wire.ts` も一緒にバンドルされる。`dist/` と `node_modules/` は、このフォルダーの `.gitignore` で git の管理外にしてある。esbuild は TypeScript の型を取り除くだけで、型は見ない。
+`npm run build` は、`esbuild` で `sender.ts` を `dist/sender.js` に、`clock_probe.ts` を `dist/clock_probe.js` に、それぞれ 1 つの classic script としてバンドルする。`src-vencord` の `transport/socket.ts`、`encode/session.ts`、`encode/serial.ts`、`audio/chunk.ts`、`core/wire.ts` も一緒にバンドルされる。`dist/` と `node_modules/` は、このフォルダーの `.gitignore` で git の管理外にしてある。esbuild は TypeScript の型を取り除くだけで、型は見ない。
 
 Electron を起動せずバンドルだけをするとき (CI など) は、環境変数 `ELECTRON_SKIP_BINARY_DOWNLOAD=1` を付けて `npm ci` を実行すると、Electron の本体 (約 100 MB) をダウンロードしない。
 
@@ -77,10 +81,11 @@ npx vitest run test/tools/harness
 | sustain | `_work/out/` | `harness-sustain-<ISO 日時>.json` |
 | send | `_work/out/` | `harness-send-<ISO 日時>.json` |
 | product | `_work/out/` | `product-send-<ISO 日時>.json` |
+| clock-probe | `_work/out/` | `harness-clock-probe-<ISO 日時>.json` |
 
 パスは、書いたときに標準出力へ表示される。出力先の `_work/` は、リポジトリのルートにあり、git の管理外である。
 
-JSON は `writtenAt`、`writeReason`、`env` (Electron、Chromium、Node のバージョン、`nvidia-smi` の出力)、`data` を持つ。内部のタイムアウトの前に結果が届かなかったときも、その時点の途中経過を `data` に書く。タイムアウトは、tests モードが 120 秒、sustain、send、product のモードが「送る時間 + 30 秒」で、`HARNESS_TIMEOUT_MS` で変えられる。
+JSON は `writtenAt`、`writeReason`、`env` (Electron、Chromium、Node のバージョン、`nvidia-smi` の出力)、`data` を持つ。内部のタイムアウトの前に結果が届かなかったときも、その時点の途中経過を `data` に書く。タイムアウトは、tests モードが 120 秒、sustain、send、product、clock-probe のモードが「送る時間 + 30 秒」で、`HARNESS_TIMEOUT_MS` で変えられる。
 
 ## tests モード
 
@@ -273,3 +278,56 @@ stream id は、画面共有と声を通した 1 つの通し番号である (�
 - `avatarExport`: 書き出した userId と、書き出せなかった userId。
 - `screenImages`: 画像を渡した画面共有ごとの `{ index, file, state, width?, height?, message? }`。`state` は `loaded`、読めなかった理由 (`absent`、`too-large`、`error`、`rejected`)、`decode-failed` のどれか。画像を 1 枚も渡さなかったときは `null`。
 - `aborted`、`fatalError`: 想定外の例外で終わったとき。
+
+## clock-probe モード
+
+受けた映像と音声のタイムスタンプが、どの時計の値かを確かめる。製品の送信側は、受けた画面共有の `VideoFrame.timestamp` と `AudioData.timestamp` を送信側の時計に換算して送る (`src-vencord/encode/clock_map.ts`)。それぞれの値が何の時計かは Chromium の実装で決まり、Chromium のバージョンで変わりうるので、このモードで確かめ直す。Discord にも受信側にも接続せず、ハードウェアのエンコーダも使わない。
+
+### 仕組み
+
+- 同じページの中に WebRTC の接続を 2 組作る。STUN と TURN のサーバーを指定せず、ICE の候補はページの中だけで渡す。このモードのときだけ、`main.js` が Chromium の機能 `WebRtcHideLocalIpsWithMdns` を止める。止めないと、候補のアドレスが mDNS の名前 (`.local`) に置き換わり、名前を引く問い合わせが LAN に出る。
+- 両方向の組: 1 つ目の接続が、映像 (640x360、`HARNESS_FPS`) と音声を 2 つ目に送り、2 つ目は小さい映像 (320x180、15 fps) を送り返す。送り返すと、受ける側に往復の時間が出て、受けた映像に取り込みの時刻が付く。
+- 受けるだけの組: 同じ映像と音声を送り、受ける側は何も送らない (Discord の画面共有を受けるときと同じ形)。受ける側に渡す offer から、`a=rtcp-xr:rcvr-rtt` と `a=rtcp-fb:<番号> rrtr` の行を除く。除かないと、受けるだけの側も RTCP XR で往復の時間を測り、受けた映像に取り込みの時刻が付く。除くと、受けた映像のタイムスタンプは、WebRTC が描く予定の時刻 (render_time) になる。
+- 映像は、`MediaStreamTrackGenerator` に `VideoFrame` を書いて作る (ないバージョンでは `canvas.captureStream`)。コーデックは VP8 (ソフトウェアのエンコーダ) にする。
+- 受けた映像は、`MediaStreamTrackProcessor` と、文書に付けた `<video>` の `requestVideoFrameCallback` の 2 か所で読み、RTP のタイムスタンプで同じフレームを組にする。取り込みの時刻が付いたフレームでは、`VideoFrame.timestamp` が Chromium の単調な時計 (TimeTicks) の値で、`captureTime` がページの原点 (`performance.now()` が 0 の時点) からの値なので、2 つの差がページの原点の TimeTicks の値になる。隠しウィンドウでは、`requestVideoFrameCallback` は 1 秒に 1 回ほどしか呼ばれないので、組の数は送った秒数とほぼ同じになる。
+- 受けた音声は `MediaStreamTrackProcessor` で読む。WebRTC は、受けた音声を再生しないと取り出さないので、2 秒たっても音声が届かなければ、ミュートで音量 0 の `<audio>` に付ける。
+- 音を出さない: 送る音声は `AudioContext` の発振器から作り、`MediaStreamAudioDestinationNode` にだけつなぐ。`AudioContext` は、出力の装置を使わない指定 (`sinkId` の `type` が `none`) で作る。`<video>` と `<audio>` はミュートにする。ウィンドウは、ほかのモードと同じく `show: false` で表示されない。
+- 100 ms ごとに、`performance.now()` で、メインプロセスの `process.hrtime.bigint()` の読みをはさむ (同期の IPC)。Node の `process.hrtime` は Windows では QueryPerformanceCounter から作るので、ページの原点の TimeTicks の値の範囲が、WebRTC を使わない別の方法でも出る。
+
+### 起動
+
+```
+npm run build
+HARNESS_MODE=clock-probe HARNESS_SECONDS=120 npx electron .
+```
+
+| 環境変数 | 既定値 | 意味 |
+|---|---|---|
+| `HARNESS_SECONDS` | `60` | 送る時間 (秒)。product モードと同じ名前で、既定だけが違う |
+| `HARNESS_FPS` | `60` | 1 つ目の接続が送る映像の fps |
+| `HARNESS_TIMEOUT_MS` | 送る時間 + 30 秒 | 内部のタイムアウト (ミリ秒) |
+
+### 結果の JSON (`data` の下)
+
+- `facts`: `crossOriginIsolated` (偽なら、ページに見せる時刻の丸めは 100 us)、`timeOriginUs` (`performance.timeOrigin` をマイクロ秒にした値)、映像の作り方、`AudioContext` の出力の装置の指定、接続ごとの ICE の候補の数と mDNS の名前を使ったか、映像の RTCP の指定、終わりの接続の状態。候補のアドレスそのものは書かない。
+- `summary.origin`: ページの原点の TimeTicks の値 (`originUs`。組ごとの値の中央値) と、組の数、組ごとの値の幅 (`spreadUs`)、前の 1 割と後ろの 1 割の差 (`driftUs`)。
+- `summary.originCandidatesReceiveOnly`: 受けるだけの組で、取り込みの時刻が付いたフレームの組の数。
+- `summary.hrtime`: `process.hrtime` をはさんだ組から出した、ページの原点の範囲 (`loUs`、`hiUs`) と、往復の時間の分布と、`originUs` との差。
+- `summary.timeOriginMinusOriginUs`: `performance.timeOrigin` と、ページの原点の TimeTicks の値の差。ページを作ったときの「システム時刻 - TimeTicks」で、ページごとに違う。
+- `summary.ticksAtStart`、`summary.ticksAtEnd`: `performance.now()` を 20 ms 続けて読んだときの、1 ms あたりの異なる値の数 (`distinctPerMs`) と刻み。
+- `summary.sendIntervalUs`: 1 つ目の接続の映像を書いた間隔の分布。
+- `summary.video[]`: 両方向の組 (`bidirectional`) と受けるだけの組 (`receive-only`) の、`VideoFrame.timestamp` の場合 (`classification.kind` が `render-time`、`capture-time`、`elapsed`、`unknown` のどれか)、換算した時刻 - 読んだ時刻 (`leadUs`。描く予定の時刻なら正、取り込みの時刻なら負)、タイムスタンプの差の分布、RTP のタイムスタンプが示す取り込みの間隔からの残り (`renderDelayResidual`。WebRTC の今の遅延の動き)、1000 us の倍数のタイムスタンプの数。`steady` は、送り始めて 10 秒の後に読んだフレームだけのまとめである。両方向の組は、往復の時間が出るまでの最初の数秒だけ、描く予定の時刻になる。
+- `summary.audio[]`: `AudioData.timestamp` の基準 (`domain`)、読んだ時刻 - タイムスタンプ (`lagUs`)、タイムスタンプの差の分布、`<audio>` に付けた時刻 (`elementAttachedAtMs`)。
+- `raw`: フレームごと、音声のブロックごとの値と、`process.hrtime` をはさんだ組と、`getStats()` の抜き書き。
+- `aborted`、`fatalError`: 想定外の例外で終わったとき。
+
+### 前提が成り立つときの値
+
+Chromium のバージョンが変わったら、このモードを動かして次を確かめる。外れたものがあれば、受けたタイムスタンプの意味が変わっている。
+
+- `summary.origin.spreadUs` が 200 以下で、`driftUs` が 0 に近い。
+- `summary.origin.originUs` が、`summary.hrtime` の範囲から、丸めの 100 us ほどの内にある。外れれば、TimeTicks が QueryPerformanceCounter から作られていない。
+- `summary.ticksAtStart.profile.distinctPerMs` が 10 に近い。1 に近ければ、TimeTicks が 1 ms の分解能の経路を使っている。
+- `summary.video[1].classification.kind` が `render-time` で、`signAgrees` が真。`summary.originCandidatesReceiveOnly` が 0。
+- `summary.video[0].steady.classification.kind` が `capture-time`。
+- `summary.audio[].domain` が `page-relative` で、`lagUs` が 0 以上で小さい。

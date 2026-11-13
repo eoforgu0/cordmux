@@ -3,6 +3,7 @@
 //   node_modules/.bin/tsc -p test/tools/harness/tsconfig.json --noEmit  (repo直下から実行)
 // src-vencordのtsconfig.jsonと違い、ここは実物のブラウザ (Electronレンダラー) を前提に
 // するので lib に DOM を含める (WebSocket・OffscreenCanvas・VideoEncoder等の実物の型)。
+// clock-probe モードの clock_probe.ts も、同じ設定で型を確認する。
 {
   "compilerOptions": {
     "target": "ES2022",
@@ -17,5 +18,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["sender.ts"]
+  "include": ["sender.ts", "clock_probe.ts"]
 }

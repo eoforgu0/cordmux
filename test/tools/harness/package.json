@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "esbuild sender.ts --bundle --format=iife --platform=browser --target=chrome156 --outfile=dist/sender.js"
+    "build": "esbuild sender.ts clock_probe.ts --bundle --format=iife --platform=browser --target=chrome156 --outdir=dist"
   },
   "dependencies": {
     "electron": "45.2.3",

@@ -16,9 +16,10 @@ const { readScreenImageFile } = require('./screen_image_file');
 // 結果の出力先。リポジトリのルートの _work/out。__dirname は test/tools/harness。
 const OUT_DIR = path.join(__dirname, '..', '..', '..', '_work', 'out');
 const PRODUCT_OUT_DIR = OUT_DIR;
-const MODE = process.env.HARNESS_MODE || 'tests'; // 'tests' (既定, テストA-E) / 'sustain' / 'send' / 'product'
+const MODE = process.env.HARNESS_MODE || 'tests'; // 'tests' (既定, テストA-E) / 'sustain' / 'send' / 'product' / 'clock-probe'
 const SUSTAIN_SEC = Number(process.env.HARNESS_SUSTAIN_SEC) || 60;
 const PRODUCT_SECONDS = Number(process.env.HARNESS_SECONDS) || 10; // product モードの長さ (秒)。
+const CLOCK_PROBE_SECONDS = Number(process.env.HARNESS_SECONDS) || 60; // clock-probe モードの長さ (秒)。
 // 持続負荷/送信/product モードは指定秒数だけ回るため、既定タイムアウトは (その時間 + 30秒) にする。
 // テスト A-E モードは既定どおり 120 秒。どれも HARNESS_TIMEOUT_MS で上書きできる
 // (送信モードの WebSocket 接続タイムアウト 5 秒はレンダラー側の別の話で、これは外側の保険)。
@@ -27,7 +28,9 @@ const DEFAULT_TIMEOUT_MS =
     ? (SUSTAIN_SEC + 30) * 1000
     : MODE === 'product'
       ? (PRODUCT_SECONDS + 30) * 1000
-      : 120000;
+      : MODE === 'clock-probe'
+        ? (CLOCK_PROBE_SECONDS + 30) * 1000
+        : 120000;
 const TIMEOUT_MS = Number(process.env.HARNESS_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
 let written = false;
@@ -58,7 +61,15 @@ function writeResult(data, reason) {
     const outDir = MODE === 'product' ? PRODUCT_OUT_DIR : OUT_DIR;
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
     const prefix =
-      MODE === 'sustain' ? 'harness-sustain-' : MODE === 'send' ? 'harness-send-' : MODE === 'product' ? 'product-send-' : 'harness-';
+      MODE === 'sustain'
+        ? 'harness-sustain-'
+        : MODE === 'send'
+          ? 'harness-send-'
+          : MODE === 'product'
+            ? 'product-send-'
+            : MODE === 'clock-probe'
+              ? 'harness-clock-probe-'
+              : 'harness-';
     const file = path.join(outDir, `${prefix}${nowForFileName()}.json`);
     const payload = {
       writtenAt: new Date().toISOString(),
@@ -74,6 +85,18 @@ function writeResult(data, reason) {
   } catch (e) {
     console.error('[harness] failed to write result:', e);
   }
+}
+
+// clock-probe モードは、同じページの中の WebRTC の接続どうしで ICE の候補を渡す。既定では候補のアドレスが mDNS の名前
+// (.local) に置き換わり、名前を引くための問い合わせが LAN に出るので、このモードでは置き換えを止めてアドレスのまま渡す。
+if (MODE === 'clock-probe') {
+  app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
+}
+
+function pageForMode() {
+  if (MODE === 'product') return 'index-product.html';
+  if (MODE === 'clock-probe') return 'index-clock-probe.html';
+  return 'index.html';
 }
 
 app.whenReady().then(() => {
@@ -117,7 +140,7 @@ app.whenReady().then(() => {
     );
   }
 
-  win.loadFile(path.join(__dirname, MODE === 'product' ? 'index-product.html' : 'index.html'));
+  win.loadFile(path.join(__dirname, pageForMode()));
 
   timeoutHandle = setTimeout(() => {
     writeResult(latestProgress, 'timeout-' + TIMEOUT_MS + 'ms');
@@ -179,6 +202,12 @@ ipcMain.handle('export-avatar', (event, userId, base64) =>
 // 画面のストリームに描く画像のファイル (screen_image_file.js)。読むのは環境変数 HARNESS_SCREEN_IMAGES に書かれた場所だけで、
 // レンダラーが渡した場所がその中になければ読まない。なければ state: 'off' で、送信側は動く図形を描く。
 ipcMain.handle('read-screen-image', (event, filePath) => readScreenImageFile(process.env.HARNESS_SCREEN_IMAGES, filePath, fs));
+
+// clock-probe モードが、ページの performance.now() でこの値をはさみ、ページの時計と QueryPerformanceCounter の関係を確かめる。
+// Node の process.hrtime は Windows では QueryPerformanceCounter から作る。往復の時間を短くするため、同期の IPC で答える。
+ipcMain.on('hrtime-sync', (event) => {
+  event.returnValue = process.hrtime.bigint().toString();
+});
 
 ipcMain.handle('result', (event, json) => {
   if (timeoutHandle) clearTimeout(timeoutHandle);
