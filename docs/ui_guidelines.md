@@ -191,8 +191,9 @@ cordmux が観測した範囲のことだけを書く。書けるのは、cordmu
 | 同じ欄で、選んだソースが見つからないときの選択肢 | %1 (見つかりません) | %1 (Not Found) | `cordmux.look.self_source_missing.option` |
 | OBS の [設定] の [ホットキー] の、4 等分の位置ごとの全画面 (右上、左下、右下も同じ形) | cordmux: 左上の枠を全画面で表示 | cordmux: Show Top Left Slot Full Screen | `cordmux.plugin.hotkey_full_screen_top_left.label` など |
 | 同じ所の、全画面を戻すもの | cordmux: 全画面を元に戻す | cordmux: Restore from Full Screen | `cordmux.plugin.hotkey_full_screen_restore.label` |
+| 利用者が自分のソースに付けるフィルタの種類 (OBS の [フィルタ] の [エフェクトフィルタ] の [+] の一覧) | cordmux: 1人のときだけ表示 | cordmux: Show Only When One Person | `cordmux.source.solo_filter.label` |
 
-ホットキーの名前は OBS の画面の中に並ぶので、cordmux のものと分かるように「cordmux: 」で始める。
+ホットキーの名前とフィルタの種類の名前は OBS の画面の中にほかのものと並ぶので、cordmux のものと分かるように「cordmux: 」で始める。フィルタの種類の名前には「フィルタ」を付けない (一覧の項目はどれもフィルタである)。
 
 OBS の [ドック] メニューの項目とドックのタイトルは「cordmux」にする。
 

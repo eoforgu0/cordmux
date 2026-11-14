@@ -167,7 +167,7 @@ timestamp_us は単調に増えるとは限らない。見積もりの換算で�
 | stream_check | stream_id (0 以上の整数) | 枠に載せている人の映像が届かないまま、待つ時間がたったとき (「stream_check の扱い」) |
 | recording | on (真偽値) | 接続した直後と、cordmux の録画の状態が変わったとき |
 | media | on (真偽値) | 接続した直後と、値が変わったとき |
-| limits | max_long_edge (正の整数、任意)、fps_divisor (1 か 2、任意)、encoder_preference ("hardware" か "software"、任意)、latency_mode ("realtime" か "quality"、任意) | 接続した直後と、値が変わったとき |
+| limits | max_long_edge (正の整数、任意)、fps_divisor (1 か 2、任意)、encoder_preference ("hardware" か "software"、任意)、latency_mode ("realtime" か "quality"、任意)、silence_sub_stream_audio (真偽値、任意) | 接続した直後と、値が変わったとき |
 | main_account | user_id (文字列。空の文字列は、メインアカウントを使わない) | 接続した直後と、値が変わったとき |
 | receive_scope | scope ("everyone" か "slots")、user_ids (文字列の配列。scope が "slots" のときだけ) | 接続した直後と、範囲が変わったとき |
 | move_to_main_call | なし | [移動] を押したとき |
@@ -255,6 +255,7 @@ timestamp_us は単調に増えるとは限らない。見積もりの換算で�
 - encoder_preference と latency_mode の範囲の外の値と型の違う値も、メッセージの全体を捨てる。
 - 受信側は、設定の `encoder_preference` ("hardware" か "software") と `encode_priority` ("speed" か "quality") から値を作る。既定の "hardware" と "speed" は、キーを省いて表す (`limits_from_settings`)。"software" は encoder_preference の "software"、"quality" は latency_mode の "quality" になる。
 - 送信側は、この 2 つを新しく始める画面共有からだけ使う。エンコード中の画面共有は、確保済みのエンコーダの種類と latencyMode を変えない。上限と違い、下げたほうだけをすぐに使うということはない。
+- silence_sub_stream_audio は、メインアカウントとサブアカウントの運用で、メインアカウントが Vesktop のアカウントと同じ通話にいる間、Vesktop で画面共有の音を鳴らさないか。省くと true と同じになる。受信側は、設定の `silence_sub_stream_audio` が false のときだけ載せる (`limits_from_settings`)。真偽値でなければ、メッセージの全体を捨てる。送信側は Discord の設定を変えず、Vesktop の中の画面共有の接続の音量だけを 0 にし、受信側と切れたら戻す (`src-vencord/adapter/stream_volume.ts`)。cordmux が受け取る音は変わらない。
 - 送信側のログの行 `video stream <N>: stage=... format=... preference=... latencyMode=...` に、そのストリームを作ったときの好み (prefer-hardware か prefer-software) と latencyMode が出る。受信側はこの行で、実際に使われたエンコーダの種類を確認できる。
 
 #### main_account の扱い
@@ -353,7 +354,7 @@ facts は、送信側が知っている Discord の状態などをまとめた�
 | self_user_id | 文字列 | 任意 | Vesktop のアカウントのユーザー ID。分からない間は省く |
 | recording | 真偽値 | 省かない | 送信側が持っている cordmux の録画の状態 (recording のメッセージで届いた値) |
 | media | 真偽値 | 省かない | 送信側が今使っている media の値。何も届いていなければ true |
-| limits | オブジェクト | 省かない | 送信側が今使っている limits の値。キーは limits のメッセージと同じ (encoder_preference と latency_mode も含む) で、何も届いていなければ `{}` |
+| limits | オブジェクト | 省かない | 送信側が今使っている limits の値。キーは limits のメッセージと同じ (encoder_preference、latency_mode、silence_sub_stream_audio も含む) で、何も届いていなければ `{}` |
 | sps_pps_prepended | 0 以上の整数 | 省かない | キーフレームに SPS と PPS を前に付けた回数 (「映像のペイロード」) の、プラグインが動き始めてからの累計 |
 | stages | `{stream_id, stage}` の配列 | 任意 | 映像をエンコードしているストリームごとの、エンコードの段階。報告する段階が 1 つもなければ省く |
 | call_name | 文字列 | 任意 | Vesktop のアカウントがいる通話の名前。通話にいないとき、名前を読めないときは省く |

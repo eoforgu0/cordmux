@@ -242,6 +242,7 @@ page の接続では、差が変わった直後は、映像と音声で効き方
 cordmux はシーンも、利用者が見るソースも作らない。利用者が OBS の [+] から、型の ID が `cordmux_composite` の合成のソース `cordmux` を置く (`src-obs/sources`)。
 
 - 描画。参加者ごとの画面共有を、キャンバスを 4 等分した位置に描く (`plan_composite_layout`)。画面共有の枠は 4 つで、声の枠に上限はない。シーンアイテムの変形による自動配置はしない。
+- 1 人のときだけ見せるフィルタ。利用者が自分のソース (テキスト、画像など) に付けるフィルタ `cordmux_solo_filter` を登録する。合成のソースが 1 人の映像だけをキャンバスの全面に描いたときだけ、付けたソースをそのまま描き (`obs_source_skip_video_filter`)、それ以外のときは何も描かない。決め方は、合成のソースが実際に描いたものである。番組の描画 (メインのキャンバスのミックスの出力の描画。libobs の `render_main_texture` の `obs_view_render`) の前と後のコールバック (`obs_add_main_render_callback` と `obs_add_main_rendered_callback`) で、描画のスレッドのスレッドごとの印を立てて降ろす (描画のスレッドの 1 周で最初のミックスの描画をメインのミックスと見なす。libobs はメインのキャンバスのミックスを常に先頭に置く。周の区切りは tick のコールバックで、そこで印を全部降ろす)。番組の描画の中で合成のソースが描き終えたとき、タイルが 1 つでキャンバス全体を覆い、その映像を描き、その映像がダミーのフレームでなければ (`sources/composite_frame_plan.h` の `composite_shows_one_full`)、印に残す。フィルタは、番組の描画の中では、このフレームの番組の描画で合成のソースが自分より先に 1 人を全面に描いていれば ON、まだ描かれていない (隠れている、トランジションで描かれていない、フィルタを付けたソースが下にある) なら OFF にする。番組の描画の外 (プレビュー、プロジェクター、スクリーンショット、obs-websocket) では、直前の番組の描画の値を使う (`ProgramPassMark`)。合成のソースは全面に不透明な背景を敷くので、下に置いたソースは見えない。フィルタを付けたソースは合成のソースより上に置く (手順書に書く)。シーンのトランジション (スティンガーとフェードを含む)、入れ子のシーン、グループ、項目の表示と非表示のトランジション、ソースを複製するプラグインは、どれも合成のソースの描画が実際に呼ばれたかで決まるので、libobs の描画の判断を写さない。フェードのように、合成のソースをテクスチャに描いてから半透明に混ぜる、または画面に出さないトランジションでは、描いた時点で ON になる。シーンのトランジションは出ていくシーンと入るシーンを同じ番組の描画の中で描くので、その間は、合成のソースのないシーンに置いた同じソースも ON になることがある (手順書に書く。カットなら切り替えと同時に変わる)。ダミーかは、ダミー表示のフラグではなく、合成のソースが子を描いた時のテクスチャの中身で決める (`sources/frame_origin.h`)。子に渡すフレームのタイムスタンプとダミーかを記録し、tick で子の測定のフィルタが選ばれたフレームを引き、合成のソースが子を描いたときに、そのフレームをテクスチャの元として確定する (選ばれたフレームは、その描画で初めてテクスチャに入る。選ばれたのに描かれなかったフレームは次の tick で捨てられる)。合成のソースの描画どうし (出力、プレビュー、プロジェクター、ほかの合成のソース) は、動画のフレームの時刻 (`obs_get_video_frame_time`) ごとに 1 回だけ作る配置と大きさの値を共にする (`plan_composite_frame`)。子の大きさは、子にフレームが届いたときに libobs の `async_active` が変わるので、描画の途中でも 0 から変わるためである。子を空ける (NULL を渡して `async_active` を偽にする) のは、OBS の tick のコールバックの中だけで行い、すぐ空ける要求も次の tick で空ける (`sources/frame_sink.h`。最大 1 フレーム遅れる)。値を共にするのは、描画のスレッドで、そのフレームの合成のソースの tick の後の描画だけである (`composite_frame_scope`)。tick のコールバックの中の描画 (OBS の [スクリーンショット]) と、描画のスレッドの外の描画 (obs-websocket のスクリーンショット) は、スレッドごとの値を使う。
 - 子。枠ごとに非公開の子のソース `cordmux_tile` を持つ。最初の合成のソースを作るときに作り、最後の合成のソースを削除するとき (と `obs_module_unload`) に解放する。「ソースを追加」の一覧に出さず、シーンコレクションにも保存しない。
 - 音。ソースの型は `OBS_SOURCE_AUDIO` を持ち、全員の音を 1 つの行として出す。トラックやフィルターを OBS の普通の操作で掛けられる。
 - 名前ラベルと光。映像の後に重ねて描く。画像は CPU の `QPainter` で専用のスレッドが描き、そのスレッドでテクスチャにする。描画のスレッドの中でテクスチャを作ると、作る時間がそのままフレームの描画に足されるためである。
@@ -417,7 +418,7 @@ OsProbe::latest() -----+--> build_observation() --> Observation
 
 ## Discord の内部への依存箇所
 
-送信側は、公開されていない Discord のクライアントの内部を読む。Discord の更新で壊れたときに、壊れた箇所を見つけられるように、読む部分を 9 つの依存箇所に分けて一覧にしている (`src-vencord/ledger.ts` の `CONTACT_LEDGER`)。
+送信側は、公開されていない Discord のクライアントの内部を読む。Discord の更新で壊れたときに、壊れた箇所を見つけられるように、読む部分を 10 個の依存箇所に分けて一覧にしている (`src-vencord/ledger.ts` の `CONTACT_LEDGER`)。
 
 | id | 何を読むか |
 |---|---|
@@ -430,10 +431,30 @@ OsProbe::latest() -----+--> build_observation() --> Observation
 | `self` | Vesktop のアカウント。`UserStore.getCurrentUser`。自分が誰か分からないのは、名前が読めないより根本的な問題なので、`profile` と別の行にする |
 | `call-info` | 通話の名前と、メインアカウントがいる通話。`ChannelStore`、`GuildStore`、`VoiceStateStore.getVoiceStateForUser`、`PermissionStore` で、チャンネルとサーバーの名前、メインアカウントのいるチャンネル、接続の権限を読む |
 | `voice-select` | [移動] と [退出] の実行。`selectVoiceChannel(channelId)` で通話に参加し、`selectVoiceChannel(null)` で退出する |
+| `stream-volume` | サブアカウントの Vesktop で画面共有の音を鳴らさないための、画面共有の接続の人ごとの音量。`MediaEngineStore.getMediaEngine()` の `eachConnection(cb, "stream")` で接続を読み、接続の `setLocalVolume(userId, 0)` を直接呼ぶ。戻すときは `MediaEngineStore.getLocalVolume(userId, "stream")` の値を入れる。利用者の操作の区切りには `VoiceStateStore.getVoiceStateForUser` も読む (読めなければ区切らない)。下の「Vesktop の画面共有の音」 |
 
 - 探し方。一覧は、名前ではなく、何をするものかを表す述語で持つ。モジュールが指定した名前をすべて持つ (`props`) か、関数の本文が指定した文字列をすべて含む (`code`) かの 2 種類で、Vencord の `findByProps` と `findByCode` に当たる。実行時の `adapter/vencord.ts` は述語を使わず、使う参照が今使えるかを直接確認する。述語を使うのは、保存した Discord のバンドルを調べるチェック (`src-vencord/tests/discord_contacts.test.ts` と `test/tools/discord-bundle/scan.ts`) で、一致するモジュールがちょうど 1 つであることを確認する (`pc-hook` の行は 1 つ以上でよい)。
 - 状態。依存箇所ごとに `unseen` (まだ確認していない。起動直後は異常ではない)、`found`、`missing` (1 度も使えていない)、`lost` (使えていたのに使えなくなった) を `core/state.ts` が持つ。`missing` と `lost` の id は facts の `warnings` で受信側に伝わり、ドックのメッセージになる。見出しは、受信側の `src-obs/ledger/rules_dock.cpp` の `kContactHeadlines` が id から決める。id を変えるときは、`kContactHeadlines` と診断情報 (「診断情報」) も同時に変える。
 - 止めない。どの依存箇所が見つからなくても、すでに送っている映像と音声は止めない。`ContactEntry.stopsExisting` は型で `false` に固定する。影響は、新しい画面共有と、新しく参加した人の声を受け取れなくなる程度に収める。
+
+### Vesktop の画面共有の音
+
+メインアカウントの Discord とサブアカウントの Vesktop が同じ通話にいると、画面共有の音が Vesktop からも鳴る。Discord のスピーカーミュートは声の接続 (context が `"default"`) の Output だけを止め、画面共有の接続 (context が `"stream"`) には効かない。送信側は、次の条件がそろう間だけ、Vesktop の中の画面共有の接続の音量を 0 にする (`core/stream_silence.ts` の `shouldSilenceStreams`)。
+
+- 受信側の設定 `silence_sub_stream_audio` が ON (既定。limits で届く) で、受信側と接続していて、media が true。
+- メインアカウントが分かっていて、Vesktop のアカウントも分かっていて、2 つが違う。メインアカウントは受信側が確立のたびに送り直すので、受信側と切れたら忘れる (つなぎ直した直後に前の接続の値で決めない)。
+- メインアカウントが Vesktop のアカウントと同じ通話の参加者の一覧にいる。
+
+置き方 (`adapter/stream_volume.ts` の `StreamVolumeKeeper`)。
+
+- Discord の設定は変えない。接続の `setLocalVolume()` を直接呼び、dispatch しないので、MediaEngineStore (localStorage) にもユーザー設定 (サーバーに同期される `audioContextSettings`) にも書かない。右クリックのメニューの音量 (`AUDIO_SET_LOCAL_VOLUME`) は、この 2 つに書く。
+- 接続の `setLocalVolume()` は、その人の Output の audio 要素の `volume` を変えるだけで、トラックにも受け取りの希望 (media sink wants) にも触れない。cordmux が受け取る音は変わらない。ミュート (`setLocalMute`) は使わない。タイルにミュートの印が出るうえ、声の接続では、ミュートした人の音声を送らないようにサーバーへ頼む (`getLocalMute` で sink wants の音声を 0 にする) ためである。
+- Discord は、接続を作るとき (`"connection"` の知らせ)、ユーザー設定の同期 (`USER_SETTINGS_PROTO_UPDATE`)、`CONNECTION_OPEN` で、保存した音量を接続に入れる。その後に 0 を置き直す。順序には頼らず、知らせの後に `setTimeout(0)` で置く。掛けている間と、戻せなかった人がいる間は、自前のタイマーで 30 秒ごとにも置き直す (依存箇所の確認の周期には頼らない)。メディアエンジンの `"connection"` を購読できていなければ、その周期で購読し直す。接続が今の値を返さない (`getLocalVolume` がない) ときは、1 回置いたら置き直さない。
+- 掛けている間に、利用者が Vesktop でその人の画面共有の音量を動かしたら (`AUDIO_SET_LOCAL_VOLUME`、context が `"stream"`)、その人のその画面共有の間は置き直さず、条件が一時的に崩れて掛け直すときも 0 を置かない。Discord はこの値をすべての画面共有の接続に入れるので、記録は接続でなく人の単位で持つ (画面共有の途中で接続が作り直されても残る)。「その人の 1 つの画面共有」は、その人の VoiceState (`VoiceStateStore.getVoiceStateForUser`) が `selfStream` 真で、同じ `channelId` のまま続けて観測されている期間である。記録は人ごとにチャンネルと一緒に持ち、その人の VoiceState が読めて、`selfStream` が偽か `channelId` が記録の時と違うときだけ消す。Vesktop のアカウントがいるチャンネルの一覧では比べない (Vesktop が別の通話にいる間や通話にいない間に、一覧にいないことを、やめたことと取り違えるため)。VoiceState が読めない・ない間は記録を消さない (鳴る側に倒す)。VoiceState がないのは、多くはその人が通話を抜けたとき (VoiceStateStore からその人がいなくなる) で、ほかにストアが空になった直後と、Vesktop のアカウントから見えないときである。通話を抜けた人が戻ると、まず `selfStream` が偽の VoiceState が届くので、そこで記録が消え、次の画面共有ではまた 0 を置く。比べ合わせは、掛けているかにかかわらず、Vesktop のアカウントが通話にいない間も、`VOICE_STATE_UPDATES`、`PASSIVE_UPDATE_V2` (どちらも VoiceStateStore の `selfStream` を変える)、`CONNECTION_OPEN` の後と、画面共有の一覧を読み直すたび (購読できないときの読み直しを含む) に行う。同じ処理の中で、ある人の画面共有の終わりと始まりがまとめて届いたときは、終わりを観測できないので、記録が残る (鳴る側)。`STREAM_DELETE` と `STREAM_CREATE` では区切らない。どちらも、視聴を始め直すときや一時的に切れたとき (`STREAM_DELETE` の `unavailable` が真) にも届くためである。掛けていない間の操作は記録しない。利用者の操作のログは、その人とその画面共有で初めて記録したときだけ書く。AUDIO_SET_LOCAL_VOLUME を購読できていない間は、利用者の操作が見えないので、1 つの接続の 1 人に 1 回だけ置く。
+- 条件がそろわなくなったら、受信側と切れたら、プラグインを止めたら、置いた人を `MediaEngineStore.getLocalVolume(userId, "stream")` の値 (Discord 自身が接続を作るときに入れる値) に戻す。戻せなかった人 (接続が読めない、保存した音量が読めない、置けない) は記録に残し、次の知らせと周期で戻し直す。戻せる接続の人は、ほかの接続と関係なく戻す。プラグインを止めるときは、周期を止める前に 1 回戻し直す。
+- 掛け始めた時点で接続が読めないときは何も置かず (Vesktop は元どおりに鳴る)、依存箇所 `stream-volume` の missing を送る。0 を置いた後に読めなくなったときは、置いた 0 はそのまま残る (cordmux から接続に触れられないので、戻すことも置き直すこともできない)。読めるようになったら、掛けている間は置き直し、掛けるのをやめていれば戻す。
+
+読むファイル: `src-vencord/core/stream_silence.ts`、`src-vencord/adapter/stream_volume.ts`、`src-vencord/adapter/vencord.ts`。
 
 ### 接続と人の対応付け
 
@@ -646,7 +667,7 @@ OBS の [ツール] メニューの「cordmuxをアンインストール...」�
 |---|---|
 | (0) | アンインストール中のフラグを立て、接続の待ち受けを止める |
 | (1) | 設定のフォルダーと `%LOCALAPPDATA%\cordmux` を、中身ごと削除する。バックアップだけは残す |
-| (2) | 現在のシーンコレクションと、ほかのすべてのシーンコレクションを順に開いて、cordmux の型のソースを削除し、元のシーンコレクションに戻って数え直す |
+| (2) | 現在のシーンコレクションと、ほかのすべてのシーンコレクションを順に開いて、cordmux の型のソースを削除し、利用者のソースに付けた cordmux のフィルタ (`cordmux_solo_filter`) を外し (付けたソースは利用者の物なので残す)、元のシーンコレクションに戻って数え直す |
 | (3) | `state.json` の `vencordDir` を、バックアップの `previous` に戻す (キーがなかったなら、キーごと削除する)。続けて Vencord の設定の `plugins` の cordmux の項を `plugin_entry` に合わせて戻し、バックアップと設定のフォルダーを削除する |
 | (4) | 利用者に削除してほしいフォルダー (展開したプラグインのフォルダー) の場所と、録画の保存先を表示する |
 
