@@ -357,7 +357,9 @@ TEST_CASE("接続が切れた行のチェックは現在の枠に合わせる (�
 {
 	Observation connected = with_main_and_sub();
 	std::vector<PersonFact> before = connected.people;
-	const dockview::PersonRow *row_before = find_row(decide_dock(connected).people_list, "100");
+	// 行は一覧の中を指すので、一覧を変数に持ってから探す (一時の値を指したままにしない)。
+	const dockview::PeopleListView list_before = decide_dock(connected).people_list;
+	const dockview::PersonRow *row_before = find_row(list_before, "100");
 	REQUIRE(row_before != nullptr);
 	REQUIRE(row_before->checked);
 

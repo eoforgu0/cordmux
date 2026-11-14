@@ -138,7 +138,9 @@ TEST_CASE("声をミュートした人は、声が届いていなくてもつま
 {
 	Observation obs = with_main_and_sub();
 	person(obs, "200")->audio.voice_muted = true;
-	const AudioRowView *row = find_row(decide_dock(obs).audio_tab, "200");
+	// 行は一覧の中を指すので、一覧を変数に持ってから探す (一時の値を指したままにしない)。
+	const auto audio_tab = decide_dock(obs).audio_tab;
+	const AudioRowView *row = find_row(audio_tab, "200");
 	REQUIRE(row != nullptr);
 	CHECK(row->voice.control);
 	CHECK(row->voice.muted);
