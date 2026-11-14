@@ -72,7 +72,7 @@ export function ssrcKey(userId: string, pcId: number): string {
 
 /** core の状態。どのフィールドも reduce() だけが書き換える。直接書き換えない。 */
 export interface CoreState {
-    /** 依存箇所の一覧の 9 行それぞれの状態。 */
+    /** 依存箇所の一覧の 10 行それぞれの状態。 */
     contacts: Readonly<Record<ContactId, ContactStatus>>;
     /**
      * 通話に参加している人の一覧。"unknown" は、まだ 1 度も読めていないこと。空の配列は、読めていて 0 人という
@@ -121,7 +121,7 @@ export interface CoreState {
     nowMs: number;
 }
 
-// 依存箇所の一覧の 9 つの id。Record<ContactId, true> にしておくと、ContactId (ledger.ts) が増えたり減ったりした
+// 依存箇所の一覧の 10 個の id。Record<ContactId, true> にしておくと、ContactId (ledger.ts) が増えたり減ったりした
 // ときに、ここを修正しなければ型チェックが失敗する。
 const ALL_CONTACT_IDS_MAP: Record<ContactId, true> = {
     "pc-hook": true,
@@ -133,6 +133,7 @@ const ALL_CONTACT_IDS_MAP: Record<ContactId, true> = {
     self: true,
     "call-info": true,
     "voice-select": true,
+    "stream-volume": true,
 };
 const ALL_CONTACT_IDS = Object.keys(ALL_CONTACT_IDS_MAP) as readonly ContactId[];
 

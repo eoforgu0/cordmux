@@ -4,7 +4,7 @@
 // (見つからないときに何を表示するか、誰を視聴するか) は持たず、core に任せる。@webpack などの Vencord の import を
 // 使うので、tsconfig.json の exclude でリポジトリのルートの tsc から外し、Vencord の pnpm test:ts でチェックする
 // (src-vencord/README.md)。StartAt.Init で Discord のバンドルより先に動く前提で書く。Discord の内部への依存箇所は
-// ledger.ts の一覧の 9 つで、docs/architecture.md の「Discord の内部への依存箇所」に説明がある。
+// ledger.ts の一覧の 10 個で、docs/architecture.md の「Discord の内部への依存箇所」に説明がある。
 
 import { find } from "@webpack";
 import {
@@ -13,6 +13,7 @@ import {
     FluxDispatcher,
     GuildMemberStore,
     GuildStore,
+    MediaEngineStore,
     PermissionsBits,
     PermissionStore,
     RTCConnectionStore,
@@ -27,6 +28,14 @@ import { callNameOf, joinableOf } from "./call_info";
 import { ConnectionTracker, parseGatewayFrame } from "./connections";
 import { avatarUrlOfUser } from "./default_avatar";
 import { planProbeCycle, planSelfEmit, type SelfRead, shouldEmitRecheck } from "./probe_cycle";
+import {
+    STREAM_CONTEXT,
+    type StreamConnectionLike,
+    streamVolumeAvailable,
+    StreamVolumeDriver,
+    StreamVolumeKeeper,
+    type VoiceStateLike,
+} from "./stream_volume";
 import { uniqueUsername } from "./username";
 import type {
     Adapter,
@@ -805,6 +814,82 @@ function discoverWatchFunctions(): WatchFunctions {
 }
 
 /* ==========================================================================
+   stream-volume: 画面共有の接続の音量
+   ========================================================================== */
+
+/** Discord の web 版のメディアエンジンのうち、ここが使う部分。 */
+interface MediaEngineLike {
+    eachConnection?(callback: (connection: unknown) => void, context?: string): void;
+    on?(event: string, listener: (connection: unknown) => void): void;
+    removeListener?(event: string, listener: (connection: unknown) => void): void;
+}
+
+/** MediaEngineStore.getMediaEngine()。読めなければ null。 */
+function readMediaEngine(): MediaEngineLike | null {
+    try {
+        const store = MediaEngineStore as unknown as { getMediaEngine?: () => unknown } | undefined;
+        const engine = store?.getMediaEngine?.();
+        return typeof engine === "object" && engine !== null ? (engine as MediaEngineLike) : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * context が "stream" の接続の一覧。メディアエンジンか、戻すときに読む保存した音量 (MediaEngineStore.getLocalVolume) が
+ * 読めないとき、また setLocalVolume を持たない画面共有の接続が 1 つでもあるときは null を返す (Discord が変わった
+ * かもしれないので、どの接続にも触れない)。依存箇所 stream-volume の確認と、音量を置く処理の両方がこれを使う。
+ */
+function readStreamConnections(): StreamConnectionLike[] | null {
+    const engine = readMediaEngine();
+    if (engine === null || typeof engine.eachConnection !== "function") return null;
+    try {
+        const store = MediaEngineStore as unknown as { getLocalVolume?: unknown } | undefined;
+        if (typeof store?.getLocalVolume !== "function") return null;
+        const out: StreamConnectionLike[] = [];
+        let broken = false;
+        engine.eachConnection((connection) => {
+            const c = connection as { setLocalVolume?: unknown } | null;
+            if (c !== null && typeof c === "object" && typeof c.setLocalVolume === "function") {
+                out.push(c as StreamConnectionLike);
+            } else {
+                broken = true;
+            }
+        }, STREAM_CONTEXT);
+        return broken ? null : out;
+    } catch {
+        return null;
+    }
+}
+
+/** Discord が保存している、その人の画面共有の音量 (MediaEngineStore.getLocalVolume(userId, "stream"))。読めなければ null。 */
+function readStoredStreamVolume(userId: string): number | null {
+    try {
+        const store = MediaEngineStore as unknown as { getLocalVolume?: (userId: string, context?: string) => unknown };
+        const v = store.getLocalVolume?.(userId, STREAM_CONTEXT);
+        return typeof v === "number" && Number.isFinite(v) ? v : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * その人の VoiceState のうち、チャンネルと画面共有しているか (VoiceStateStore.getVoiceStateForUser)。Vesktop のアカウントが
+ * いるチャンネルにかかわらず、Vesktop のアカウントが見えるサーバーと会話の通話の中で引ける。読めない、ストアにないときは
+ * null (stream-volume の利用者の操作の記録を消さない)。
+ */
+function readVoiceStateOf(userId: string): VoiceStateLike | null {
+    try {
+        const state = VoiceStateStore.getVoiceStateForUser(userId) as { channelId?: unknown; selfStream?: unknown } | undefined;
+        if (state === undefined || state === null) return null;
+        const channelId = typeof state.channelId === "string" && state.channelId !== "" ? state.channelId : null;
+        return { channelId, selfStream: state.selfStream === true };
+    } catch {
+        return null;
+    }
+}
+
+/* ==========================================================================
    Adapter を作る
    ========================================================================== */
 
@@ -819,11 +904,18 @@ const WATCHED_EVENTS = [
     "RTC_CONNECTION_STATE",
     "STREAM_CREATE",
     "STREAM_DELETE",
+    // Discord が見えるサーバーのボイスの状態をまとめて送り直す (VoiceStateStore の selfStream も変わる)。stream-volume の
+    // 利用者の操作の記録を比べ直す。
+    "PASSIVE_UPDATE_V2",
     "STREAM_UPDATE",
+    // 利用者が Vesktop で人の音量を動かした (stream-volume。画面共有の音量なら、その画面共有の間は 0 を置き直さない)。
+    "AUDIO_SET_LOCAL_VOLUME",
+    // ユーザー設定が同期で変わった。Discord は保存した画面共有の音量を接続に入れ直すので、0 を置き直す (stream-volume)。
+    "USER_SETTINGS_PROTO_UPDATE",
 ] as const;
 
 /**
- * 周期的に確認する 7 つの依存箇所。pc-hook と ssrc-map は、フックの設置の成否が found と missing を決め、周期的に
+ * 周期的に確認する 8 つの依存箇所。pc-hook と ssrc-map は、フックの設置の成否が found と missing を決め、周期的に
  * 再確認するものではないので、ここには入れない (PROBE_CHECKS には両方とも入れて、Adapter.probe() には答える)。
  */
 const PROBED_IDS: readonly ContactId[] = [
@@ -834,6 +926,7 @@ const PROBED_IDS: readonly ContactId[] = [
     "self",
     "call-info",
     "voice-select",
+    "stream-volume",
 ];
 const PROBE_RETRY_MAX = 24; // 5 秒間隔で 24 回 (2 分)。それでも見つからなければ、次に失敗したときまで待つ。
 /** すべて found の間も確認続ける間隔 (ms)。目安の値で、測って決めたものではない。 */
@@ -943,8 +1036,32 @@ export function createVencordAdapter(options: { diag?: DiagSink } = {}): Adapter
         callServerId: currentCallServerId,
     });
 
+    // サブアカウントの Vesktop で画面共有の音を鳴らさないための、画面共有の接続の音量 (adapter/stream_volume.ts)。
+    // 掛けるかどうかは index.ts が setStreamSilence() で伝える。いつ置き直すか (知らせの後、自前の周期) は
+    // StreamVolumeDriver が決める。
+    const streamVolume = new StreamVolumeDriver({
+        keeper: new StreamVolumeKeeper({
+            streamConnections: readStreamConnections,
+            storedVolume: readStoredStreamVolume,
+            sharing: () => computeSharing(tracker)?.map(row => ({ userId: row.userId })) ?? null,
+            voiceStateOf: readVoiceStateOf,
+            selfUserId: computeSelf,
+            log: (line: string) => diag(line),
+        }),
+        timers: {
+            setTimeout: (fn, ms) => setTimeout(fn, ms),
+            clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+            setInterval: (fn, ms) => setInterval(fn, ms),
+            clearInterval: handle => clearInterval(handle as ReturnType<typeof setInterval>),
+        },
+        engine: readMediaEngine,
+        available: () => readStreamConnections() !== null,
+        // 依存箇所を確認し直す (見つからなければ missing を送る)。recheckOne は下で定義する (呼ばれるのは後)。
+        recheck: () => recheckOne("stream-volume"),
+    });
+
     /**
-     * 依存箇所 9 つのそれぞれが今使えるかを、直接確認する関数。ledger.ts の述語は使わず、この adapter が実際に使う
+     * 依存箇所 10 個のそれぞれが今使えるかを、直接確認する関数。ledger.ts の述語は使わず、この adapter が実際に使う
      * 参照 (解決したストアのメソッド、フックの設置) を確認する。述語は、保存した Discord のバンドルで数百のモジュールに
      * 一致したことがあり、実行時の判定に使うと、壊れていても見つかったことになるためである。
      */
@@ -974,6 +1091,8 @@ export function createVencordAdapter(options: { diag?: DiagSink } = {}): Adapter
         self: () => computeSelfRead().ok,
         "call-info": () => callInfoAvailable(),
         "voice-select": () => findSelectVoiceChannel() !== null,
+        // 音量を置く処理 (StreamVolumeKeeper) と同じ readStreamConnections() で確認する。
+        "stream-volume": () => streamVolumeAvailable({ streamConnections: readStreamConnections }),
     };
 
     let probeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1106,6 +1225,9 @@ export function createVencordAdapter(options: { diag?: DiagSink } = {}): Adapter
                 emit({ type: "roster", users: roster.map(u => ({ userId: u.userId })) });
             };
             const emitSharing = (): void => {
+                // stream-volume の利用者の操作の記録を、人ごとの VoiceState と比べる (掛けているかにかかわらず。Flux を
+                // 購読できないときの読み直しも、ここを通る)。
+                streamVolume.observeSharing();
                 const rows = computeSharing(tracker);
                 if (rows === null) {
                     recheckOne("sharing");
@@ -1134,6 +1256,8 @@ export function createVencordAdapter(options: { diag?: DiagSink } = {}): Adapter
                 // 全員送る。Vesktop のアカウントの画面共有は視聴しない (自分の枠は受信側が作る)。
                 const self = computeSelf();
                 emit({ type: "selection", userIds: rows.map(r => r.userId).filter(id => id !== self) });
+                // 新しく画面共有を始めた人にも 0 を置く (要るときだけ)。
+                streamVolume.scheduleSync();
             };
             // 前に送った自分のアカウント (まだ 1 度も送っていなければ undefined)。変わったときだけ送り直す (adapter/probe_cycle.ts)。
             let sentSelf: string | null | undefined;
@@ -1205,15 +1329,23 @@ export function createVencordAdapter(options: { diag?: DiagSink } = {}): Adapter
                     } else if (type === "STREAM_CREATE" || type === "STREAM_DELETE" || type === "STREAM_UPDATE") {
                         emitSharing();
                     }
+                    // 画面共有の音量の操作 (AUDIO_SET_LOCAL_VOLUME。Discord は、この知らせの処理の中で利用者の値を接続に
+                    // 入れ終えている) と、Discord が保存した音量を入れ直す知らせ。振り分けは StreamVolumeDriver が行う。
+                    streamVolume.onFluxEvent(event);
                 };
+                let userVolumeSubscribed = false;
                 for (const eventType of WATCHED_EVENTS) {
                     try {
                         FluxDispatcher.subscribe(eventType, handler);
+                        if (eventType === "AUDIO_SET_LOCAL_VOLUME") userVolumeSubscribed = true;
                     } catch {
                         // 1 種類の購読に失敗しても、残りは購読する。
                     }
                 }
                 attachedHandler = handler;
+                // 利用者が音量を動かしたことを受け取れるときだけ、Discord が戻した値に 0 を置き直してよい
+                // (adapter/stream_volume.ts の StreamVolumeKeeper)。受け取れなければ、1 つの接続の 1 人に 1 回だけ置く。
+                streamVolume.setUserChangesVisible(userVolumeSubscribed);
                 return true;
             };
 
@@ -1281,6 +1413,8 @@ export function createVencordAdapter(options: { diag?: DiagSink } = {}): Adapter
                 }
                 for (const timer of pendingStopRetries.values()) clearTimeout(timer);
                 pendingStopRetries.clear();
+                // 画面共有の音量を Discord が保存している値に戻し、タイマーとメディアエンジンの購読を外す。
+                streamVolume.dispose();
                 // 行き先を待っているトラックの見直しのタイマーも止める (保持していたトラックは捨てる)。
                 tracker.dispose();
                 if (attachedHandler !== null) {
@@ -1380,6 +1514,11 @@ export function createVencordAdapter(options: { diag?: DiagSink } = {}): Adapter
             } catch (e) {
                 return { ok: false, reason: String(e) };
             }
+        },
+
+        setStreamSilence(on: boolean): void {
+            // 掛け始めたときに接続が読めなければ、依存箇所の確認し直しを、今の処理の後に行う (StreamVolumeDriver)。
+            streamVolume.setWanted(on);
         },
 
         async snapshot(): Promise<Snapshot> {

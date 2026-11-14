@@ -418,7 +418,15 @@ describe("buildFacts: ゲートの 2 つのフィールド", () => {
         expect(facts.limits).toEqual({ encoder_preference: "software", latency_mode: "quality" });
     });
 
-    it("limits はワイヤー形式の 4 つのキーだけをコピーする (呼び出し元の値にほかのキーがあっても入れない)", () => {
+    it("Vesktop の画面共有の音の設定のキーも、ワイヤー形式のまま入れる", () => {
+        const facts = buildFacts(initialState, NO_STAGES, NO_RECORDING, {
+            media: true,
+            limits: { silence_sub_stream_audio: false },
+        });
+        expect(facts.limits).toEqual({ silence_sub_stream_audio: false });
+    });
+
+    it("limits はワイヤー形式の 5 つのキーだけをコピーする (呼び出し元の値にほかのキーがあっても入れない)", () => {
         const withExtra = { max_long_edge: 960, prefer_software: true } as GateFactsInput["limits"];
         const facts = buildFacts(initialState, NO_STAGES, NO_RECORDING, { media: true, limits: withExtra });
         expect(facts.limits).toEqual({ max_long_edge: 960 });

@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { CONTACT_LEDGER, type ContactId } from "../ledger";
 
-/** 期待する 9 つの id。依存箇所を追加するか減らすときは、ここも変える。 */
+/** 期待する 10 個の id。依存箇所を追加するか減らすときは、ここも変える。 */
 const EXPECTED_IDS: readonly ContactId[] = [
     "pc-hook",
     "ssrc-map",
@@ -18,14 +18,15 @@ const EXPECTED_IDS: readonly ContactId[] = [
     "self",
     "call-info",
     "voice-select",
+    "stream-volume",
 ];
 
 describe("依存箇所の一覧 (CONTACT_LEDGER)", () => {
-    it("9 行ある", () => {
-        expect(CONTACT_LEDGER).toHaveLength(9);
+    it("10 行ある", () => {
+        expect(CONTACT_LEDGER).toHaveLength(10);
     });
 
-    it("id に重複がなく、期待する 9 つの id と過不足なく一致する", () => {
+    it("id に重複がなく、期待する 10 個の id と過不足なく一致する", () => {
         const ids = CONTACT_LEDGER.map(entry => entry.id);
         expect(new Set(ids).size).toBe(ids.length);
         expect([...ids].sort()).toEqual([...EXPECTED_IDS].sort());

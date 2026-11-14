@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// 依存箇所の一覧 (CONTACT_LEDGER)。cordmux が読む Discord の内部の部分 9 つを、名前ではなく、何をするものかを表す
+// 依存箇所の一覧 (CONTACT_LEDGER)。cordmux が読む Discord の内部の部分 10 個を、名前ではなく、何をするものかを表す
 // 述語で持つ。画面の文言は持たない。見つからないときにドックに表示する見出しは、受信側の
 // src-obs/ledger/rules_dock.cpp の kContactHeadlines が id から決め、診断情報には id をそのまま書く。この一覧の
 // id と kContactHeadlines が過不足なく対応することは tests/ledger_ini.test.ts が、一覧の形は tests/ledger.test.ts
@@ -37,7 +37,8 @@ export type ContactId =
     | "profile"
     | "self"
     | "call-info"
-    | "voice-select";
+    | "voice-select"
+    | "stream-volume";
 
 /** 依存箇所の一覧の 1 行。 */
 export interface ContactEntry {
@@ -52,7 +53,7 @@ export interface ContactEntry {
 }
 
 /**
- * 依存箇所の一覧の 9 行。各行の述語は、Vencord の src/webpack/webpack.ts (`findByProps`、`findByCode`、`findStore`
+ * 依存箇所の一覧の 10 行。各行の述語は、Vencord の src/webpack/webpack.ts (`findByProps`、`findByCode`、`findStore`
  * の実装) と src/webpack/common の stores.ts と utils.ts (`@webpack/common` で解決するストア) と、Discord の
  * クライアントが実際に持つメソッドの名前と action の type の文字列から決めた。
  *
@@ -140,6 +141,17 @@ export const CONTACT_LEDGER: readonly ContactEntry[] = [
         // getMediaEngine().interact() を含む組み合わせが、保存したバンドルでちょうど 1 つになる。実行時に関数を見つけるのは
         // adapter/vencord.ts の findByProps("selectVoiceChannel", "selectChannel") である。
         predicate: { kind: "code", code: ["isGuildVocalOrThread", "getMediaEngine().interact()"] },
+        stopsExisting: false,
+    },
+    {
+        id: "stream-volume",
+        // サブアカウントの Vesktop で画面共有の音を鳴らさないために、画面共有の接続の人ごとの音量を置く所。実行時は
+        // MediaEngineStore.getMediaEngine() の eachConnection(cb, "stream") で接続を読み、接続の setLocalVolume() を
+        // 直接呼ぶ (adapter/stream_volume.ts)。述語は、その接続のクラス (web 版の WebRTC の接続。人ごとの Output の
+        // audio 要素の音量を、全体の音量と人ごとの音量から決める computeLocalVolume を持つ) がまだあるかを確認する。
+        // この組み合わせは、保存したバンドル (stable の 611316 から canary の 670902 まで 16 の build) でちょうど 1 つの
+        // モジュールに一致する。
+        predicate: { kind: "code", code: ["computeLocalVolume", "setLocalVolume"] },
         stopsExisting: false,
     },
 ];

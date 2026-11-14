@@ -413,6 +413,21 @@ describe("media、limits と、hello_ok の省略できるキー", () => {
         for (const value of bad) expect(validateControlMessage(value)).toBeUndefined();
     });
 
+    it("limits: silence_sub_stream_audio は真偽値だけが往復し、ほかの型ならメッセージごと捨てる", () => {
+        const good: ControlMessage[] = [
+            { type: "limits", silence_sub_stream_audio: false },
+            { type: "limits", silence_sub_stream_audio: true },
+            { type: "limits", max_long_edge: 1280, silence_sub_stream_audio: false },
+        ];
+        for (const message of good) expect(roundTrip(message)).toEqual(message);
+        const bad: unknown[] = [
+            { type: "limits", silence_sub_stream_audio: 0 },
+            { type: "limits", silence_sub_stream_audio: "false" },
+            { type: "limits", fps_divisor: 2, silence_sub_stream_audio: null },
+        ];
+        for (const value of bad) expect(validateControlMessage(value)).toBeUndefined();
+    });
+
     it("limits: 知らない値を足した新しい受信側のキーを、古い送信側は無視する (キーを知らないだけで、メッセージは通る)", () => {
         expect(validateControlMessage({ type: "limits", fps_divisor: 2, future_key: "x" })).toEqual({
             type: "limits",

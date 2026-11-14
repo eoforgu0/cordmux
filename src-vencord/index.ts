@@ -53,6 +53,7 @@ import {
 import { createMediaGate, DEFAULT_MEDIA, type LedgerTrack, type MediaGate, type StopReason } from "./core/gate";
 import { AVATAR_CANVAS_SIZE, fetchAvatarPng, type AvatarDeps, type AvatarFetchResult } from "./core/avatar";
 import { coalesceInTick } from "./core/coalesce";
+import { StreamSilenceSwitch } from "./core/stream_silence";
 import { createWatchRelease } from "./core/watch_release";
 import { LogBook } from "./core/logbook";
 import { trackProcessorAvailable } from "./core/track_processor";
@@ -391,6 +392,12 @@ let mediaGate: MediaGate | null = null;
 let currentLimitsWire: LimitsFields = {};
 
 /**
+ * Vesktop の画面共有の音を鳴らさないかを、変わったときだけ adapter に伝える (core/stream_silence.ts)。start() で adapter と
+ * 一緒に作り、stop() で adapter に戻させてから捨てる。
+ */
+let streamSilence: StreamSilenceSwitch | null = null;
+
+/**
  * 次に割り当てる stream_id。画面共有と声に 1 つの通し番号を使い、プラグインの start() から stop() までの間は
  * 使い回さない。使い回すと、受信側に前の configure が残っている間に、前と現在のストリームが一時的に混ざるおそれが
  * ある。実際の枠への割り当ては、受信側が user_id から決めるので、ここでは重ならない番号であればよい。u32 の範囲で
@@ -552,20 +559,24 @@ function applyEvent(event: AdapterEvent): void {
     // 表示名とアバターの URL は、通話に参加している人が変わったときだけ読み直す。名前は、参加している人と関係の
     // ないイベントでは変わらないので、イベントのたびに snapshot() を呼び出す理由がない。
     if (event.type === "roster" || event.type === "self") refreshProfileSnapshot();
-    if (adapter === null) return;
-    for (const decision of decisions(coreState)) {
-        if (decision.type === "start-watching") {
-            const { userId, streamKey } = decision;
-            const requestedAdapter = adapter;
-            void requestedAdapter.startWatching(userId, streamKey).then((result) => {
-                if (adapter !== requestedAdapter) return;
-                applyEvent({ type: "watch_result", userId, streamKey, ok: result.ok, reason: result.reason });
-            });
-        } else if (decision.type === "stop-watching") {
-            void adapter.stopWatching(decision.userId, decision.streamKey);
+    if (adapter !== null) {
+        for (const decision of decisions(coreState)) {
+            if (decision.type === "start-watching") {
+                const { userId, streamKey } = decision;
+                const requestedAdapter = adapter;
+                void requestedAdapter.startWatching(userId, streamKey).then((result) => {
+                    if (adapter !== requestedAdapter) return;
+                    applyEvent({ type: "watch_result", userId, streamKey, ok: result.ok, reason: result.reason });
+                });
+            } else if (decision.type === "stop-watching") {
+                void adapter.stopWatching(decision.userId, decision.streamKey);
+            }
+            // "mark-source-switched" は受信側が扱うので、ここでは何もしない。
         }
-        // "mark-source-switched" は受信側が扱うので、ここでは何もしない。
     }
+    // 参加者の一覧と Vesktop のアカウントで、画面共有の音を鳴らさないかが変わる。判断を読み終えた後に呼ぶ (adapter が
+    // この中から core にイベントを送っても、上の判断を消さないため)。
+    refreshStreamSilence();
 }
 
 /* ==========================================================================
@@ -1765,6 +1776,21 @@ function watchVideoOnTick(): void {
 function handleGateOpenChanged(open: boolean): void {
     log(`media gate: ${open ? "open" : "closed"} (running=${mediaGate?.runningCount() ?? 0})`);
     if (open) refreshAvatars(coreState);
+    refreshStreamSilence();
+}
+
+/**
+ * サブアカウントの Vesktop で画面共有の音を鳴らさないかを決め直し (core/stream_silence.ts)、adapter に伝える。
+ * 受信側との接続、media、受信側の設定 (limits の silence_sub_stream_audio)、メインアカウント、Vesktop のアカウント、
+ * 参加者の一覧のどれかが変わったときに呼ぶ。何度呼んでもよい。adapter に伝えるのは値が変わったときだけで、掛けている
+ * 間の置き直し (新しい画面共有、Discord が値を入れ直したとき) は adapter が自分で行う。
+ */
+function refreshStreamSilence(): void {
+    streamSilence?.update({
+        limits: currentLimitsWire,
+        gateOpen: mediaGate?.isOpen() ?? false,
+        state: coreState,
+    });
 }
 
 /* ==========================================================================
@@ -2215,6 +2241,10 @@ function handleClosed(): void {
     mediaGate?.disconnected();
     // 上限も既定の値 (上限なし) に戻す。次の受信側の値は hello_ok で届く。
     currentLimitsWire = {};
+    // 受信側と切れたら、Vesktop の画面共有の音を元に戻す (cordmux が受け取っていない間は、Vesktop は元どおりに鳴る)。
+    // メインアカウントも忘れる (受信側は確立のたびに送り直すので、つなぎ直した直後に前の値で決めない)。
+    streamSilence?.connectionClosed();
+    refreshStreamSilence();
     // 視聴は、切れてすぐにはやめない (短い切断で映像が止まらないように)。切れたままなら watchRelease がやめる。
     watchRelease.closed();
 }
@@ -2250,12 +2280,16 @@ function handleLimits(fields: LimitsFields): void {
     if (fields.fps_divisor !== undefined) next.fps_divisor = fields.fps_divisor;
     if (fields.encoder_preference !== undefined) next.encoder_preference = fields.encoder_preference;
     if (fields.latency_mode !== undefined) next.latency_mode = fields.latency_mode;
+    if (fields.silence_sub_stream_audio !== undefined) next.silence_sub_stream_audio = fields.silence_sub_stream_audio;
     if (JSON.stringify(next) === JSON.stringify(currentLimitsWire)) return;
     currentLimitsWire = next;
     log(
         `limits: max_long_edge=${next.max_long_edge ?? "none"} fps_divisor=${next.fps_divisor ?? "default"} ` +
-            `encoder_preference=${next.encoder_preference ?? "default"} latency_mode=${next.latency_mode ?? "default"}`,
+            `encoder_preference=${next.encoder_preference ?? "default"} latency_mode=${next.latency_mode ?? "default"} ` +
+            `silence_sub_stream_audio=${next.silence_sub_stream_audio === undefined ? "default" : String(next.silence_sub_stream_audio)}`,
     );
+    // Vesktop の画面共有の音を鳴らさないかの設定も、このメッセージで届く。
+    refreshStreamSilence();
     const limits = limitsFromWire(next);
     for (const entry of screenEntries.values()) entry.video?.session.setLimits(limits);
     maybeSendFacts(coreState); // facts の limits を送るきっかけを、ここで作る。
@@ -2279,7 +2313,10 @@ function handleRecording(on: boolean): void {
  * メインアカウントがいる通話を読み直し、変わっていれば main_call のイベントを送る。
  */
 function handleMainAccount(userId: string): void {
-    adapter?.setMainUser(userId === "" ? null : userId);
+    const mainUserId = userId === "" ? null : userId;
+    streamSilence?.setMainUser(mainUserId);
+    adapter?.setMainUser(mainUserId);
+    refreshStreamSilence();
 }
 
 /**
@@ -2429,6 +2466,8 @@ export default definePlugin({
         spsPpsPrependedRetired = 0;
 
         adapter = createVencordAdapter({ diag: log });
+        const silenceTarget = adapter;
+        streamSilence = new StreamSilenceSwitch((on) => silenceTarget.setStreamSilence(on), log);
         unsubscribe = adapter.subscribe(applyEvent);
         unsubscribeTracks = adapter.subscribeTracks(handleTrackEvent);
 
@@ -2538,6 +2577,10 @@ export default definePlugin({
         for (const entry of voiceEntries.values()) entry.source.close();
         voiceEntries.clear();
 
+        // Vesktop の画面共有の音を、Discord が保存している音量に戻してから購読をやめる (購読の後始末でも戻すが、
+        // 先にはっきり戻す)。
+        streamSilence?.stop();
+        streamSilence = null;
         unsubscribeTracks?.();
         unsubscribeTracks = null;
         unsubscribe?.();

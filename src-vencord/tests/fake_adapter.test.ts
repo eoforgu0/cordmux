@@ -2,7 +2,7 @@
 
 // tests/fake_adapter.ts の killedAdapters() が作る、依存箇所を 1 つ使えなくした Adapter を core (reduce()) に流し、
 // (1) 使えなくした行の id が warnings に出ること、(2) 送っている映像と音声を止める判断が 1 つも出ない (decisions が
-// 0 件のままで、視聴も続く) こと、(3) ほかの 8 行が found のままであることを確認する。(2) を意味のあるテストにする
+// 0 件のままで、視聴も続く) こと、(3) ほかの 9 行が found のままであることを確認する。(2) を意味のあるテストにする
 // ため、使えなくする前に視聴を 1 つ始めておく。何も動いていない状態では、decisions が 0 件でも何も確認していない。
 
 import { describe, expect, it } from "vitest";
@@ -47,7 +47,7 @@ describe("テスト用の adapter: 依存箇所の一覧の行を 1 つずつ使
             expect(warnings(after)).toEqual([killedId]);
             expect(CONTACT_LEDGER.some(e => e.id === killedId), `依存箇所の一覧に ${killedId} がない`).toBe(true);
 
-            // ほかの 8 行は found のまま。
+            // ほかの 9 行は found のまま。
             for (const other of CONTACT_LEDGER) {
                 if (other.id === killedId) continue;
                 expect(after.contacts[other.id], `${other.id} が found のままでない`).toBe("found");

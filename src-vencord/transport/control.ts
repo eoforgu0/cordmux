@@ -45,8 +45,9 @@ export interface AvatarMessage {
 }
 
 /**
- * `limits` で受け取る、画質の上限の 2 つのキーと、エンコードの設定の 2 つのキー。どれも省略でき、省略したキーは
- * 制限しない (エンコードの設定は、省略したら既定の設定)。`hello_ok` の `limits` も同じ形である。
+ * `limits` で受け取る、画質の上限の 2 つのキーと、エンコードの設定の 2 つのキーと、Vesktop の画面共有の音の設定の
+ * 1 つのキー。どれも省略でき、省略したキーは制限しない (エンコードの設定と画面共有の音は、省略したら既定の設定)。
+ * `hello_ok` の `limits` も同じ形である。
  */
 export interface LimitsFields {
     /** 長い辺の上限 (ピクセル。正の整数)。省略したときは上限なし。 */
@@ -57,6 +58,11 @@ export interface LimitsFields {
     encoder_preference?: "hardware" | "software";
     /** WebCodecs の latencyMode。省略したときは realtime (速さ優先)。 */
     latency_mode?: "realtime" | "quality";
+    /**
+     * メインアカウントとサブアカウントの運用で、メインアカウントが同じ通話にいる間、Vesktop の画面共有の音を鳴らさないか
+     * (core/stream_silence.ts)。省略したときは true (受信側は false のときだけ送る)。
+     */
+    silence_sub_stream_audio?: boolean;
 }
 
 /**
@@ -173,11 +179,11 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 /**
- * オブジェクトから `limits` の 4 つのキーを読む (`limits` のメッセージと `hello_ok` の `limits` で使う)。
+ * オブジェクトから `limits` の 5 つのキーを読む (`limits` のメッセージと `hello_ok` の `limits` で使う)。
  * 型が違うキーか範囲の外のキーが 1 つでもあれば undefined を返し、呼び出し元はメッセージごと捨てる。不正な値を
  * encode/session.ts まで渡すと、そこで RangeError になるためである。基準は受信側の
  * src-obs/ws/control_messages.h の parse_limits_fields() と limits_in_range() と同じ。知らないキーは無視し、
- * 戻り値には 4 つのキーのうち付いていたものだけを入れる。
+ * 戻り値には 5 つのキーのうち付いていたものだけを入れる。
  */
 export function readLimitsFields(value: unknown): LimitsFields | undefined {
     if (!isPlainObject(value)) return undefined;
@@ -197,6 +203,11 @@ export function readLimitsFields(value: unknown): LimitsFields | undefined {
     if (value.latency_mode !== undefined) {
         if (value.latency_mode !== "realtime" && value.latency_mode !== "quality") return undefined;
         fields.latency_mode = value.latency_mode;
+    }
+    if (value.silence_sub_stream_audio !== undefined) {
+        // media の on と同じく、真偽値のほかは (0 と 1、"false" も) 通さない。
+        if (typeof value.silence_sub_stream_audio !== "boolean") return undefined;
+        fields.silence_sub_stream_audio = value.silence_sub_stream_audio;
     }
     return fields;
 }

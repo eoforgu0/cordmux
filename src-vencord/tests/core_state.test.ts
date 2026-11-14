@@ -22,9 +22,9 @@ function apply(events: readonly CoreEvent[], from: CoreState = initialState): Co
 }
 
 describe("依存箇所の状態", () => {
-    it("初期状態では 9 行すべてが unseen で、warnings は空", () => {
+    it("初期状態では 10 行すべてが unseen で、warnings は空", () => {
         expect(warnings(initialState)).toEqual([]);
-        for (const id of ["pc-hook", "ssrc-map", "sharing", "watch-stop", "roster", "profile", "self", "call-info", "voice-select"] as const) {
+        for (const id of ["pc-hook", "ssrc-map", "sharing", "watch-stop", "roster", "profile", "self", "call-info", "voice-select", "stream-volume"] as const) {
             expect(initialState.contacts[id]).toBe("unseen");
         }
     });

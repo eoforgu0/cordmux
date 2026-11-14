@@ -94,6 +94,7 @@ export function buildFacts(
     if (gate.limits.fps_divisor !== undefined) limits.fps_divisor = gate.limits.fps_divisor;
     if (gate.limits.encoder_preference !== undefined) limits.encoder_preference = gate.limits.encoder_preference;
     if (gate.limits.latency_mode !== undefined) limits.latency_mode = gate.limits.latency_mode;
+    if (gate.limits.silence_sub_stream_audio !== undefined) limits.silence_sub_stream_audio = gate.limits.silence_sub_stream_audio;
     const facts: Record<string, unknown> = {
         warnings: warnings(state),
         sharing: { count: sharingIds.length, user_ids: sharingIds },

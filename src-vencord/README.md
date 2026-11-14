@@ -24,7 +24,7 @@
 
 - adapter は、Discord の事実を core のイベント (`core/events.ts` の `CoreEvent`) にするだけで、判断を持たない。依存箇所が見つからないときの扱いと、誰の画面共有を視聴するかは、core が決める。
 - `core/`、`ledger.ts`、`adapter/types.ts`、`adapter/connections.ts` は Vencord を import しない。Vencord を import すると、そのファイルを vitest でテストできなくなるためである。
-- `tests/fake_adapter.ts` の `killedAdapters()` は、依存箇所の一覧の行を 1 つずつ使えなくした `Adapter` を作る。`tests/fake_adapter.test.ts` は、使えなくした依存箇所が `warnings()` に出ることと、映像と音声を止める判断が出ないことを確認する。`tests/fake_adapter_count.test.ts` は、作った `Adapter` と一覧の行が、テストに書いた 9 つの id と過不足なく一致することを確認する。
+- `tests/fake_adapter.ts` の `killedAdapters()` は、依存箇所の一覧の行を 1 つずつ使えなくした `Adapter` を作る。`tests/fake_adapter.test.ts` は、使えなくした依存箇所が `warnings()` に出ることと、映像と音声を止める判断が出ないことを確認する。`tests/fake_adapter_count.test.ts` は、作った `Adapter` と一覧の行が、テストに書いた 10 個の id と過不足なく一致することを確認する。
 
 ## 型のチェック
 

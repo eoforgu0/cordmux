@@ -160,9 +160,10 @@ export interface CallActionResult {
  * core が Discord の事実を読み、視聴を始めて止めるためのインターフェイス。
  *
  * probe、subscribe、snapshot は読むだけで、Discord の状態を変えない。Discord の状態を変えるのは startWatching、
- * stopWatching、moveToMainCall、leaveCall だけである。startWatching と stopWatching は core の decisions() が出した
- * 判断に従って index.ts が呼ぶ。moveToMainCall と leaveCall は、利用者が受信側のドックで [移動] と [退出] を押した
- * ときだけ、index.ts が呼ぶ (接続、再接続、通話の変化では呼ばない)。
+ * stopWatching、moveToMainCall、leaveCall、setStreamSilence だけである。startWatching と stopWatching は core の
+ * decisions() が出した判断に従って index.ts が呼ぶ。moveToMainCall と leaveCall は、利用者が受信側のドックで [移動] と
+ * [退出] を押したときだけ、index.ts が呼ぶ (接続、再接続、通話の変化では呼ばない)。setStreamSilence が変えるのは
+ * Vesktop の中の再生の音量だけで、保存も送信もしない。
  */
 export interface Adapter {
     /**
@@ -211,6 +212,13 @@ export interface Adapter {
 
     /** Vesktop のアカウントを、現在の通話から退出させる。通話を移る関数が見つからないときは、理由を返す。 */
     leaveCall(): CallActionResult;
+
+    /**
+     * Vesktop の画面共有の音を鳴らさないか (core/stream_silence.ts の shouldSilenceStreams() の結果)。true の間は、
+     * Vesktop の中の画面共有の接続の音量を 0 に保ち、false になったら Discord が保存している音量に戻す
+     * (adapter/stream_volume.ts)。Discord の設定は変えない。index.ts は値が変わったときだけでなく何度呼んでもよい。
+     */
+    setStreamSilence(on: boolean): void;
 
     /**
      * ontrack で届いた映像と音声のトラックの追加と削除を、listener に送る。トラックは事実ではないので、

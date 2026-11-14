@@ -11,6 +11,7 @@ Discord と Vencord の内部から事実を読み、core/ に渡す部分。判
 | `connections.ts` | `ConnectionTracker`。voice gateway と RTCPeerConnection を対応付け、接続ごとの pcId を決め、Go Live の接続で画面共有している人を特定する |
 | `default_avatar.ts` | `defaultAvatarUrl()`。自分のアバターを設定していない人の、既定のアバターの CDN の URL を作る |
 | `username.ts` | `uniqueUsername()`。Discord の中で 1 人に 1 つのユーザー名を作る |
+| `stream_volume.ts` | `StreamVolumeKeeper`。サブアカウントの Vesktop で画面共有の音を鳴らさないために、画面共有の接続の音量を 0 にして保ち、元に戻す。Discord の設定は変えない (docs/architecture.md の「Vesktop の画面共有の音」) |
 
 `Adapter` のもう 1 つの実装は、テスト用の adapter (`tests/fake_adapter.ts`) である。
 

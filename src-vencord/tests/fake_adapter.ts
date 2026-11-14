@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // 単体テスト用の Adapter (adapter/types.ts)。killedAdapters() は、依存箇所の一覧の行を 1 つずつ使えなくした
-// Adapter を作る (使えなくした 1 行だけが missing で、ほかの 8 行は found になる)。createTrackFeedAdapter() は
+// Adapter を作る (使えなくした 1 行だけが missing で、ほかの 9 行は found になる)。createTrackFeedAdapter() は
 // subscribeTracks() のテストに使い、feed() で TrackEvent を流せる。Vencord を import しない。
 
 import { CONTACT_LEDGER, type ContactId } from "../ledger";
@@ -73,6 +73,10 @@ function createKilledAdapter(killedId: ContactId): Adapter {
             return { ok: false, reason: "not implemented in this fake" };
         },
 
+        setStreamSilence(): void {
+            // 何もしない (このテストが見るのは依存箇所の状態だけ)。
+        },
+
         // このテストが見るのは依存箇所の状態だけで、トラックの追加と削除は見ない (adapter_tracks.test.ts が見る)。
         // Adapter のメソッドをすべて実装するための、何もしない関数。
         subscribeTracks(): () => void {
@@ -138,6 +142,10 @@ export function createTrackFeedAdapter(): TrackFeedAdapter {
 
         leaveCall(): CallActionResult {
             return { ok: false, reason: "not implemented in this fake" };
+        },
+
+        setStreamSilence(): void {
+            // 何もしない (このテスト用の adapter は再生の音量を実装しない)。
         },
 
         subscribeTracks(listener: (event: TrackEvent) => void): () => void {

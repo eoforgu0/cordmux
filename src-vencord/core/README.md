@@ -15,6 +15,7 @@ adapter/ が読んだ事実 (`events.ts` の `CoreEvent`) から判断を作る�
 | `logbook.ts` | 送信側のログの行を、出来事の行、異常に関わる出来事の行、統計の行に分けて、受信側へ送るまで保つ `LogBook` |
 | `stream_check.ts` | 映像が届かないストリームについて、読み出しとエンコードを始め直すかを、getStats() の受信の数などの証拠で決める `decideStreamCheck()`。同じ人の新しい接続の映像を探す `newerScreenStreamOf()` |
 | `video_watch.ts` | 送信側が、映像を送れないまま 5 秒たったことと、送れるようになったことに気付く `watchVideo()` |
+| `stream_silence.ts` | サブアカウントの Vesktop で画面共有の音を鳴らさないかを決める `shouldSilenceStreams()` (実行は adapter/stream_volume.ts) |
 
 ## 依存
 

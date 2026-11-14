@@ -50,6 +50,7 @@ const CONTACT_IDS: readonly ContactId[] = [
     "self",
     "call-info",
     "voice-select",
+    "stream-volume",
 ];
 const CONTACT_RESULTS = ["found", "missing", "lost"] as const;
 const SSRC_VALUES = [null, 1, 2, 3, 4, 5] as const;

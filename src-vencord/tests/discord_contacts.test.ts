@@ -49,11 +49,11 @@ interface LedgerModuleShape {
 
 async function loadLedgerRows(): Promise<readonly LedgerRow[]> {
     const mod = (await import("../ledger")) as unknown as LedgerModuleShape;
-    // 9 行そろっていなければ、すぐに失敗させる。適当な値で続けると、依存箇所が見つからなくなったことを早く伝える
+    // 10 行そろっていなければ、すぐに失敗させる。適当な値で続けると、依存箇所が見つからなくなったことを早く伝える
     // ためのジョブ (discord-contacts.yml) が、自分で壊れても成功のままになる。
-    if (!Array.isArray(mod.CONTACT_LEDGER) || mod.CONTACT_LEDGER.length !== 9) {
+    if (!Array.isArray(mod.CONTACT_LEDGER) || mod.CONTACT_LEDGER.length !== 10) {
         throw new Error(
-            `CONTACT_LEDGER は 9 行のはずが ${JSON.stringify(mod.CONTACT_LEDGER)} だった`,
+            `CONTACT_LEDGER は 10 行のはずが ${JSON.stringify(mod.CONTACT_LEDGER)} だった`,
         );
     }
     return mod.CONTACT_LEDGER;
@@ -71,8 +71,8 @@ const AMBIGUITY_ALLOWED: Readonly<Record<string, number>> = {
 };
 
 describe("保存した Discord のバンドルで、依存箇所の一覧の述語を調べる", () => {
-    it("依存箇所の一覧は 9 行そろっている (このテスト自体が壊れていないことの確認)", () => {
-        expect(ledgerRows.length).toBe(9);
+    it("依存箇所の一覧は 10 行そろっている (このテスト自体が壊れていないことの確認)", () => {
+        expect(ledgerRows.length).toBe(10);
     });
 
     if (manifest.length === 0) {
