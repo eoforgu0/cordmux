@@ -111,7 +111,8 @@ TABLE_BEGIN = removal_table.TABLE_BEGIN
 TABLE_END = removal_table.TABLE_END
 # scene_names.h から型 id を読む (同じ綴りを 2 か所で決めない)。
 CONST_RE = re.compile(r"inline\s+constexpr\s+const\s+char\s*\*\s*(k\w+)\s*=\s*\"([^\"]*)\"\s*;")
-SOURCE_TYPE_CONSTS = ("kCompositeSourceTypeId",)
+# 合成のソースと、利用者が自分のソースに付けるフィルタ (どちらも CordmuxSources の行。アンインストールが消すか外す)。
+SOURCE_TYPE_CONSTS = ("kCompositeSourceTypeId", "kSoloFilterTypeId")
 SCENE_ITEM_HOTKEY_RE = re.compile(r"^libobs\.(?:show|hide)_scene_item\.(\d+)$")
 
 # 表の外で不合格にしないカウンター (is_unrestored_id_counter)。比べの出力に行として残す。
@@ -417,6 +418,9 @@ def view_source_type_id(ctx, item):
         return False
     if lookup_both(ctx, item, segs[1], "id") in ctx["names"]["sourceTypes"]:
         return True
+    # 利用者のソースに付けた cordmux のフィルタ (sources{S}.filters{F})。付けたソースそのものは利用者の物で、表の外のまま。
+    if len(segs) >= 4 and segs[2] == "filters":
+        return lookup_both(ctx, item, segs[1], "filters", segs[3], "id") in ctx["names"]["sourceTypes"]
     # 利用者のシーンに置いた cordmux のソースの項目 (sources{S}.settings.items{I})。
     if len(segs) >= 5 and segs[2] == "settings" and segs[3] == "items":
         uuid_value = lookup_both(ctx, item, segs[1], "settings", "items", segs[4], "source_uuid")
@@ -895,6 +899,11 @@ def selftest():
     inst_col["sources"][0]["hotkeys"] = {"libobs.show_scene_item.2": [], "libobs.hide_scene_item.2": []}
     inst_col["sources"] += [
         _src("cordmux", screen_type, "c-1", settings={}),
+    ]
+    # 利用者のソース (Title) に cordmux のフィルタを付けた形。フィルタの項目も cordmux の行に数える。
+    solo_type = [t for t in names["sourceTypes"] if t != screen_type][0]
+    inst_col["sources"][3]["filters"] = inst_col["sources"][3]["filters"] + [
+        {"name": "Solo", "id": solo_type, "settings": {}},
     ]
     inst_files = base_files(ini_b, ["log 1.txt", "log 2.txt", "log 3.txt"], inst_col)
     inst_files[ROOT_OBS_CONFIG + ":plugin_config/cordmux/settings.json"] = _file_entry("settings.json", obj={"a": 1})

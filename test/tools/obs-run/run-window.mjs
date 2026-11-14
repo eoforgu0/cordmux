@@ -71,6 +71,11 @@ import {
   SCENE_NAMES_HEADER_REL,
   judgeFfmpegModules,
   judgeRoundtrip,
+  classifySoloFrame,
+  judgeSoloSamples,
+  judgeSoloRecording,
+  excludedFrameIndexes,
+  textPrefixThroughFirstArg,
   obsDepsBinRelFromBuildspec,
   roundtripPaths,
   CALL_WINDOW_ARTIFACTS_REL,
@@ -680,6 +685,8 @@ const HANDLED_KINDS = [
   "wait-self-account",
   // --recheck の追加の確認: 他のプロセスのウィンドウの大きさを変える・入力の音量メーターを読む・ログの行を数える。
   "resize-window", "measure-input-level", "judge-log-lines",
+  // dock-view の solo-filter: 1 人のときだけ見せるフィルタを付けた単色のソースを置く、シーンを撮って印の見え方を判定する。
+  "wire-solo-marker", "solo-sample", "solo-item", "solo-program", "solo-transition", "judge-solo-recording",
 ];
 // stopOnFail で止めた後も通す手順 (結果を残して後始末する)。
 const FINISH_KINDS = ["copy-obs-logs", "write-result", "summarize", "cleanup"];
@@ -811,6 +818,17 @@ async function readCordmuxInputs(ws, textOf) {
 }
 
 // 手順が指定するソース ({ kind, slot }) の現在の名前。見つからなければ例外 (呼び出し元が ok:false で記録する)。
+// シーンのトランジションを種類 (transitionKind) で探して選ぶ。名前は OBS の言語で変わるので、種類で探す。durationMs があれば
+// 長さも替える。選んだトランジションの名前を返す。見つからなければ投げる。
+async function setSceneTransitionByKind(ws, transitionKind, durationMs) {
+  const transitions = await ws.call("GetSceneTransitionList", {});
+  const found = (transitions.transitions || []).find((x) => x && x.transitionKind === transitionKind);
+  if (!found) throw new Error("no " + transitionKind + " in the scene transition list");
+  await ws.call("SetCurrentSceneTransition", { transitionName: found.transitionName });
+  if (durationMs != null) await ws.call("SetCurrentSceneTransitionDuration", { transitionDuration: durationMs });
+  return found.transitionName;
+}
+
 async function resolveSourceName(ws, textOf, ref) {
   // 入力の名前で指定する手順 (利用者が付けた名前の入力は、種類では選べない)。
   if (ref && typeof ref.inputName === "string" && ref.inputName !== "") return ref.inputName;
@@ -2016,6 +2034,230 @@ async function runReal(args, steps, outDir) {
             // 合成のソースがないまま録画の判定に進むと全部が「区画が取れない」になるので、投げて回を止める。
             throw new Error("wire-composite: " + e.message);
           }
+          break;
+        }
+        case "wire-solo-marker": {
+          // 印のシーン (s.markerSceneName) を作り、その中に単色のソース (color_source_v3) を置いて、1 人のときだけ見せるフィルタ
+          // (s.filterKind) を付ける。位置と大きさはキャンバスに対する割合 (s.rect)。印のシーンを、録画するシーン (合成のソースの上) と
+          // 切り替え先の空のシーン (s.otherSceneName) の両方に入れ子で置く (合成のソースのないシーンでも印が OFF になるかを見る)。
+          // シーンのトランジションはカットから始める。フィルタの種類がなければ (cordmux が読み込まれていない) CreateSourceFilter が
+          // 失敗するので、投げて回を止める。
+          try {
+            const video = await ws.call("GetVideoSettings", {});
+            const canvasW = video.baseWidth;
+            const canvasH = video.baseHeight;
+            const width = Math.max(1, Math.round(s.rect.w * canvasW));
+            const height = Math.max(1, Math.round(s.rect.h * canvasH));
+            const scenes = await ws.call("GetSceneList", {});
+            const sceneNames = new Set((scenes.scenes || []).map((x) => x && x.sceneName));
+            for (const name of [s.markerSceneName, s.otherSceneName]) {
+              if (!sceneNames.has(name)) await ws.call("CreateScene", { sceneName: name });
+            }
+            const made = await ws.call("CreateInput", {
+              sceneName: s.markerSceneName,
+              inputName: s.inputName,
+              inputKind: "color_source_v3",
+              inputSettings: { color: s.color, width, height },
+              sceneItemEnabled: true,
+            });
+            await ws.call("CreateSourceFilter", { sourceName: s.inputName, filterName: "solo", filterKind: s.filterKind, filterSettings: {} });
+            await ws.call("SetSceneItemTransform", {
+              sceneName: s.markerSceneName,
+              sceneItemId: made.sceneItemId,
+              sceneItemTransform: { positionX: Math.round(s.rect.x * canvasW), positionY: Math.round(s.rect.y * canvasH), scaleX: 1, scaleY: 1, rotation: 0 },
+            });
+            const placed = [];
+            for (const sceneName of [s.sceneName, s.otherSceneName]) {
+              const item = await ws.call("CreateSceneItem", { sceneName, sourceName: s.markerSceneName });
+              await ws.call("SetSceneItemTransform", {
+                sceneName,
+                sceneItemId: item.sceneItemId,
+                sceneItemTransform: { positionX: 0, positionY: 0, scaleX: 1, scaleY: 1, rotation: 0 },
+              });
+              placed.push({ sceneName, sceneItemId: item.sceneItemId });
+            }
+            const transitionName = await setSceneTransitionByKind(ws, "cut_transition", null);
+            record("wire-solo-marker", {
+              ok: true,
+              markerSceneName: s.markerSceneName,
+              inputName: s.inputName,
+              filterKind: s.filterKind,
+              canvasW,
+              canvasH,
+              width,
+              height,
+              placed,
+              transitionName,
+            });
+          } catch (e) {
+            throw new Error("wire-solo-marker: " + e.message);
+          }
+          break;
+        }
+        case "solo-transition": {
+          // シーンのトランジションを種類 (s.transitionKind。名前は言語で変わる) で選び、s.durationMs があれば長さも替える。
+          try {
+            const transitionName = await setSceneTransitionByKind(ws, s.transitionKind, s.durationMs ?? null);
+            record("solo-transition", { ok: true, transitionKind: s.transitionKind, transitionName, durationMs: s.durationMs ?? null });
+          } catch (e) {
+            record("solo-transition", { ok: false, transitionKind: s.transitionKind, error: e.message });
+          }
+          break;
+        }
+        case "solo-sample": {
+          // シーンを GetSourceScreenshot で撮り続け (s.count 枚か s.durationMs の間、s.intervalMs おき。幅 s.width に縮める)、撮った PNG を
+          // 同梱の ffmpeg で一度に RGB24 に読み、1 枚ずつ classifySoloFrame で印と合成のソースの状態を読んで judgeSoloSamples で判定する。
+          // シーンを撮ると、合成のソースと印が同じ 1 回の描画に入る (同じフレームの判定を比べられる)。
+          const prefix = path.join(windowOutDir, "solo-" + tag + "-" + s.id + "-");
+          const files = [];
+          const startedMs = Date.now();
+          let width = 0;
+          let height = 0;
+          let shotError = null;
+          try {
+            const video = await ws.call("GetVideoSettings", {});
+            width = s.width;
+            // 高さはキャンバスの縦横比のまま (偶数に丸める。ffmpeg の縮小と同じ大きさで読むため、撮る側にも同じ値を渡す)。
+            height = Math.max(2, Math.round((s.width * video.baseHeight) / video.baseWidth / 2) * 2);
+            for (let n = 1; ; n += 1) {
+              if (s.count && n > s.count) break;
+              if (s.durationMs && Date.now() - startedMs > s.durationMs) break;
+              const shotStartMs = Date.now();
+              const data = await ws.call("GetSourceScreenshot", { sourceName: s.sceneName, imageFormat: "png", imageWidth: width, imageHeight: height });
+              const raw = data.imageData || "";
+              const comma = raw.indexOf(",");
+              const file = prefix + String(n).padStart(3, "0") + ".png";
+              fs.writeFileSync(file, Buffer.from(comma >= 0 ? raw.slice(comma + 1) : raw, "base64"));
+              files.push({ file, atMs: shotStartMs - startedMs });
+              const rest = s.intervalMs - (Date.now() - shotStartMs);
+              if (rest > 0) await sleep(rest);
+            }
+          } catch (e) {
+            shotError = e.message;
+          }
+          let samples = [];
+          let readError = null;
+          if (files.length > 0) {
+            try {
+              const ffmpeg = fs.existsSync(BUNDLED_FFMPEG) ? BUNDLED_FFMPEG : "ffmpeg";
+              const rawFrames = execFileSync(
+                ffmpeg,
+                ["-hide_banner", "-nostats", "-loglevel", "error", "-framerate", "10", "-start_number", "1", "-i", prefix + "%03d.png", "-vf", "scale=" + width + ":" + height, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                { maxBuffer: 1024 * 1024 * 1024 },
+              );
+              const frameBytes = width * height * 3;
+              for (let i = 0; i < files.length; i += 1) {
+                const offset = i * frameBytes;
+                samples.push(offset + frameBytes <= rawFrames.length ? { atMs: files[i].atMs, ...classifySoloFrame(rawFrames, offset, width, height) } : { atMs: files[i].atMs, marker: null, full: null });
+              }
+            } catch (e) {
+              readError = e.message;
+            }
+          }
+          const judged = judgeSoloSamples({ expect: s.expect, samples, checkConsistency: s.checkConsistency !== false });
+          record("solo-sample", {
+            ...judged,
+            ok: judged.ok && !shotError && !readError,
+            label: s.label,
+            width,
+            height,
+            files: files.map((f) => f.file),
+            samples,
+            ...(shotError ? { shotError } : {}),
+            ...(readError ? { readError } : {}),
+          });
+          break;
+        }
+        case "solo-item": {
+          // シーンの項目の表示を替える (OBS の目のアイコンと同じ obs_sceneitem_set_visible)。
+          try {
+            const found = await ws.call("GetSceneItemId", { sceneName: s.sceneName, sourceName: s.inputName });
+            await ws.call("SetSceneItemEnabled", { sceneName: s.sceneName, sceneItemId: found.sceneItemId, sceneItemEnabled: !!s.enabled });
+            record("solo-item", { ok: true, sceneName: s.sceneName, inputName: s.inputName, sceneItemId: found.sceneItemId, enabled: !!s.enabled });
+          } catch (e) {
+            record("solo-item", { ok: false, sceneName: s.sceneName, inputName: s.inputName, enabled: !!s.enabled, error: e.message });
+          }
+          break;
+        }
+        case "solo-program": {
+          // 番組のシーンを替える (スタジオモードでないので、すぐ出力が替わる)。s.excludeMs があれば、替えた時刻から s.excludeMs の間を、
+          // 録画の判定から除く区間として覚える (フェードの途中のフレームは、合成のソースと印が薄く重なり、色で読めない)。
+          try {
+            const atMs = Date.now();
+            await ws.call("SetCurrentProgramScene", { sceneName: s.sceneName });
+            if (s.excludeMs) {
+              const window = state.recordWindows[s.recording] || {};
+              const fromMs = window.startMs != null ? atMs - window.startMs : null;
+              state.soloExclusions = [...(state.soloExclusions || []), { fromMs, toMs: fromMs != null ? fromMs + s.excludeMs : null, label: s.sceneName }];
+            }
+            record("solo-program", { ok: true, sceneName: s.sceneName, excludeMs: s.excludeMs || null });
+          } catch (e) {
+            record("solo-program", { ok: false, sceneName: s.sceneName, error: e.message });
+          }
+          break;
+        }
+        case "judge-solo-recording": {
+          // 録画の全部のフレームを、同梱の ffmpeg で s.width x s.height の RGB24 に縮めて順に読み (フレームを落とさず、重ねない
+          // passthrough)、1 フレームずつ classifySoloFrame で読んで judgeSoloRecording で判定する。読むそばから捨てるので、長い録画でも
+          // 全部を持たない。
+          const recording = state.recordings[s.recording] || null;
+          if (!recording || !fs.existsSync(recording)) {
+            record("judge-solo-recording", { ok: false, recording: s.recording, error: "録画がない" });
+            break;
+          }
+          const ffmpeg = fs.existsSync(BUNDLED_FFMPEG) ? BUNDLED_FFMPEG : "ffmpeg";
+          const frameBytes = s.width * s.height * 3;
+          const frames = [];
+          let pending = Buffer.alloc(0);
+          let stderrText = "";
+          const exitCode = await new Promise((resolve) => {
+            const child = spawn(
+              ffmpeg,
+              ["-hide_banner", "-nostats", "-loglevel", "error", "-i", recording, "-fps_mode", "passthrough", "-vf", "scale=" + s.width + ":" + s.height, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+              { stdio: ["ignore", "pipe", "pipe"] },
+            );
+            child.stdout.on("data", (chunk) => {
+              pending = pending.length > 0 ? Buffer.concat([pending, chunk]) : chunk;
+              let offset = 0;
+              while (pending.length - offset >= frameBytes) {
+                const c = classifySoloFrame(pending, offset, s.width, s.height);
+                frames.push({ marker: c.marker, full: c.full });
+                offset += frameBytes;
+              }
+              pending = pending.subarray(offset);
+            });
+            child.stderr.on("data", (chunk) => {
+              if (stderrText.length < 4000) stderrText += chunk.toString();
+            });
+            child.on("error", (e) => {
+              stderrText += String(e.message || e);
+              resolve(-1);
+            });
+            child.on("close", (code) => resolve(code));
+          });
+          // フェードの区間 (solo-program が覚えた、録画の始めからのミリ秒) を、フレームの番号から除く。フレームの時刻は、番号を
+          // OBS の映像のフレームレートで割った値 (録画は固定のフレームレート)。録画を始めた時刻と最初のフレームのずれを、前後の
+          // 余白 (s.marginMs) で吸う。
+          let fps = 0;
+          try {
+            const video = await ws.call("GetVideoSettings", {});
+            fps = video.fpsNumerator / video.fpsDenominator;
+          } catch (e) {
+            fps = 0;
+          }
+          const exclusions = (state.soloExclusions || []).filter((x) => x.fromMs != null);
+          const excludedFrames = excludedFrameIndexes(frames.length, fps, exclusions, s.marginMs || 0);
+          const judged = judgeSoloRecording(frames, excludedFrames);
+          record("judge-solo-recording", {
+            ...judged,
+            fps,
+            exclusions,
+            ok: judged.ok && exitCode === 0,
+            recording: s.recording,
+            path: recording,
+            ffmpegExit: exitCode,
+            ...(stderrText ? { ffmpegError: stderrText.slice(0, 2000) } : {}),
+          });
           break;
         }
         case "composite-layout-snapshot": {
@@ -3346,6 +3588,8 @@ async function runReal(args, steps, outDir) {
           const title = s.popup ? "" : s.titleText || (s.titleTextId ? textOf(s.titleTextId) : null);
           // 人の見えている名前 (メニューの項目など) は ini の id ではなく文字列そのもの (buttonText)。
           let button = s.buttonText ? s.buttonText : s.buttonTextId ? textOf(s.buttonTextId) : "";
+          // 人の名前を入れる読み上げの名前は、%1 までを名前で埋めた前の部分で名指す (後ろの形が人によって違う。namePrefix と組む)。
+          if (button && s.buttonTextPrefixArg) button = textPrefixThroughFirstArg(button, s.buttonTextPrefixArg);
           // 同じ名前のコンポーネントがまとまりごとにあるときは、製品が付ける見出しを添えたアクセシブル名 ("%1 (%2)") で名指す。
           if (button && s.buttonGroupTextId) {
             const format = textOf(TEXT_ID_LOOK_FIELD_IN_GROUP);

@@ -126,7 +126,7 @@ node test/tools/obs-run/run-window.mjs --obs _work/obs-33.0.1 --out _work/out/<�
 | `mic-check` | OBS を起動しない。`test/tools/mic-check` で、Chrome のテスト用のマイク入力に WAV を読ませて音が届くことを確認する |
 | `webcodecs-check` | OBS を起動しない。`test/tools/webcodecs-check` で、エンコーダを作った直後の黒の長さと、2 つ目のインスタンスの SPS と PPS のビット一致を測る |
 
-`--dock-scenario` の値は `none` (既定。送信側なし)、`connected`、`no-scene`、`degraded`、`contact-missing`、`idle-10min`、`select-four`、`dummy`、`export-bundle` である。`--dock-max-long-edge` (既定 640) は `degraded` だけが見る。
+`--dock-scenario` の値は `none` (既定。送信側なし)、`connected`、`no-scene`、`degraded`、`contact-missing`、`idle-10min`、`select-four`、`dummy`、`export-bundle`、`solo-filter` である。`solo-filter` は、1 人のときだけ見せるフィルタ `cordmux_solo_filter` を付けたマゼンタの単色のソースを印のシーンに置き、印のシーンを合成のソースのあるシーン (Main。合成のソースの上) とないシーン (Other) の両方に入れ子で置いて、テスト用の送信側の画面 3 本で、2 人、1 人、合成のソースの項目を隠す・戻す、カットとフェードで Other に切り替える・戻す、ダミー映像を入れる・止める、2 人、枠に載せていない 3 人目の [全画面で表示]、[元に戻す] の順に状態を変える。その間ずっと OBS の出力を録画し、全部のフレームで、印が見えるかと、合成のソースが 1 人の映像を全面に描いているか (左下の 4 等分の中が送信側の映像の地の灰色か) を読み、食い違うフレームが 1 つでもあれば失敗にする (`judgeSoloRecording`。フェードの途中のフレームは色で読めないので除く)。状態ごとにシーンを `GetSourceScreenshot` でも撮り、期待 (ON か OFF) と比べる (`judgeSoloSamples`。全画面の映像が届く前の OFF を撮れたかは `preArrivalObserved` に残し、合否に入れない)。
 
 ### 録画と導入
 

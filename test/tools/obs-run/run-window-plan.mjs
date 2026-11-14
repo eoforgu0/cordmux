@@ -99,7 +99,9 @@ const ONE_SCREEN_ONE_VOICE_SECONDS = 180;
 // degraded の録画に含める (下の buildDockViewSteps 参照)。この 6 つに加えて、obs-websocket を使わず、
 // ドックの操作だけで載せる人を選べて 4 分割が出る確認 (自動配置・ダミー・診断情報の zip) を、人の手なしで
 // 行えるように "select-four" / "dummy" / "export-bundle" を足した (下の各定数を見よ)。
-export const DOCK_SCENARIO_VALUES = ["none", "connected", "no-scene", "degraded", "contact-missing", "idle-10min", "select-four", "dummy", "export-bundle"];
+// "solo-filter" は、利用者が自分のソースに付けるフィルタ cordmux_solo_filter (1 人の映像だけを全面に描いている間だけ見せる) が、
+// 合成のソースの描画と同じフレームで ON と OFF になるかを、テスト用の送信側で確かめる (下の soloFilterScenarioSteps)。
+export const DOCK_SCENARIO_VALUES = ["none", "connected", "no-scene", "degraded", "contact-missing", "idle-10min", "select-four", "dummy", "export-bundle", "solo-filter"];
 // 既定は「テスト用の送信側なし」: --dock-scenario を指定しなかった呼び出しは、この一覧を追加する前の
 // dock-view (撮れること自体を確認する土台) とまったく同じ実行計画を返す (後方互換。この既定を変えるときは
 // run-window-plan.test.ts の並びのテストも修正する)。
@@ -3962,6 +3964,327 @@ function dummyScenarioSteps(args) {
   ];
 }
 
+// scenario "solo-filter" (1 人のときだけ見せるフィルタの確認)。
+//
+// 印のシーン (SOLO_MARKER_SCENE_NAME) にマゼンタの単色のソース (印) を置いてフィルタ cordmux_solo_filter を付け、印のシーンを
+// 録画するシーン (Main。合成のソースの上) と、合成のソースのないシーン (Other) の両方に入れ子で置く。判定は 2 つ:
+//   - OBS の出力の録画 (judge-solo-recording): 状態を変えている間ずっと出力を録画し、録画の全部のフレームで、印が見えるかと、
+//     合成のソースが 1 人の映像を全面に描いているかを読み、食い違うフレームが 1 つでもあれば失敗にする。出力のフレームは
+//     番組の描画そのもので、フィルタが番組の描画の中で読む値 (合成のソースが自分より先に描いたもの) で描かれている。
+//     フェードのトランジションの途中のフレームは、合成のソースと印が薄く重なって色で読めないので、判定から除く (切り替えた
+//     時刻からトランジションの長さの区間に、前後の余白を足す)。
+//   - 状態ごとのシーンのスクリーンショット (solo-sample): 状態ごとに、期待 (ON か OFF) と合っているかを見る。obs-websocket の
+//     スクリーンショットは番組の描画の外なので、フィルタは直前の番組の描画の値を使い、状態を変えた直後の 1 フレームは合成の
+//     ソースとずれうる。落ち着いた状態で撮り、全画面への切り替えの間 (撮り続ける) は食い違いを見ない (録画で見る)。
+// 絵ごとに 2 つを読む (classifySoloFrame):
+//   - 印が見えるか: 印の矩形 (SOLO_MARKER_RECT) の平均の色がマゼンタに近いか。
+//   - 合成のソースが 1 人の映像を全面に描いているか: 左下の 4 等分の中の矩形 (SOLO_FULL_PROBE_RECT) が、テスト用の送信側の
+//     映像の地 (#303030 の灰色) か。2 人を上の 2 つの枠に描く間は枠の背景 (既定は黒)、ダミー映像は色のタイル (どれも赤み、
+//     緑み、青み、黄みがある) と白の動く線、別のシーンと隠した項目は黒なので、灰色にならない。矩形は、送信側の映像の動く丸
+//     (高さの中央) とフレームの番号の文字 (左寄せ) と、名前ラベル (左下の隅) と、画面共有していない参加者の並び (右下) を
+//     避けた所に置く。
+// 状態の順: 2 人 (OFF) -> 1 人 (ON) -> 合成のソースの項目を隠す (OFF) -> 戻す (ON) -> カットで Other に切り替える (OFF) ->
+// カットで Main に戻す (ON) -> フェードで Other に切り替える (OFF) -> フェードで Main に戻す (ON) -> ダミー映像を入れる (OFF) ->
+// 止める (ON) -> 2 人 (OFF) -> 枠に載せていない 3 人目を [全画面で表示] (映像が届く前は OFF、届いたら ON。押した直後から短い
+// 間隔で撮り続ける) -> 1 行目の [元に戻す] (OFF)。
+// 項目の表示と非表示のトランジション (フェード) は、obs-websocket 5 に設定するリクエストがないので、この手順では作れない。
+// テスト用の送信側は枠に載せていない人の画面も送り続けるので、3 人目の映像は全画面にした直後に届くことがあり、届く前の
+// OFF を撮れないことがある。撮れたかはスクリーンショットの結果の preArrivalObserved に残し、合否に入れない。
+export const SOLO_FILTER_KIND = "cordmux_solo_filter";
+export const SOLO_MARKER_INPUT_NAME = "cordmux solo marker";
+// 印を置くシーン (Main と Other に入れ子で置く)、別のシーン (切り替えて離れる先。合成のソースを置かない)、録画の label。
+export const SOLO_MARKER_SCENE_NAME = "cordmux solo marker scene";
+export const SOLO_OTHER_SCENE_NAME = "Other";
+export const SOLO_RECORDING_LABEL = "solo-filter";
+// フェードのトランジションの長さと、録画の判定から除く区間の前後の余白 (録画を始めた時刻と最初のフレームのずれと、
+// トランジションの始まりのずれを吸う)。
+export const SOLO_FADE_MS = 300;
+export const SOLO_EXCLUDE_MARGIN_MS = 700;
+// 印の色 (color_source_v3 の color は ABGR。0xFFFF00FF は不透明のマゼンタ) と、読むときの RGB。
+export const SOLO_MARKER_COLOR_ABGR = 0xffff00ff;
+export const SOLO_MARKER_RGB = [255, 0, 255];
+// キャンバスに対する割合の矩形。印は右上の隅 (2 人のときは右上の枠の映像の上)。
+export const SOLO_MARKER_RECT = { x: 0.85, y: 0.05, w: 0.1, h: 0.1 };
+export const SOLO_FULL_PROBE_RECT = { x: 0.35, y: 0.58, w: 0.1, h: 0.04 };
+// 印の平均の色がマゼンタからこの距離 (RGB の差の 2 乗和の平方根) の内なら見えている。左下の矩形は、平均の明るさ (RGB の平均)
+// がこの範囲にあり、RGB の最大と最小の差がこの値より小さければ、送信側の映像の地の灰色 (#303030 は明るさ 48、差 0)。黒は 0 から
+// 2 程度、ダミーのタイルの色は差が 76、白の線は明るさ 255 で外れる。録画の圧縮で数ほど揺れても入る幅にする。
+export const SOLO_MARKER_MAX_DISTANCE = 60;
+export const SOLO_FULL_MIN_LEVEL = 24;
+export const SOLO_FULL_MAX_LEVEL = 90;
+export const SOLO_FULL_MAX_CHROMA = 24;
+export const SOLO_FILTER_N_SCREEN = 3;
+export const SOLO_FILTER_HARNESS_SECONDS = 300;
+export const SOLO_FILTER_CONNECT_WAIT_TIMEOUT_MS = 15000;
+// 行のチェックと [元に戻す] と、項目とシーンの切り替えの後、合成のソースが配置を変えるまでの猶予 (ドックの周期 500 ms と余裕)。
+export const SOLO_FILTER_SETTLE_MS = 3000;
+// 落ち着いた状態は 5 枚を 200 ms おきに撮る。全画面への切り替えは、押した直後から 100 ms おきに 8 秒撮る。
+export const SOLO_SAMPLE_COUNT = 5;
+export const SOLO_SAMPLE_INTERVAL_MS = 200;
+export const SOLO_TRANSITION_DURATION_MS = 8000;
+export const SOLO_TRANSITION_INTERVAL_MS = 100;
+// 撮る絵の幅 (縮めて撮り、PNG の作成と読み取りを速くする。印は 48 x 27 ピクセルほどになる)。
+export const SOLO_SAMPLE_WIDTH = 480;
+// 録画を読む大きさ (全部のフレームを読むので小さくする。印は 19 x 11 ピクセルほど)。
+export const SOLO_RECORDING_WIDTH = 192;
+export const SOLO_RECORDING_HEIGHT = 108;
+export const TEXT_ID_ROW_MORE_ACTIONS_FOR = "cordmux.dock.more_actions_for.a11y";
+export const TEXT_ID_ROW_FULL_SCREEN = "cordmux.dock.row_full_screen.menu";
+export const TEXT_ID_FULL_SCREEN_RESTORE = "cordmux.dock.full_screen_restore.button";
+
+// ini の文字列の %1 までを value で埋めた前の部分 (後ろは捨てる)。読み上げの名前の形が人によって 2 つある行の [...] を、
+// 名前の始まりで探すために使う (dialog-click.ps1 -NamePrefix)。%1 がなければそのまま返す。
+export function textPrefixThroughFirstArg(text, value) {
+  const t = String(text);
+  const i = t.indexOf("%1");
+  return i < 0 ? t : t.slice(0, i) + String(value);
+}
+
+// 幅 width、高さ height の RGB24 の絵 (frame の offset から width * height * 3 バイト) の、割合の矩形 rect の平均の RGB。
+function meanRgb(frame, offset, width, height, rect) {
+  const x0 = Math.max(0, Math.floor(rect.x * width));
+  const y0 = Math.max(0, Math.floor(rect.y * height));
+  const x1 = Math.min(width, Math.max(x0 + 1, Math.floor((rect.x + rect.w) * width)));
+  const y1 = Math.min(height, Math.max(y0 + 1, Math.floor((rect.y + rect.h) * height)));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let n = 0;
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
+      const i = offset + (y * width + x) * 3;
+      r += frame[i];
+      g += frame[i + 1];
+      b += frame[i + 2];
+      n += 1;
+    }
+  }
+  return n > 0 ? [r / n, g / n, b / n] : [0, 0, 0];
+}
+
+// 撮った 1 枚 (または録画の 1 フレーム) から、印が見えるか (marker) と、合成のソースが 1 人の映像を全面に描いているか (full。
+// 左下の矩形が送信側の映像の地の灰色か) を読む。
+export function classifySoloFrame(frame, offset, width, height, opts) {
+  const o = opts || {};
+  const markerRect = o.markerRect || SOLO_MARKER_RECT;
+  const probeRect = o.probeRect || SOLO_FULL_PROBE_RECT;
+  const markerRgb = o.markerRgb || SOLO_MARKER_RGB;
+  const m = meanRgb(frame, offset, width, height, markerRect);
+  const p = meanRgb(frame, offset, width, height, probeRect);
+  const distance = Math.sqrt((m[0] - markerRgb[0]) ** 2 + (m[1] - markerRgb[1]) ** 2 + (m[2] - markerRgb[2]) ** 2);
+  const level = (p[0] + p[1] + p[2]) / 3;
+  const chroma = Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]);
+  return {
+    marker: distance <= (o.maxDistance ?? SOLO_MARKER_MAX_DISTANCE),
+    full: level > (o.minLevel ?? SOLO_FULL_MIN_LEVEL) && level < (o.maxLevel ?? SOLO_FULL_MAX_LEVEL) && chroma < (o.maxChroma ?? SOLO_FULL_MAX_CHROMA),
+    markerRgb: m.map((v) => Math.round(v)),
+    probeLevel: Math.round(level * 10) / 10,
+    probeChroma: Math.round(chroma * 10) / 10,
+  };
+}
+
+// 撮った絵の列 (samples。撮った順の { marker, full }) を、期待 (expect) と比べる。
+//   - 食い違い (inconsistent): 印が見えるのに合成のソースが 1 人を全面に描いていない絵と、その逆の絵 (checkConsistency が偽なら
+//     見ない)。
+//   - expect "off": どの 1 枚でも印が見えない。"on": どの 1 枚でも見える。"off-then-on": 見えるようになった後に消えず、最後の
+//     1 枚で見える。
+//   - preArrivalObserved ("off-then-on" だけ): 最初の 1 枚で印が見えなかった (全画面の映像が届く前を撮れた)。合否には入れない。
+export function judgeSoloSamples({ expect, samples, checkConsistency = true }) {
+  const list = Array.isArray(samples) ? samples : [];
+  if (list.length === 0) return { ok: false, expect, count: 0, reason: "撮れた絵がない" };
+  const unreadable = list.filter((x) => !x || typeof x.marker !== "boolean" || typeof x.full !== "boolean").length;
+  if (unreadable > 0) return { ok: false, expect, count: list.length, unreadable, reason: "読めない絵がある" };
+  const markers = list.map((x) => x.marker);
+  const inconsistent = checkConsistency ? list.map((x, i) => (x.marker !== x.full ? i : -1)).filter((i) => i >= 0) : [];
+  let expected = false;
+  if (expect === "off") expected = markers.every((v) => !v);
+  else if (expect === "on") expected = markers.every((v) => v);
+  else if (expect === "off-then-on") {
+    const firstOn = markers.indexOf(true);
+    expected = firstOn >= 0 && markers.slice(firstOn).every((v) => v);
+  }
+  const ok = expected && inconsistent.length === 0;
+  const out = { ok, expect, count: list.length, onCount: markers.filter((v) => v).length, inconsistent, checkConsistency };
+  if (expect === "off-then-on") out.preArrivalObserved = markers[0] === false;
+  if (!ok) out.reason = inconsistent.length > 0 ? "印と合成のソースの状態が食い違う絵がある" : "印の見え方が期待 (" + expect + ") と違う";
+  return out;
+}
+
+// 録画の判定から除くフレームの番号 (昇順)。exclusions は録画の始めからのミリ秒の区間 ({ fromMs, toMs })、fps は録画の
+// フレームレートで、フレーム i の時刻を i / fps 秒とみなす。区間の前後に marginMs を足す。fps が 0 以下なら何も除かない。
+export function excludedFrameIndexes(count, fps, exclusions, marginMs) {
+  const out = [];
+  if (!(fps > 0)) return out;
+  for (let i = 0; i < count; i += 1) {
+    const atMs = (i * 1000) / fps;
+    if ((exclusions || []).some((x) => x && x.fromMs != null && x.toMs != null && atMs >= x.fromMs - marginMs && atMs <= x.toMs + marginMs)) out.push(i);
+  }
+  return out;
+}
+
+// 出力の録画の全部のフレーム (frames。録画の順の { marker, full }) の判定。excluded の番号のフレーム (フェードの途中) を除き、
+// 印と合成のソースの状態が食い違うフレームが 1 つでもあれば失敗。状態を変えた確かめになっているように、印が見えるフレームと
+// 見えないフレームが両方あることも求める。食い違ったフレームの番号は、最初の 20 個まで残す。
+export function judgeSoloRecording(frames, excluded) {
+  const list = Array.isArray(frames) ? frames : [];
+  if (list.length === 0) return { ok: false, count: 0, reason: "録画のフレームを読めなかった" };
+  const skip = new Set(excluded || []);
+  const inconsistent = [];
+  let inconsistentCount = 0;
+  let onCount = 0;
+  let judgedCount = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    if (skip.has(i)) continue;
+    judgedCount += 1;
+    const f = list[i];
+    if (f.marker) onCount += 1;
+    if (f.marker !== f.full) {
+      inconsistentCount += 1;
+      if (inconsistent.length < 20) inconsistent.push(i);
+    }
+  }
+  const offCount = judgedCount - onCount;
+  const ok = inconsistentCount === 0 && onCount > 0 && offCount > 0;
+  const out = { ok, count: list.length, excludedCount: list.length - judgedCount, onCount, offCount, inconsistentCount, inconsistent };
+  if (!ok) out.reason = inconsistentCount > 0 ? "印と合成のソースの状態が食い違うフレームがある" : "印が見えるフレームか見えないフレームがない (状態を変えられていない)";
+  return out;
+}
+
+// 撮って判定する 1 手。opts: count (枚数で撮る) か durationMs (時間で撮る) と intervalMs、checkConsistency。
+function soloSampleStep(label, expect, what, opts) {
+  const o = opts || {};
+  const sceneName = o.sceneName || WIRE_SCENE_NAME;
+  return step("solo-sample", "シーン (" + sceneName + ") を撮り、印 (cordmux_solo_filter を付けた単色のソース) の見え方を判定する (" + what + "。期待: " + expect + ")", {
+    label,
+    expect,
+    sceneName,
+    width: SOLO_SAMPLE_WIDTH,
+    intervalMs: o.intervalMs ?? SOLO_SAMPLE_INTERVAL_MS,
+    ...(o.durationMs ? { durationMs: o.durationMs } : { count: o.count ?? SOLO_SAMPLE_COUNT }),
+    checkConsistency: o.checkConsistency !== false,
+    gate: true,
+  });
+}
+
+function soloFilterScenarioSteps(args) {
+  const p1 = harnessPersonName("screen", 1);
+  const p2 = harnessPersonName("screen", 2);
+  const p3 = harnessPersonName("screen", 3);
+  const settle = (what) => step("wait", "合成のソースが配置を変えるまでの猶予 (" + what + ")", { ms: SOLO_FILTER_SETTLE_MS });
+  const placeholders = (desired, what) =>
+    uiClickStep("[" + TEXT_ID_LOOK_SHOW_PLACEHOLDERS + "] を" + (desired === "on" ? "入れる" : "外す") + " (" + what + ")", DOCK_WINDOW, TEXT_ID_LOOK_SHOW_PLACEHOLDERS, {
+      controlType: "CheckBox",
+      desired,
+      gate: true,
+    });
+  return [
+    step("harness-start", "テスト用の送信側を product モードで画面 " + SOLO_FILTER_N_SCREEN + " 本で繋ぐ (3 人目は枠に載せず、[全画面で表示] で映す)", {
+      mode: "product",
+      nScreen: SOLO_FILTER_N_SCREEN,
+      nVoice: 0,
+      seconds: SOLO_FILTER_HARNESS_SECONDS,
+      hw: args.hw,
+      warmup: args.warmup,
+      syncTone: DEFAULT_SYNC_TONE,
+    }),
+    step("wait-connection", "送り手が接続を確立するまで待つ", { timeoutMs: SOLO_FILTER_CONNECT_WAIT_TIMEOUT_MS }),
+    wireCompositeStep("1 人の全面かを、印と同じ絵で読む"),
+    step(
+      "wire-solo-marker",
+      "印のシーンにマゼンタの単色のソースを置いてフィルタ " + SOLO_FILTER_KIND + " を付け、印のシーンを録画するシーン (" + WIRE_SCENE_NAME + "。合成のソースの上) と切り替え先のシーン (" + SOLO_OTHER_SCENE_NAME + ") に置き、シーンのトランジションをカットにする",
+      {
+        sceneName: WIRE_SCENE_NAME,
+        otherSceneName: SOLO_OTHER_SCENE_NAME,
+        markerSceneName: SOLO_MARKER_SCENE_NAME,
+        inputName: SOLO_MARKER_INPUT_NAME,
+        filterKind: SOLO_FILTER_KIND,
+        color: SOLO_MARKER_COLOR_ABGR,
+        rect: SOLO_MARKER_RECT,
+      },
+    ),
+    step("wait", "参加者一覧に 3 人が並ぶまでの猶予", { ms: SELECT_FOUR_SETTLE_WAIT_MS }),
+    step("record-start", "OBS の出力の録画を始める (全部のフレームで印と合成のソースの状態を比べる)", { stream: false, label: SOLO_RECORDING_LABEL }),
+    peopleTabStep("行のチェックを押す前"),
+    rowCheckStep(p1, "on", "2 人を枠に載せる 1/2"),
+    rowCheckStep(p2, "on", "2 人を枠に載せる 2/2"),
+    settle("2 人"),
+    soloSampleStep("two", "off", "2 人を上の 2 つの枠に描いている"),
+    rowCheckStep(p2, "off", "1 人にする"),
+    settle("1 人"),
+    soloSampleStep("one", "on", "1 人を全面に描いている"),
+    step("solo-item", "合成のソースの項目を隠す (目のアイコンと同じ)", { sceneName: WIRE_SCENE_NAME, inputName: COMPOSITE_INPUT_NAME, enabled: false }),
+    settle("項目を隠す"),
+    soloSampleStep("hidden", "off", "合成のソースの項目を隠した"),
+    step("solo-item", "合成のソースの項目を戻す", { sceneName: WIRE_SCENE_NAME, inputName: COMPOSITE_INPUT_NAME, enabled: true }),
+    settle("項目を戻す"),
+    soloSampleStep("shown", "on", "合成のソースの項目を戻した"),
+    step("solo-program", "カットで番組のシーンを " + SOLO_OTHER_SCENE_NAME + " に切り替えて離れる", { sceneName: SOLO_OTHER_SCENE_NAME, recording: SOLO_RECORDING_LABEL }),
+    settle("シーンを離れる"),
+    soloSampleStep("away", "off", "別のシーンに切り替えた (撮るのも切り替え先のシーン。印は入れ子で置いてある)", { sceneName: SOLO_OTHER_SCENE_NAME }),
+    step("solo-program", "カットで番組のシーンを " + WIRE_SCENE_NAME + " に戻す", { sceneName: WIRE_SCENE_NAME, recording: SOLO_RECORDING_LABEL }),
+    settle("シーンに戻る"),
+    soloSampleStep("back", "on", "元のシーンに戻した"),
+    step("solo-transition", "シーンのトランジションをフェード (" + SOLO_FADE_MS + " ms) にする", { transitionKind: "fade_transition", durationMs: SOLO_FADE_MS }),
+    step("solo-program", "フェードで番組のシーンを " + SOLO_OTHER_SCENE_NAME + " に切り替えて離れる (フェードの途中のフレームは録画の判定から除く)", {
+      sceneName: SOLO_OTHER_SCENE_NAME,
+      recording: SOLO_RECORDING_LABEL,
+      excludeMs: SOLO_FADE_MS,
+    }),
+    settle("フェードで離れる"),
+    soloSampleStep("away-fade", "off", "フェードで別のシーンに切り替えた", { sceneName: SOLO_OTHER_SCENE_NAME }),
+    step("solo-program", "フェードで番組のシーンを " + WIRE_SCENE_NAME + " に戻す (フェードの途中のフレームは録画の判定から除く)", {
+      sceneName: WIRE_SCENE_NAME,
+      recording: SOLO_RECORDING_LABEL,
+      excludeMs: SOLO_FADE_MS,
+    }),
+    settle("フェードで戻る"),
+    soloSampleStep("back-fade", "on", "フェードで元のシーンに戻した"),
+    step("solo-transition", "シーンのトランジションをカットに戻す", { transitionKind: "cut_transition" }),
+    ...displayTabSteps("ダミー"),
+    placeholders("on", "1 人の全面の上にダミー映像"),
+    step("wait", "ダミーの色タイルが乗るまでの猶予", { ms: DUMMY_SETTLE_WAIT_MS }),
+    soloSampleStep("dummy", "off", "ダミー映像"),
+    placeholders("off", "ダミー映像を止めて 1 人に戻す"),
+    step("wait", "実際の映像に戻るまでの猶予", { ms: DUMMY_SETTLE_WAIT_MS }),
+    soloSampleStep("dummy-off", "on", "ダミーを止めた後の 1 人"),
+    peopleTabStep("全画面にする前"),
+    rowCheckStep(p2, "on", "2 人に戻す"),
+    settle("2 人に戻す"),
+    soloSampleStep("two-again", "off", "全画面にする前の 2 人"),
+    // 行の [...] は、ini の文字列の %1 までを人の名前で埋めた前の部分で探す (buttonTextPrefixArg。run-window.mjs の dialog-click)。
+    {
+      ...uiClickStep("参加者の行「" + p3 + "」の [...] を押してメニューを開く (枠に載せていない人を全画面にする)", DOCK_WINDOW, TEXT_ID_ROW_MORE_ACTIONS_FOR, {
+        noWait: true,
+        namePrefix: true,
+        gate: true,
+      }),
+      buttonTextPrefixArg: p3,
+    },
+    uiClickStep("行のメニューの [" + TEXT_ID_ROW_FULL_SCREEN + "] を選ぶ", MENU_POPUP, TEXT_ID_ROW_FULL_SCREEN, { controlType: "MenuItem", noWait: true, gate: true }),
+    soloSampleStep("focus", "off-then-on", "[全画面で表示] を押した直後から。映像が届く前は 2 人の配置のまま", {
+      durationMs: SOLO_TRANSITION_DURATION_MS,
+      intervalMs: SOLO_TRANSITION_INTERVAL_MS,
+      // スクリーンショットのフィルタは直前の番組の描画の値を使うので、切り替わった瞬間は合成のソースと 1 フレームずれうる。
+      // 同じフレームの食い違いは録画で見る。
+      checkConsistency: false,
+    }),
+    uiClickStep("ドックの 1 行目の [" + TEXT_ID_FULL_SCREEN_RESTORE + "] を押す", DOCK_WINDOW, TEXT_ID_FULL_SCREEN_RESTORE, { gate: true }),
+    settle("元に戻す"),
+    soloSampleStep("restored", "off", "全画面を元に戻した 2 人"),
+    step("record-stop", "OBS の出力の録画を止める", { stream: false, tailSeconds: 0, label: SOLO_RECORDING_LABEL }),
+    step("collect-recording", "録画ファイルの回収", { label: SOLO_RECORDING_LABEL }),
+    step("judge-solo-recording", "録画の全部のフレームで、印が見えるかと合成のソースが 1 人を全面に描いているかを読み、食い違いがないかを judgeSoloRecording で判定する", {
+      recording: SOLO_RECORDING_LABEL,
+      width: SOLO_RECORDING_WIDTH,
+      height: SOLO_RECORDING_HEIGHT,
+      marginMs: SOLO_EXCLUDE_MARGIN_MS,
+      gate: true,
+    }),
+    step("collect-plugin-log", "プラグインの記録の回収"),
+    step("harness-wait", "送り手の終了を待つ", { seconds: SOLO_FILTER_HARNESS_SECONDS }),
+  ];
+}
+
 // scenario "export-bundle" (診断情報の zip の確認)。繋がずにドックのメニューの
 // [診断情報をエクスポート...] を選び、開いた保存のウィンドウへファイル名を入れて確定する。
 function exportBundleSteps() {
@@ -3995,6 +4318,10 @@ function buildDockViewSteps(args) {
 
   if (scenario === "export-bundle") {
     return [...pre, ...exportBundleSteps(), ...post];
+  }
+
+  if (scenario === "solo-filter") {
+    return [...pre, ...soloFilterScenarioSteps(args), ...post];
   }
 
   if (scenario === "no-scene") {

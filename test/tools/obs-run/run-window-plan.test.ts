@@ -294,7 +294,7 @@ describe("parseArgs", () => {
         expect(r.args.dockScenario).toBe(DEFAULT_DOCK_SCENARIO);
     });
 
-    it("--dock-scenario は 9 の値 (none/connected/no-scene/degraded/contact-missing/idle-10min/select-four/dummy/export-bundle) をすべて受け付ける", () => {
+    it("--dock-scenario は 10 の値 (none/connected/no-scene/degraded/contact-missing/idle-10min/select-four/dummy/export-bundle/solo-filter) をすべて受け付ける", () => {
         expect(DOCK_SCENARIO_VALUES).toEqual([
             "none",
             "connected",
@@ -305,6 +305,7 @@ describe("parseArgs", () => {
             "select-four",
             "dummy",
             "export-bundle",
+            "solo-filter",
         ]);
         for (const v of DOCK_SCENARIO_VALUES) {
             const r = parseArgs([...FULL_ARGV, "--dock-scenario", v]);
@@ -1525,8 +1526,8 @@ describe("planSteps", () => {
             expect(r.steps.filter((s) => s.kind === "wait").map((s) => s.id)).toEqual(Array.from({ length: DOCK_VIEW_IDLE_INTERVALS }, (_, i) => `wait-${i + 1}`));
         });
 
-        it("9 の scenario すべてで、先頭は seed-config、末尾 3 つは write-result/summarize/cleanup (他の step と同じ形を踏襲)", () => {
-            expect(DOCK_SCENARIO_VALUES).toHaveLength(9);
+        it("10 の scenario すべてで、先頭は seed-config、末尾 3 つは write-result/summarize/cleanup (他の step と同じ形を踏襲)", () => {
+            expect(DOCK_SCENARIO_VALUES).toHaveLength(10);
             for (const scenario of DOCK_SCENARIO_VALUES) {
                 const r = planSteps(argsFor("dock-view", { dockScenario: scenario }));
                 expect(r.ok).toBe(true);
