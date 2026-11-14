@@ -626,15 +626,22 @@ TEST_CASE("build_limits は値のあるキーだけを書き、parse_limits で�
 	all_four.fps_divisor = 1;
 	all_four.encoder_preference = "hardware";
 	all_four.latency_mode = "realtime";
+	LimitsMessage silence_off;
+	silence_off.silence_sub_stream_audio = false;
+	LimitsMessage silence_on;
+	silence_on.silence_sub_stream_audio = true;
+	silence_on.fps_divisor = 2;
 	const LimitsMessage none{};
 
-	for (const LimitsMessage &sent : {both, edge_only, fps_only, encoder_only, latency_only, all_four, none}) {
+	for (const LimitsMessage &sent :
+	     {both, edge_only, fps_only, encoder_only, latency_only, all_four, silence_off, silence_on, none}) {
 		const auto j = try_parse_json(build_limits(sent));
 		REQUIRE(j.has_value());
 		CHECK(peek_type(*j) == std::string(control_type::kLimits));
 		// キーは type と、値のあるキーだけ (省いたキーは書かず、制限しないことを示す)。
 		const std::size_t expected = 1 + (sent.max_long_edge ? 1u : 0u) + (sent.fps_divisor ? 1u : 0u) +
-					     (sent.encoder_preference ? 1u : 0u) + (sent.latency_mode ? 1u : 0u);
+					     (sent.encoder_preference ? 1u : 0u) + (sent.latency_mode ? 1u : 0u) +
+					     (sent.silence_sub_stream_audio.has_value() ? 1u : 0u);
 		CHECK(j->size() == expected);
 		const auto back = parse_limits(*j);
 		REQUIRE(back.has_value());
@@ -659,6 +666,8 @@ TEST_CASE("型の違う値か範囲の外の値を含む limits には parse_lim
 		R"({"type":"limits","latency_mode":"fast"})",
 		R"({"type":"limits","latency_mode":true})",
 		R"({"type":"limits","fps_divisor":2,"latency_mode":"slow"})",
+		R"({"type":"limits","silence_sub_stream_audio":0})",
+		R"({"type":"limits","silence_sub_stream_audio":"false"})",
 		R"(["limits"])",
 	};
 	for (const char *text : bad) {

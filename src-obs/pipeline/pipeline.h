@@ -458,11 +458,13 @@ inline MediaInputs media_inputs_of(bool feature_enabled, bool loading_finished,
 // なり、facts で返る値とそのまま比べられる。settings の側で範囲を確認してある (0 か 16 から 7680、1 か 2) が、範囲の
 // 外の値が来ても、ワイヤー形式の範囲の外の値 (Listener::send_limits が捨てる値) は作らない。エンコードの設定も同じで、
 // 既定値 (ハードウェア、速さ) のときはキーを省き、ソフトウェアのときだけ encoder_preference を "software"、
-// 画質のときだけ latency_mode を "quality" にして載せる。
+// 画質のときだけ latency_mode を "quality" にして載せる。サブアカウントの Vesktop で画面共有の音を鳴らさないかの
+// 設定 (silence_sub_stream_audio) も同じで、既定値 (true) のときは省き、false のときだけ載せる。
 inline ws::LimitsMessage
 limits_from_settings(int max_long_edge, int fps_divisor,
 		     config::EncoderPreference encoder_preference = config::EncoderPreference::Hardware,
-		     config::EncodePriority encode_priority = config::EncodePriority::Speed)
+		     config::EncodePriority encode_priority = config::EncodePriority::Speed,
+		     bool silence_sub_stream_audio = true)
 {
 	ws::LimitsMessage out;
 	if (max_long_edge > 0)
@@ -473,6 +475,8 @@ limits_from_settings(int max_long_edge, int fps_divisor,
 		out.encoder_preference = "software";
 	if (encode_priority == config::EncodePriority::Quality)
 		out.latency_mode = "quality";
+	if (!silence_sub_stream_audio)
+		out.silence_sub_stream_audio = false;
 	return out;
 }
 
@@ -1223,7 +1227,7 @@ public:
 	// settings の形 (0 は制限なし、fps は 1 か 2) で受け取り、limits_from_settings で制御用の JSON の形にする。どの
 	// スレッドから呼んでもよい。
 	void set_limits(int max_long_edge, int fps_divisor, config::EncoderPreference encoder_preference,
-			config::EncodePriority encode_priority);
+			config::EncodePriority encode_priority, bool silence_sub_stream_audio = true);
 
 	// こちらから待ち受けを閉じた後に呼ぶ (アンインストールの最初の手順)。ws::Listener::stop() は on_disconnected を
 	// 呼ばない (ws/listener.h) ので、切れたときと同じ後始末 (経路、デコードのスレッド、直近の facts を捨て、

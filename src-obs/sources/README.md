@@ -1,6 +1,6 @@
 # src-obs/sources
 
-OBS のソース。合成のソース 1 種類を登録する。ダミー表示、アンインストールで cordmux のものを削除する処理もここにある。cordmux はシーンもソースも作らない (利用者が OBS の [+] から置く)。仕組みは docs/architecture.md の「OBS のソースとシーン」と「シーンコレクションを切り替えたとき」に、利用者から見える動作は docs/spec.md の「枠と配置」「名前ラベルと話している人の光」「自分の枠」にある。
+OBS のソース。合成のソース 1 種類と、利用者が自分のソースに付けるフィルタ 1 種類を登録する。ダミー表示、アンインストールで cordmux のものを削除する処理もここにある。cordmux はシーンもソースも作らない (利用者が OBS の [+] から置く)。仕組みは docs/architecture.md の「OBS のソースとシーン」と「シーンコレクションを切り替えたとき」に、利用者から見える動作は docs/spec.md の「枠と配置」「名前ラベルと話している人の光」「自分の枠」にある。
 
 ## 入口
 
@@ -20,7 +20,8 @@ OBS のソース。合成のソース 1 種類を登録する。ダミー表示�
 | `sources.h`、`sources.cpp` | ソースの種類の登録 |
 | `screen_feed.*` | 画面共有の映像を合成のソースの子に渡す、枠を空ける、表示の遅れを測る関数 |
 | `composite_source.*`、`composite_layout.h`、`composite_input.h` | 合成のソース `cordmux` (と、その中で描く子と、子の表示の測定のフィルタ)、4 等分の配置を決める純粋関数、配置の入力を作る純粋関数 |
-| `target_ref.h`、`frame_sink.h` | ドックの表示タブで選んだソースへの弱参照 (合成のソースがモジュールに 1 つ持つ)、非同期の映像のソースへフレームを渡す、空ける、保ってから空ける予約を置く手順 (合成のソースの子が使う) |
+| `composite_frame_plan.h`、`frame_origin.h` | 合成のソースが 1 フレームに描くもの (配置、映像の矩形、映像を描くか) を決める純粋関数とその値をフレームごとに 1 回だけ作って覚える入れ物 (合成のソースの描画どうしが同じ値を読む)、合成のソースが実際に 1 人の映像だけを全面に描いたかの判定、フィルタ `cordmux_solo_filter` の ON と OFF を番組の描画の中と外で決める印 (`ProgramPassMark`)。子のテクスチャに入っているフレームがダミーかの記録 (`frame_origin.h`) |
+| `target_ref.h`、`frame_sink.h`、`frame_sink_clear.h` | ドックの表示タブで選んだソースへの弱参照 (合成のソースがモジュールに 1 つ持つ)、非同期の映像のソースへフレームを渡す、空ける、保ってから空ける予約を置く手順 (合成のソースの子が使う。空けるのは OBS の tick のコールバックの中だけで、すぐ空ける要求も次の tick で空ける。時機を決める純粋関数は `frame_sink_clear.h`) |
 | `self_frame_plan.h`、`self_frame_source.*` | 自分の枠に映す映像 (OBS のソースかシーン) の探し方と、自分の枠の出し入れの判断。候補にしてよい種類 (シーンは cordmux を含まないもの。`scene_contains_cordmux`) と、設定の UUID と名前から候補を探して書き直しの要否を決める純粋関数、自分の Discord の共有の始まりとドックのチェックから、ほかの人と同じ規則で「出す」の次の状態を決める `plan_self_frame` (すべて `self_frame_plan.h`) と、OBS のソースとシーンの列挙と合成のソースへの結び付け (`self_frame_source.*`)。探し方は自分の枠の音声ソースと同じ |
 | `scene_names.*` | ソースの種類の ID、枠の番号の定数、ダミー表示の名前 (ini の文字列から作る) |
 | `decor_registry.*` | 人の情報、名前ラベルに描く人、発言、見た目の値の表。合成のソースが読む値の読み出し口 (`read_composite_decor` と `read_composite_roster`) と、画面共有していない参加者の人の情報の表も持つ |
@@ -43,7 +44,7 @@ OBS のソース。合成のソース 1 種類を登録する。ダミー表示�
 
 - libobs。名前ラベルの描画 (`decor_paint.*`、`composite_label.*`) と、その画像を扱う `decor_registry.cpp`、`composite_decor.cpp`、`dummy_feed.cpp` は、Qt6::Gui も使う。
 - config/ (枠の数と設定)、ledger/text_ids.h (ini のキー)、install/ (アンインストールの最中かどうかと、削除するものの一覧)、diag/ (ログ)、platform/ (Vesktop と Discord の実行ファイルの名前を見分ける関数)。
-- 純粋関数のヘッダー (`label_border.h`、`composite_layout.h`、`composite_input.h`、`composite_label_plan.h`、`composite_draw_plan.h`、`composite_paint_handoff.h`、`composite_texture_strips.h`、`self_frame_plan.h`、`dummy_tiles.h`、`screen_end.h`、`decor_params.h`、`scene_names.h` の `fill_template`、`double_audio.h` の `window_setting_exe`) は libobs にも Qt にも依存しない。
+- 純粋関数のヘッダー (`label_border.h`、`composite_layout.h`、`composite_input.h`、`composite_frame_plan.h`、`frame_origin.h`、`frame_sink_clear.h`、`composite_label_plan.h`、`composite_draw_plan.h`、`composite_paint_handoff.h`、`composite_texture_strips.h`、`self_frame_plan.h`、`dummy_tiles.h`、`screen_end.h`、`decor_params.h`、`scene_names.h` の `fill_template`、`double_audio.h` の `window_setting_exe`) は libobs にも Qt にも依存しない。
 
 テストは src-obs/tests の `test_sources_*.cpp` にあり、`decor_paint.*` のテストは src-obs/tests/decor (`decor_tests`) にある。
 
@@ -58,7 +59,8 @@ OBS のソース。合成のソース 1 種類を登録する。ダミー表示�
 - 表示の遅れの測定。OBS が表示に選んだフレームは、子に付けた非公開のフィルタ `cordmux_tile_probe` の `filter_video` が受ける。`obs_source_get_frame` は描画が受け取るフレームを奪うので、描画の前にも後にも使えない。
 - 配置の入力。ドックが周期ごとに、見えている画面共有の枠、自分の枠を出しているか、枠に載っている人の表示名と user_id、すき間を `set_composite_input()` で渡す (`composite_input.h` の `make_composite_input` が作る)。描画のスレッドが次の描画から使う。同じ入力に、cordmux がその人の声を聞けるか (`CompositeShare::hears_voice` は既定で真、`CompositeInput::self_hears_voice` は既定で偽) と、画面共有していない参加者の一覧 (`CompositeInput::roster`。user_id、名前、声を聞けるか) も入る。どの値を入れるかはドックが決める (dock/README.md の「合成のソースに渡す値」)。シーンアイテムの変形による自動配置はしない。
 - 全画面。配置の入力の `focus_user_id` の人のタイルが、全画面でないときの配置にあれば、`plan_composite_layout` はそのタイルだけをキャンバスの全面に描く (`CompositeLayout::focused`)。どの人をどの枠に載せているかと `dropped` は変えない。全画面で描かれなくなったタイルの人は、画面共有していない参加者の並びに出る (下の「名前ラベルと話している人の光」の並び)。全画面にできるタイルと全画面をやめる条件は、`composite_input.h` の `composite_focus_tiles` と `focus_after_layout` が決める (docs/architecture.md の「全画面」)。配置が変わるたびに、ログに `Composite layout canvas=... count=... self=x,y,w,h slotN=x,y,w,h ...` の 1 行を書く。
-- ロック。`composite_source.h` の冒頭に順がある。描画のスレッドが取るのは短いモジュールのロックだけで、子の作成と解放と、子へのフレームの出力は、そのロックの外で行う。
+- 1 人のときだけ見せるフィルタ。利用者が自分のソース (テキスト、画像など) に付けるフィルタ `cordmux_solo_filter` は、合成のソースが 1 人の映像だけをキャンバスの全面に描いたときだけ、付けたソースを描く。合成のソースは、番組の描画 (メインのキャンバスのミックスの出力の描画) の中で、実際に描いたもので 1 人の全面を描いたか (`composite_frame_plan.h` の `composite_shows_one_full`) をスレッドごとの印に残し、フィルタは、番組の描画の中ではそれを、外では直前の番組の描画の値を読む (`ProgramPassMark`。印は番組の描画の前と後のコールバック `composite_main_render` と `composite_main_rendered` が立てて降ろす)。描いた映像がダミーかは、子のテクスチャの中身で決める (`frame_origin.h`)。合成のソースの描画どうしは、動画のフレームの時刻 (`obs_get_video_frame_time`) ごとに 1 回だけ作る値 (`CompositeFrameMemo` に覚える `plan_composite_frame` の結果) を共に読み、そのとおりに描く (`composite_tile_draw`)。値を共にするのは描画のスレッドの tick の後の描画だけで、スクリーンショットはスレッドごとの値を使う (`composite_frame_scope`)。子を空けるのは tick のコールバックの中だけである (`frame_sink.h`)。
+- ロック。`composite_source.h` の冒頭に順がある。描画のスレッドが取るのは短いモジュールのロックと、自分の枠の弱参照のロックと、フレームごとの値の入れ物の葉のロックだけで、子の作成と解放と、子へのフレームの出力は、そのロックの外で行う。
 
 ### 名前ラベルと話している人の光
 

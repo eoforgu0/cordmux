@@ -400,7 +400,8 @@ struct Pipeline::Impl {
 		// 理由)。動いている間の変更は set_feature_enabled と set_limits が受ける。
 		feature_enabled = settings.feature_enabled;
 		limits = limits_from_settings(settings.limit_max_long_edge, settings.limit_fps_divisor,
-					      settings.encoder_preference, settings.encode_priority);
+					      settings.encoder_preference, settings.encode_priority,
+					      settings.silence_sub_stream_audio);
 
 		// 録画 (Recorder) はコンストラクターで作る。作成待ち (pending) の録画のセッションを数えるのは
 		// Recorder のコンストラクターの 1 回だけで (record/recorder.h)、ドックはその数を最初のポーリングから
@@ -2875,8 +2876,12 @@ void Pipeline::Impl::refresh_limits_locked()
 	limits_sent = limits;
 	listener.send_limits(limits);
 	// 0 は、省いた (制限なし) ことを表す (limits_from_settings)。
-	diag::logf(LOG_INFO, "Quality limits sent to Vesktop (max_long_edge=%u fps_divisor=%d encoder=%s latency=%s)",
+	// 符号化の 2 つ (encoder と latency) は行の最後に置く (test/tools/obs-run の LOG_PATTERN_LIMITS_SENT が読む)。
+	diag::logf(LOG_INFO,
+		   "Quality limits sent to Vesktop (max_long_edge=%u fps_divisor=%d silence_sub_stream_audio=%s "
+		   "encoder=%s latency=%s)",
 		   static_cast<unsigned>(limits.max_long_edge.value_or(0)), limits.fps_divisor.value_or(1),
+		   limits.silence_sub_stream_audio.value_or(true) ? "on" : "off",
 		   limits.encoder_preference.value_or("hardware").c_str(),
 		   limits.latency_mode.value_or("realtime").c_str());
 }
@@ -4208,11 +4213,11 @@ void Pipeline::set_feature_enabled(bool on)
 }
 
 void Pipeline::set_limits(int max_long_edge, int fps_divisor, config::EncoderPreference encoder_preference,
-			  config::EncodePriority encode_priority)
+			  config::EncodePriority encode_priority, bool silence_sub_stream_audio)
 {
 	// 値が変わっていなければ何もしない (pipeline.h の宣言)。
-	const ws::LimitsMessage next =
-		limits_from_settings(max_long_edge, fps_divisor, encoder_preference, encode_priority);
+	const ws::LimitsMessage next = limits_from_settings(max_long_edge, fps_divisor, encoder_preference,
+							    encode_priority, silence_sub_stream_audio);
 	std::lock_guard<std::mutex> lock(impl_->mu);
 	if (impl_->limits == next)
 		return;

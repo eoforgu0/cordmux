@@ -836,7 +836,7 @@ bool obs_module_load(void)
 		poll_cfg.apply_runtime_settings = [pipeline = g_pipeline.get()](const cordmux::config::Settings &s) {
 			pipeline->set_feature_enabled(s.feature_enabled);
 			pipeline->set_limits(s.limit_max_long_edge, s.limit_fps_divisor, s.encoder_preference,
-					     s.encode_priority);
+					     s.encode_priority, s.silence_sub_stream_audio);
 		};
 
 		g_dock_poll = std::make_unique<cordmux::dock::DockPoll>(*g_pipeline, *g_os_probe, dock_widget,

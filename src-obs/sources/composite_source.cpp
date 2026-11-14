@@ -17,7 +17,9 @@
 #include "install/uninstall.h"
 #include "ledger/text_ids.h"
 #include "sources/composite_decor.h"
+#include "sources/composite_frame_plan.h"
 #include "sources/composite_layout.h"
+#include "sources/frame_origin.h"
 #include "sources/frame_sink.h"
 #include "sources/scene_names.h"
 #include "sources/screen_feed.h"
@@ -50,17 +52,33 @@ struct composite_data {
 
 using CompositePtr = std::shared_ptr<composite_data>;
 
+// 子に渡したフレームがダミーかの記録と、子のテクスチャに入っているフレームがダミーか (sources/frame_origin.h)。渡す側
+// (output_tile_video)、tick のコールバック (composite_tick)、子の測定のフィルタの filter_video (OBS の tick の中、子の
+// async_mutex の下)、合成のソースの描画 (子を描いた後) が mu を取る。mu は葉で、持ったまま何も取らない。
+struct TileOrigins {
+	std::mutex mu;
+	FrameOriginLog log;
+	TileTextureOrigin texture;
+};
+
 // 画面の枠 1 つ分の子。FrameSink が出力のロックと空ける予約を持つ。
 struct TileState {
 	int slot = 0;
 	obs_source_t *source = nullptr; // 作った参照 1 つを持つ。解放は release_children_locked だけ
 	FrameSink sink;
+	// 子の測定のフィルタも同じ物を持つ (子より先に TileState が消えても、フィルタが読み続けられるように shared_ptr)。
+	std::shared_ptr<TileOrigins> origins;
 };
 
 // 子と tick のコールバックの作成と解放を、1 つずつ順に行うためのロック。作成と解放は OBS の関数を長く呼ぶので、
 // module のロックとは別にする。描画のスレッドは取らない。
 std::mutex g_lifecycle_mu;
 bool g_tick_registered = false;
+
+// 番組の描画の前と後のコールバック (obs_add_main_render_callback と obs_add_main_rendered_callback。下の composite_main_render
+// と composite_main_rendered)。
+void composite_main_render(void *param, uint32_t cx, uint32_t cy);
+void composite_main_rendered(void *param);
 
 // module のロック。次のものだけを守る (composite_source.h のロックの説明)。
 std::mutex g_mu;
@@ -77,6 +95,32 @@ std::atomic<int> g_composite_count{0};
 // g_self_frame_mu は、選び直しと、各合成のソースへの活性の伝え方を 1 つずつ順に行うためのロックで、描画のスレッドは取らない。
 TargetRef g_self_frame;
 std::mutex g_self_frame_mu;
+
+// 動画のフレーム 1 つ分の、合成のソースが描くもの。そのフレームで最初に描いた合成のソースが作り、同じフレームの合成のソースの
+// 描画 (出力とプレビューとプロジェクター、合成のソースが複数あるときのほかの合成のソース) は同じ値を使う。子の大きさは、渡すスレッドの
+// obs_source_output_video が libobs の async_active を書き換えるので、描画の途中でも 0 と 0 以外の間で変わる (obs-source.c の
+// obs_source_output_video_internal と get_base_width)。読むたびに決めると、合成のソースとフィルタで同じフレームの判定が
+// 食い違うためである。canvas_w と canvas_h は、キャンバスの大きさを読めなかったとき 0 (何も描かない)。
+struct CompositeFrame {
+	int canvas_w = 0;
+	int canvas_h = 0;
+	CompositeInput input;
+	CompositeFramePlan plan;
+};
+
+CompositeFrameMemo<CompositeFrame> g_frame;
+
+// 合成のソースの tick (video_tick) が最後に来たフレームの時刻 (obs_get_video_frame_time)。この値がそのフレームの時刻と同じ
+// 描画のスレッドの描画だけが、g_frame の値を共にする (composite_frame_plan.h の composite_frame_scope)。
+std::atomic<std::uint64_t> g_composite_tick_time{0};
+
+// 番組の描画の印 (composite_frame_plan.h の ProgramPassMark)。立て降ろしも読み書きも描画のスレッドだけなので、スレッドごとに
+// 持つ。ほかのスレッド (obs-websocket のスクリーンショット) の印は立たない。
+thread_local ProgramPassMark t_program_pass;
+
+// 直前の番組の描画で、合成のソースが 1 人の映像だけを全面に描いたか。番組の描画の後のコールバックが書き、番組の描画の外の
+// フィルタ (プレビュー、プロジェクター、スクリーンショット) が読む。
+std::atomic<bool> g_last_program_solo{false};
 
 // ---- 子 (cordmux_tile) と表示の測定のフィルタ (cordmux_tile_probe) ----
 
@@ -106,6 +150,8 @@ void tile_destroy(void *vptr)
 struct probe_data {
 	obs_source_t *filter = nullptr;
 	int slot = 0;
+	// make_tile が子に付ける前に入れる (付ける前は filter_video が呼ばれない)。
+	std::shared_ptr<TileOrigins> origins;
 };
 
 const char *probe_get_name(void * /*type_data*/)
@@ -127,13 +173,20 @@ void probe_destroy(void *vptr)
 }
 
 // 子で OBS が表示に選んだフレームを受け取る (理由は composite_source.h)。OBS の映像のスレッドが子の async_mutex を持ったまま呼ぶので、OBS の関数を呼ばず、
-// note_screen_frame_shown が取る 1 つのロックだけを取る。フレームはそのまま返す。
+// note_screen_frame_shown が取るロックと、ダミーかの記録のロック (TileOrigins::mu) を 1 つずつ取る。どちらも葉である。
+// フレームはそのまま返す。
 obs_source_frame *probe_filter_video(void *vptr, obs_source_frame *frame)
 {
 	if (!frame)
 		return frame;
 	const auto *data = static_cast<const probe_data *>(vptr);
 	note_screen_frame_shown(data->slot, frame->timestamp);
+	if (data->origins) {
+		std::lock_guard<std::mutex> lock(data->origins->mu);
+		bool dummy = false;
+		if (data->origins->log.lookup(frame->timestamp, &dummy))
+			data->origins->texture.on_selected(dummy);
+	}
 	return frame;
 }
 
@@ -152,11 +205,14 @@ std::shared_ptr<TileState> make_tile(int slot)
 	obs_data_set_int(settings, kSlotSettingKey, slot);
 
 	const std::string name = "cordmux tile " + std::to_string(slot);
+	auto origins = std::make_shared<TileOrigins>();
 	obs_source_t *tile = obs_source_create_private(kTileSourceTypeId, name.c_str(), settings);
 	if (tile) {
 		const std::string probe_name = name + " probe";
 		obs_source_t *probe = obs_source_create_private(kTileProbeFilterTypeId, probe_name.c_str(), settings);
 		if (probe) {
+			if (auto *probe_state = static_cast<probe_data *>(obs_obj_get_data(probe)))
+				probe_state->origins = origins;
 			obs_source_filter_add(tile, probe);
 			obs_source_release(probe); // 子が自分の参照を持つ
 		} else {
@@ -173,6 +229,7 @@ std::shared_ptr<TileState> make_tile(int slot)
 	state->slot = slot;
 	state->source = tile;
 	state->sink.source = tile;
+	state->origins = std::move(origins);
 	return state;
 }
 
@@ -185,7 +242,8 @@ std::shared_ptr<TileState> tile_state(int slot)
 }
 
 // 子の空ける予約の期限を見る tick のコールバック。OBS は draw_callbacks_mutex を持ったまま呼ぶので、取るのは
-// module のロックだけにして、子の出力のロックは待たずに試す (FrameSink::tick)。
+// module のロックだけにして、子の出力のロックは待たずに試す (FrameSink::tick)。ソースの tick (子がフレームを選ぶ) より前に
+// 呼ばれるので、前の tick で選ばれて描かれなかったフレームを、子のテクスチャの元の候補から外す (TileTextureOrigin::on_tick)。
 void composite_tick(void * /*param*/, float /*seconds*/)
 {
 	std::array<std::shared_ptr<TileState>, kScreenTileCount> tiles;
@@ -193,9 +251,16 @@ void composite_tick(void * /*param*/, float /*seconds*/)
 		std::lock_guard<std::mutex> lock(g_mu);
 		tiles = g_tiles;
 	}
+	// 描画のスレッドの 1 周の始め。番組の描画の印を降ろす (前の周の描画の途中でコールバックが外れて、降ろされずに残った印も)。
+	program_pass_tick(t_program_pass);
 	for (const std::shared_ptr<TileState> &tile : tiles) {
-		if (tile)
-			tile->sink.tick();
+		if (!tile)
+			continue;
+		tile->sink.tick();
+		if (tile->origins) {
+			std::lock_guard<std::mutex> lock(tile->origins->mu);
+			tile->origins->texture.on_tick();
+		}
 	}
 }
 
@@ -208,6 +273,8 @@ void create_children_locked()
 
 	if (!g_tick_registered) {
 		obs_add_tick_callback(composite_tick, nullptr);
+		obs_add_main_render_callback(composite_main_render, nullptr);
+		obs_add_main_rendered_callback(composite_main_rendered, nullptr);
 		g_tick_registered = true;
 	}
 
@@ -232,6 +299,8 @@ void release_children_locked()
 
 	if (g_tick_registered) {
 		obs_remove_tick_callback(composite_tick, nullptr);
+		obs_remove_main_render_callback(composite_main_render, nullptr);
+		obs_remove_main_rendered_callback(composite_main_rendered, nullptr);
 		g_tick_registered = false;
 	}
 
@@ -325,6 +394,7 @@ void composite_destroy(void *vptr)
 	auto *holder = static_cast<CompositePtr *>(vptr);
 	const CompositePtr data = *holder;
 	delete holder;
+
 
 	obs_source_t *target = nullptr;
 	{
@@ -427,6 +497,78 @@ private:
 	bool entered_;
 };
 
+// ソースの映像の大きさ (libobs の obs_source_get_width と obs_source_get_height)。
+ContentSize content_size(obs_source_t *source)
+{
+	ContentSize size;
+	size.w = static_cast<int>(obs_source_get_width(source));
+	size.h = static_cast<int>(obs_source_get_height(source));
+	return size;
+}
+
+// 今のフレームに描くものを作る (CompositeFrame)。取るロックは module のロック (入力と子の表をコピーする間だけ) と、自分の枠の
+// TargetRef のロックで、どちらも持ったまま次のロックを取らない。子と自分の枠の映像の参照は、大きさを読んだらすぐ解放する
+// (覚えるのは値だけ)。
+CompositeFrame make_frame()
+{
+	CompositeFrame frame;
+	CompositeFrameFacts facts;
+	if (!read_canvas(&facts.canvas_w, &facts.canvas_h))
+		return frame;
+
+	{
+		std::lock_guard<std::mutex> lock(g_mu);
+		frame.input = g_input;
+	}
+	const std::array<obs_source_t *, kScreenTileCount> tiles = tile_refs();
+	for (std::size_t i = 0; i < tiles.size(); ++i) {
+		if (!tiles[i])
+			continue;
+		facts.tile_sizes[i] = content_size(tiles[i]);
+		obs_source_release(tiles[i]);
+	}
+	if (obs_source_t *self = g_self_frame.strong_ref()) {
+		facts.self_size = content_size(self);
+		obs_source_release(self);
+	}
+
+	frame.canvas_w = facts.canvas_w;
+	frame.canvas_h = facts.canvas_h;
+	frame.plan = plan_composite_frame(frame.input, facts);
+	return frame;
+}
+
+// 今のフレームに描くもの。そのフレームで最初に呼んだときに作り、同じフレームの間は同じ値を返す。OBS の動画の
+// フレームの時刻 (obs_get_video_frame_time) は、描画のスレッドの 1 周 (tick、出力の描画、プレビューの描画) の間は
+// 変わらず、周の終わりの video_sleep で進む (obs-video.c の obs_graphics_thread_loop)。描画のスレッドで合成のソースの tick の
+// 後の描画は g_frame を共にし、それ以外 (tick のコールバックの中のスクリーンショット、obs-websocket のスレッドの
+// スクリーンショット) はスレッドごとの入れ物を使う (composite_frame_scope)。
+std::shared_ptr<const CompositeFrame> current_frame()
+{
+	thread_local CompositeFrameMemo<CompositeFrame> t_local;
+	const std::uint64_t now = obs_get_video_frame_time();
+	const CompositeFrameScope scope =
+		composite_frame_scope(obs_in_task_thread(OBS_TASK_GRAPHICS), now, g_composite_tick_time.load());
+	CompositeFrameMemo<CompositeFrame> &memo = scope == CompositeFrameScope::Shared ? g_frame : t_local;
+	return memo.get(now, make_frame);
+}
+
+// 番組の描画の前と後 (libobs の render_main_texture が、ミックスごとに obs_view_render の前と後に、描画のスレッドで呼ぶ)。
+// 番組の描画の印 (t_program_pass) は、その周で最初のミックス (メインのキャンバスのミックス。libobs は常に先頭に置く) の描画の
+// ときだけ立てる (program_pass_begin)。周の区切りは tick のコールバック (composite_tick の program_pass_tick)。メインの
+// キャンバスのミックスは、ほかのミックスのテクスチャを使い回さない (使い回すのは、同じビューの先のミックスがあるときだけ)。
+void composite_main_render(void * /*param*/, uint32_t /*cx*/, uint32_t /*cy*/)
+{
+	program_pass_begin(t_program_pass);
+}
+
+void composite_main_rendered(void * /*param*/)
+{
+	bool solo = false;
+	if (program_pass_end(t_program_pass, &solo))
+		g_last_program_solo.store(solo);
+}
+
 void composite_video_render(void *vptr, gs_effect_t * /*effect*/)
 {
 	composite_data &data = **static_cast<CompositePtr *>(vptr);
@@ -436,28 +578,20 @@ void composite_video_render(void *vptr, gs_effect_t * /*effect*/)
 	if (!guard.entered())
 		return;
 
-	int canvas_w = 0;
-	int canvas_h = 0;
-	if (!read_canvas(&canvas_w, &canvas_h))
+	// 配置と、どのタイルに映像を描くかは、このフレームの値 (current_frame) のとおりにする。同じフレームの描画 (出力、プレビュー、
+	// プロジェクター) が同じ配置と大きさで描くためである。
+	const std::shared_ptr<const CompositeFrame> frame = current_frame();
+	const int canvas_w = frame->canvas_w;
+	const int canvas_h = frame->canvas_h;
+	if (canvas_w <= 0 || canvas_h <= 0)
 		return;
-
-	// module のロックの中は入力のコピーと子の参照を取るだけにして、配置の計算も描画もロックの外で行う。
-	CompositeInput input;
-	{
-		std::lock_guard<std::mutex> lock(g_mu);
-		input = g_input;
-	}
-	const std::array<obs_source_t *, kScreenTileCount> tiles = tile_refs();
-
-	CompositeLayoutRequest request = make_layout_request(input, canvas_w, canvas_h);
-	// 全画面で映す人の映像を持つ子に、映像があるか (最初のフレームが届くまでと、空けた後は大きさが 0)。
-	if (request.focus_extra_slot >= 1 && request.focus_extra_slot <= kScreenTileCount) {
-		obs_source_t *extra = tiles[static_cast<std::size_t>(request.focus_extra_slot - 1)];
-		request.focus_extra_ready = extra != nullptr && obs_source_get_width(extra) > 0 &&
-					    obs_source_get_height(extra) > 0;
-	}
-	const CompositeLayout layout = plan_composite_layout(request);
+	const CompositeInput &input = frame->input;
+	const CompositeFramePlan &plan = frame->plan;
+	const CompositeLayout &layout = plan.layout;
 	log_layout_if_changed(canvas_w, canvas_h, layout);
+
+	// 子の参照は描く間だけ持つ (module のロックの中は参照を取るだけ)。
+	const std::array<obs_source_t *, kScreenTileCount> tiles = tile_refs();
 
 	// 混ぜ方を、OBS のシーンが項目を描くときと同じ状態にしてから描く (libobs の obs-scene.c の scene_video_render)。
 	// 呼び出し元の状態は決まっていない。HDR のキャンバスでは、libobs がこのソースを色空間の変換用のテクスチャに描かせ、
@@ -470,7 +604,13 @@ void composite_video_render(void *vptr, gs_effect_t * /*effect*/)
 	data.decor.draw_background(canvas_w, canvas_h);
 
 	std::vector<bool> has_video(layout.tiles.size(), false);
+	// 描いた映像がダミーのフレームか (子のテクスチャに入っているフレームの元。自分の枠は偽)。
+	std::vector<bool> dummy(layout.tiles.size(), false);
 	for (std::size_t index = 0; index < layout.tiles.size(); ++index) {
+		// 子の大きさは、最初のフレームが届くまでと、空けた後は 0 になる。そのときは何も描かない (composite_tile_draw の draw が偽)。
+		const CompositeTileDraw draw = composite_tile_draw(plan, index);
+		if (!draw.draw)
+			continue;
 		const CompositeTile &tile = layout.tiles[index];
 		obs_source_t *content = nullptr;
 		bool own_ref = false;
@@ -483,23 +623,30 @@ void composite_video_render(void *vptr, gs_effect_t * /*effect*/)
 		if (!content)
 			continue;
 
-		// 子の大きさは、最初のフレームが届くまでと、空けた後は 0 になる。そのときは何も描かない。
-		const std::uint32_t content_w = obs_source_get_width(content);
-		const std::uint32_t content_h = obs_source_get_height(content);
-		const PixelRect fit =
-			fit_inside(tile.rect, static_cast<int>(content_w), static_cast<int>(content_h));
-		if (fit.w > 0 && fit.h > 0) {
-			gs_matrix_push();
-			gs_matrix_translate3f(static_cast<float>(fit.x), static_cast<float>(fit.y), 0.0f);
-			gs_matrix_scale3f(static_cast<float>(fit.w) / static_cast<float>(content_w),
-					  static_cast<float>(fit.h) / static_cast<float>(content_h), 1.0f);
-			obs_source_video_render(content);
-			gs_matrix_pop();
-			has_video[index] = true;
-		}
+		gs_matrix_push();
+		gs_matrix_translate3f(static_cast<float>(draw.fit.x), static_cast<float>(draw.fit.y), 0.0f);
+		gs_matrix_scale3f(draw.scale_x, draw.scale_y, 1.0f);
+		obs_source_video_render(content);
+		gs_matrix_pop();
+		has_video[index] = true;
 		if (own_ref)
 			obs_source_release(content);
+		// 子を描いた。この tick で選ばれたフレームがあれば、今の描画でテクスチャに入ったので、テクスチャの元として確定する。
+		if (!tile.self) {
+			if (const std::shared_ptr<TileState> state = tile_state(tile.slot)) {
+				if (state->origins) {
+					std::lock_guard<std::mutex> lock(state->origins->mu);
+					state->origins->texture.on_drawn();
+					dummy[index] = state->origins->texture.texture_dummy();
+				}
+			}
+		}
 	}
+
+	// 番組の描画の中なら、1 人の映像だけを全面に描いたかを残す (cordmux_solo_filter が読む)。実際に描いたもの (has_video と
+	// dummy) で決める。
+	program_pass_note_composite(t_program_pass,
+				    composite_shows_one_full(layout.tiles, has_video, dummy, canvas_w, canvas_h));
 
 	// 名前ラベルと光は、全部のタイルの映像を描いた後に重ねる。光は隣のタイルへ広がるので、タイルごとに重ねると、後に
 	// 描く隣の映像の下に隠れる。映像がまだないタイルと空けた後のタイルには、何も重ねない。画面共有していない参加者の
@@ -517,6 +664,13 @@ void composite_video_render(void *vptr, gs_effect_t * /*effect*/)
 	}
 }
 
+// 合成のソースの tick。このフレームの時刻を覚える (g_composite_tick_time)。libobs はすべてのソースの tick を、tick の
+// コールバックの後、描画の前に呼ぶ (obs-video.c の tick_sources)。
+void composite_video_tick(void * /*vptr*/, float /*seconds*/)
+{
+	g_composite_tick_time.store(obs_get_video_frame_time());
+}
+
 // 子と自分の枠の映像を返す。アクティブにするものも、全部のものも同じ (子は画面の枠の 4 つと全画面だけで映す人の 1 つ、
 // 自分の枠は 1 つ)。
 void composite_enum_children(void *vptr, obs_source_enum_proc_t enum_callback, void *param)
@@ -530,6 +684,45 @@ void composite_enum_children(void *vptr, obs_source_enum_proc_t enum_callback, v
 		obs_source_release(tile);
 	}
 	g_self_frame.enumerate(data.source, enum_callback, param);
+}
+
+// ---- 1 人の映像だけを全面に描いている間だけ、付けたソースを見せるフィルタ (cordmux_solo_filter) ----
+
+struct solo_filter_data {
+	obs_source_t *filter = nullptr;
+};
+
+const char *solo_filter_get_name(void * /*type_data*/)
+{
+	return obs_module_text(ledger::text::keys::kSourceSoloFilterLabel);
+}
+
+// create が nullptr を返すと、libobs はフィルタを素通しにして、付けたソースを常に描く (obs-source.c の render_video)。
+// 値の中身は描画で使うフィルタのソースだけ。
+void *solo_filter_create(obs_data_t * /*settings*/, obs_source_t *filter)
+{
+	auto *data = new solo_filter_data();
+	data->filter = filter;
+	return data;
+}
+
+void solo_filter_destroy(void *vptr)
+{
+	delete static_cast<solo_filter_data *>(vptr);
+}
+
+// 合成のソースが 1 人の映像だけを全面に描いたときだけ、付けたソースをそのまま描く (その手前のフィルタとソースを、加工せずに
+// 描く)。それ以外のときは何も描かない (composite_frame_plan.h の solo_filter_on)。番組の描画の中では、このフレームの番組の
+// 描画で合成のソースが自分より先に描いたもので決め、番組の描画の外では直前の番組の描画の値を使う。合成のソースがなければ
+// 描かない。
+void solo_filter_video_render(void *vptr, gs_effect_t * /*effect*/)
+{
+	const auto *data = static_cast<const solo_filter_data *>(vptr);
+	if (!composite_present())
+		return;
+	if (!solo_filter_on(t_program_pass, g_last_program_solo.load()))
+		return;
+	obs_source_skip_video_filter(data->filter);
 }
 
 } // namespace
@@ -555,6 +748,7 @@ obs_source_info make_composite_source_info()
 	info.create = composite_create;
 	info.destroy = composite_destroy;
 	info.video_render = composite_video_render;
+	info.video_tick = composite_video_tick;
 	info.enum_active_sources = composite_enum_children;
 	info.enum_all_sources = composite_enum_children;
 	info.get_width = composite_get_width;
@@ -589,6 +783,28 @@ obs_source_info make_tile_probe_filter_info()
 	info.destroy = probe_destroy;
 	info.video_render = probe_video_render;
 	info.filter_video = probe_filter_video;
+	return info;
+}
+
+// 利用者が自分のソースに付けるフィルタで、OBS の [フィルタ] の [エフェクトフィルタ] の一覧に出す (OBS_SOURCE_CAP_DISABLED を
+// 付けない)。映像のフィルタ (OBS_SOURCE_VIDEO) なので、同期のソース (テキスト、画像) にも非同期のソース (メディア) にも
+// 付けられる (obs-source.c の filter_compatible)。音声は扱わない (付けたソースの音はそのまま出る)。大きさは返さず、付けた
+// ソースの大きさのままにする (get_width のないフィルタの大きさは、libobs が付けた先の大きさにする。見えない間も、シーンの
+// 中の位置と大きさの枠は変わらない)。プロパティは持たない。どの合成のソースの判定かを選ぶ必要がない (合成のソースは
+// 全部同じ配置を描く) ためである。OBS_SOURCE_SRGB を付けるのは、付けないと libobs がこのフィルタの描画の間 (付けたソースを
+// 描く間も) 線形の sRGB を切り (obs-source.c の obs_source_main_render)、半透明の縁などの混ざり方が、フィルタを付けない
+// ときと変わるためである。このフィルタは色を扱わず、付けたソースをそのまま描くだけなので、状態を変えない。OBS の
+// フィルタのうち描き方を変えないもの (クロップ/パッド、スクロール) も同じ印を付けている。
+obs_source_info make_solo_filter_info()
+{
+	obs_source_info info = {};
+	info.id = kSoloFilterTypeId;
+	info.type = OBS_SOURCE_TYPE_FILTER;
+	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_SRGB;
+	info.get_name = solo_filter_get_name;
+	info.create = solo_filter_create;
+	info.destroy = solo_filter_destroy;
+	info.video_render = solo_filter_video_render;
 	return info;
 }
 
@@ -672,10 +888,17 @@ bool self_frame_shown()
 	return true;
 }
 
-void output_tile_video(int slot, const obs_source_frame2 *frame, bool unbuffered)
+void output_tile_video(int slot, const obs_source_frame2 *frame, bool unbuffered, bool dummy)
 {
-	if (const std::shared_ptr<TileState> tile = tile_state(slot))
-		tile->sink.output(frame, unbuffered);
+	const std::shared_ptr<TileState> tile = tile_state(slot);
+	if (!tile)
+		return;
+	// OBS がこのフレームを表示に選ぶ前に記録する (測定のフィルタが表示に選ばれたフレームを引く)。
+	if (frame && tile->origins) {
+		std::lock_guard<std::mutex> lock(tile->origins->mu);
+		tile->origins->log.note_output(frame->timestamp, dummy);
+	}
+	tile->sink.output(frame, unbuffered);
 }
 
 void clear_tile_now(int slot)

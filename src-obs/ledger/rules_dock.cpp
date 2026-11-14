@@ -439,6 +439,8 @@ const ContactHeadline kContactHeadlines[] = {
 	{"self", keys::kDockContactSelfHeadline},
 	{"call-info", keys::kDockContactCallHeadline},
 	{"voice-select", keys::kDockContactVoiceSelectHeadline},
+	// サブアカウントの Vesktop で画面共有の音が鳴ったままになるだけで、受信には影響しないので、いちばん軽い。
+	{"stream-volume", keys::kDockContactStreamVolumeHeadline},
 };
 
 void contact_notice(const Observation &obs, std::vector<dockview::Notice> *out)

@@ -206,6 +206,7 @@ DialogPlan uninstall_confirm_plan(bool loose)
 	p.blocks.push_back(paragraph(keys::kDialogUninstallDeletesText));
 	p.blocks.push_back(bullet(keys::kDialogUninstallDeleteSettingsItemText));
 	p.blocks.push_back(bullet(keys::kDialogUninstallDeleteScenesItemText));
+	p.blocks.push_back(bullet(keys::kDialogUninstallDeleteFiltersItemText));
 	p.blocks.push_back(paragraph(keys::kDialogUninstallRestoresText));
 	p.blocks.push_back(paragraph(keys::kDialogUninstallKeepsText));
 	// 最後の文は、アンインストールが終わったときのダイアログが表示するものと同じものを伝える (手順書と違う置き方

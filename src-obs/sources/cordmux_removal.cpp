@@ -72,6 +72,65 @@ bool is_cordmux_input(obs_source_t *source)
 	return std::strcmp(id, kCompositeSourceTypeId) == 0;
 }
 
+// 利用者が自分のソースに付けた、1 人のときだけ見せるフィルタ (cordmux_solo_filter)。
+bool is_cordmux_filter(obs_source_t *filter)
+{
+	const char *id = obs_source_get_id(filter);
+	if (id == nullptr)
+		return false;
+	return std::strcmp(id, kSoloFilterTypeId) == 0;
+}
+
+// ---- フィルタを外す ----
+
+// フィルタを付けられるソース (公開の入力ソース、グループ、シーン)。参照を 1 つずつ持つ。
+void collect_filter_parents(SourceRefs &out)
+{
+	collect_inputs(out);
+	collect_scenes(out);
+}
+
+void collect_filter_proc(obs_source_t * /*parent*/, obs_source_t *child, void *param)
+{
+	if (is_cordmux_filter(child))
+		static_cast<SourceRefs *>(param)->add(child);
+}
+
+// parent に付いている cordmux のフィルタ (参照を 1 つずつ持つ)。列挙は filter_mutex を持ったままコールバックを呼ぶので、
+// 外すのは列挙の外で行う。
+void collect_cordmux_filters(obs_source_t *parent, SourceRefs &out)
+{
+	obs_source_enum_filters(parent, collect_filter_proc, &out);
+}
+
+// cordmux のフィルタを、すべてのソースから外す。付けたソースそのものは利用者の物なので、消しも隠しもしない (アンインストールの後は、
+// 付けたソースが常に表示される。guide の「アンインストール」)。cordmux を読み込めない OBS では、libobs が種類の分からない
+// フィルタを素通しにして付けたソースを常に描くので、残しても働かない (obs-source.c の render_video)。
+void remove_cordmux_filters()
+{
+	SourceRefs parents;
+	collect_filter_parents(parents);
+	for (obs_source_t *parent : parents.items()) {
+		SourceRefs filters;
+		collect_cordmux_filters(parent, filters);
+		for (obs_source_t *filter : filters.items())
+			obs_source_filter_remove(parent, filter);
+	}
+}
+
+std::size_t count_cordmux_filters()
+{
+	SourceRefs parents;
+	collect_filter_parents(parents);
+	std::size_t count = 0;
+	for (obs_source_t *parent : parents.items()) {
+		SourceRefs filters;
+		collect_cordmux_filters(parent, filters);
+		count += filters.items().size();
+	}
+	return count;
+}
+
 // ---- シーンアイテムを外す ----
 
 struct ItemCollect {
@@ -120,6 +179,7 @@ void remove_items_pointing_at(bool (*match)(obs_source_t *))
 
 void remove_cordmux_inputs()
 {
+	remove_cordmux_filters();
 	remove_items_pointing_at(is_cordmux_input);
 	SourceRefs inputs;
 	collect_inputs(inputs);
@@ -146,7 +206,7 @@ std::size_t count_one(RemovalItem item)
 {
 	switch (item) {
 	case RemovalItem::CordmuxSources:
-		return count_cordmux_inputs();
+		return count_cordmux_inputs() + count_cordmux_filters();
 	default:
 		return 1;
 	}

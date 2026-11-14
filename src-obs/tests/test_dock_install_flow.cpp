@@ -440,8 +440,9 @@ TEST_CASE("アンインストールの確認のダイアログは、削除する
 	CHECK(plan.icon == DialogIcon::Warning); // 元に戻せないものを含む確認
 	const std::vector<std::string> expected = {
 		p(keys::kDialogUninstallDeletesText),           b(keys::kDialogUninstallDeleteSettingsItemText),
-		b(keys::kDialogUninstallDeleteScenesItemText),  p(keys::kDialogUninstallRestoresText),
-		p(keys::kDialogUninstallKeepsText),             p(keys::kDialogUninstallFolderAfterText),
+		b(keys::kDialogUninstallDeleteScenesItemText),  b(keys::kDialogUninstallDeleteFiltersItemText),
+		p(keys::kDialogUninstallRestoresText),          p(keys::kDialogUninstallKeepsText),
+		p(keys::kDialogUninstallFolderAfterText),
 	};
 	CHECK(block_names(plan) == expected);
 	REQUIRE(plan.buttons.size() == 2);

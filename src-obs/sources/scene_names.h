@@ -31,6 +31,9 @@ inline constexpr int kSelfSlot = 0;
 inline constexpr const char *kCompositeSourceTypeId = "cordmux_composite";
 inline constexpr const char *kTileSourceTypeId = "cordmux_tile";
 inline constexpr const char *kTileProbeFilterTypeId = "cordmux_tile_probe";
+// 利用者が自分のソースに付けるフィルタ (合成のソースが 1 人の映像だけを全面に描いている間だけ、そのソースを描く)。
+// 利用者のシーンコレクションに、付けたソースのフィルタとして保存される。
+inline constexpr const char *kSoloFilterTypeId = "cordmux_solo_filter";
 
 // 合成のソースの中で描く子と、子の測定のフィルタの名前 (非公開で、利用者に見えない)。製品名そのままにする。合成のソースの
 // 種類の名前は ini (cordmux.source.composite.label) にある。

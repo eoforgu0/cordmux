@@ -6,7 +6,7 @@
 # composite_decor.cpp と dummy_feed.cpp で、Qt6::Gui の追加の仕方は decor_paint.cmake にまとめてある (src-obs/tests/CMakeLists.txt の
 # decor_tests も同じ関数を呼ぶ)。
 # composite_layout.h と composite_roster.h と composite_input.h と composite_label_plan.h と composite_draw_plan.h と
-# composite_paint_handoff.h と composite_texture_strips.h と dummy_tiles.h と、double_audio.h の純粋関数は libobs にも
+# composite_paint_handoff.h と composite_texture_strips.h と composite_frame_plan.h と frame_sink_clear.h と frame_sink_core.h と frame_origin.h と dummy_tiles.h と、double_audio.h の純粋関数は libobs にも
 # Qt にも依存しないので、テスト (align_tests) がヘッダーを直接読む。
 
 include("${CMAKE_CURRENT_LIST_DIR}/decor_paint.cmake")
@@ -21,6 +21,9 @@ target_sources(
     sources/screen_feed.cpp
     sources/target_ref.h
     sources/frame_sink.h
+    sources/frame_sink_clear.h
+    sources/frame_sink_core.h
+    sources/frame_origin.h
     sources/composite_input.h
     sources/composite_source.h
     sources/composite_source.cpp
@@ -41,6 +44,7 @@ target_sources(
     sources/self_speaking_source.cpp
     sources/screen_end.h
     sources/composite_layout.h
+    sources/composite_frame_plan.h
     sources/composite_roster.h
     sources/label_border.h
     sources/dummy_tiles.h

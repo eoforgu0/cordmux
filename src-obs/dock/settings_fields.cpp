@@ -62,6 +62,8 @@ const SettingsFieldRow kSettingsFields[] = {
 	{"self_frame_on", SettingsOwner::Action, [](const config::Settings &f, config::Settings &t) { t.self_frame_on = f.self_frame_on; }, std::nullopt, false},
 	// 実機テストで Vesktop の state.json に書き込ませないためのキー。画面には表示しない。
 	{"allow_state_json_write", SettingsOwner::FileOnly, [](const config::Settings &f, config::Settings &t) { t.allow_state_json_write = f.allow_state_json_write; }, std::nullopt, false},
+	// サブアカウントの Vesktop で画面共有の音を鳴らさないか。画面には表示しない。OBS を起動したときに読んだ値を送信側に送る。
+	{"silence_sub_stream_audio", SettingsOwner::FileOnly, [](const config::Settings &f, config::Settings &t) { t.silence_sub_stream_audio = f.silence_sub_stream_audio; }, std::nullopt, false},
 	// 録画の値は録画を始める時点で読むので、再起動は不要 (次に録画を始めたときから反映される)。
 	{"record_dir", SettingsOwner::SettingsWindow, [](const config::Settings &f, config::Settings &t) { t.record_dir = f.record_dir; }, Page::Recording, false},
 	{"record_output_pcm", SettingsOwner::SettingsWindow, [](const config::Settings &f, config::Settings &t) { t.record_output_pcm = f.record_output_pcm; }, Page::Recording, false},

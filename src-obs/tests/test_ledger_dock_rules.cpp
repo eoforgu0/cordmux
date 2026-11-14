@@ -350,6 +350,7 @@ TEST_CASE("依存箇所の行が 1 つだけ使えないとき、見出しは行
 		{"self", keys::kDockContactSelfHeadline},
 		{"call-info", keys::kDockContactCallHeadline},
 		{"voice-select", keys::kDockContactVoiceSelectHeadline},
+		{"stream-volume", keys::kDockContactStreamVolumeHeadline},
 	};
 	for (const HeadlineCase &c : cases) {
 		for (const ContactState state : {ContactState::Missing, ContactState::Lost}) {
@@ -2883,6 +2884,7 @@ TEST_CASE("見出しのキーごとに決まった短い形を持ち、表にな
 	const std::set<std::string> without = {
 		keys::kDockContactMediaHeadline,      keys::kDockContactSharingHeadline, keys::kDockContactSsrcHeadline,
 		keys::kDockContactProfileHeadline,    keys::kDockContactCallHeadline,    keys::kDockContactVoiceSelectHeadline,
+		keys::kDockContactStreamVolumeHeadline,
 		keys::kDockRecordStartFailedHeadline,
 		keys::kDockSettingsUnreadHeadline,    keys::kDockSettingsUnsavedHeadline, keys::kDockParticipantsUnreadHeadline,
 		keys::kDockParticipantsUnsavedHeadline, keys::kDockOtherObsHeadline,

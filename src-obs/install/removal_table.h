@@ -40,7 +40,7 @@ namespace cordmux::install {
 // 消す対象の種類。値を追加したら、表にも行を追加し、kRemovalItemCount も増やす (テストと Python のツールが
 // 比べる)。値は明示せず、末尾に追加する (テストが値を表の添字として使う)。
 enum class RemovalItem {
-	CordmuxSources,         // cordmux の型のソース (合成のソース。利用者が「+」から追加したもの)
+	CordmuxSources,         // cordmux の型のソース (合成のソース。利用者が「+」から追加したもの) と、利用者のソースに付けたフィルタ
 	ModuleConfigFiles,      // obs_module_config_path の下の、cordmux のファイル全部
 	LocalDataFolder,        // %LOCALAPPDATA% の下の cordmux (接続のトークンとポート番号)
 	VencordDirValue,        // state.json の vencordDir (previous に戻す。キーがなかったならキーごと消す)

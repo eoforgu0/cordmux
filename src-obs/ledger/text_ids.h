@@ -307,6 +307,8 @@ inline constexpr const char *kDockContactProfileHeadline = "cordmux.dock.contact
 inline constexpr const char *kDockContactSelfHeadline = "cordmux.dock.contact_self.headline";
 inline constexpr const char *kDockContactCallHeadline = "cordmux.dock.contact_call.headline";
 inline constexpr const char *kDockContactVoiceSelectHeadline = "cordmux.dock.contact_voice_select.headline";
+// 同上 (サブアカウントの Vesktop で、画面共有の音を鳴らさないために音量を置く所)
+inline constexpr const char *kDockContactStreamVolumeHeadline = "cordmux.dock.contact_stream_volume.headline";
 // 依存箇所のメッセージの影響 (どの見出しでも同じテキスト)
 inline constexpr const char *kDockContactText = "cordmux.dock.contact.text";
 // 依存箇所のメッセージの 2 つ目の段落。Vesktop の画面が表示されないときの戻し方 (Vesktop を終了して
@@ -1192,6 +1194,9 @@ inline constexpr const char *kDialogUninstallDeleteSettingsItemText =
 	"cordmux.dialog.uninstall_delete_settings_item.text";
 // 箇条書きの項目
 inline constexpr const char *kDialogUninstallDeleteScenesItemText = "cordmux.dialog.uninstall_delete_scenes_item.text";
+// 箇条書きの項目。利用者が自分のソースに付けたフィルタ (source.solo_filter.label) を外す。付けたソースは削除しない
+inline constexpr const char *kDialogUninstallDeleteFiltersItemText =
+	"cordmux.dialog.uninstall_delete_filters_item.text";
 // 補足
 inline constexpr const char *kDialogUninstallRestoresText = "cordmux.dialog.uninstall_restores.text";
 // 補足
@@ -1354,6 +1359,8 @@ inline constexpr const char *kSourcePlaceholderLabel = "cordmux.source.placehold
 inline constexpr const char *kSourceCompositeLabel = "cordmux.source.composite.label";
 // 合成のソースのプロパティの、ボタンの上の説明
 inline constexpr const char *kSourceCompositeDisplayNoteText = "cordmux.source.composite_display_note.text";
+// 利用者が自分のソースに付けるフィルタの種類の名前 (OBS の [フィルタ] の [エフェクトフィルタ] の一覧に出る)
+inline constexpr const char *kSourceSoloFilterLabel = "cordmux.source.solo_filter.label";
 // cordmux の録画ファイルの名前に入れる語
 inline constexpr const char *kSourceFileScreenShareLabel = "cordmux.source.file_screen_share.label";
 // 同上

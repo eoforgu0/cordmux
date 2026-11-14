@@ -35,8 +35,9 @@ void push_screen_video(int slot, const obs_source_frame2 *frame, bool unbuffered
 namespace detail {
 
 // ダミーのフレームだけを渡す内側の関数。push_screen_video から、先頭でフレームを捨てる処理を除いたもの。
-// 実際のフレームには使わない (ダミー表示の間も、実際のフレームが表示されてしまう)。
-void output_screen_video(int slot, const obs_source_frame2 *frame, bool unbuffered = false);
+// 実際のフレームには使わない (ダミー表示の間も、実際のフレームが表示されてしまう)。dummy はダミーのフレームか
+// (合成のソースが、子が表示しているのがダミーかを見分ける。composite_source.h の output_tile_video)。
+void output_screen_video(int slot, const obs_source_frame2 *frame, bool unbuffered = false, bool dummy = false);
 
 } // namespace detail
 
@@ -62,9 +63,9 @@ void note_screen_frame_shown(int slot, std::uint64_t frame_timestamp_ns);
 // 枠 slot の表示の遅れの統計を取り出して、空に戻す。範囲の外の slot は count が 0 の結果を返す。
 pipeline::LatencySummary take_screen_shown_latency(int slot);
 
-// 枠をすぐ空ける (透明にする)。画面共有の終了が分かったとき、通話から抜けたとき、ドックで枠から外したとき、
-// ダミー表示を止めたときに呼び出す。保ってから空ける予約があれば取り消す。合成のソースがなければ何もしない。
-// 取るのは合成のソースのモジュールのロックだけである。Pipeline の mu を持ったまま呼び出さない。
+// 枠をすぐ空ける (透明にする。実際に空けるのは OBS の次の tick で、最大 1 フレーム後。sources/frame_sink.h)。
+// 画面共有の終了が分かったとき、通話から抜けたとき、ドックで枠から外したとき、ダミー表示を止めたときに呼び出す。
+// 保ってから空ける予約があれば取り消す。合成のソースがなければ何もしない。取るのは合成のソースのモジュールのロックだけである。Pipeline の mu を持ったまま呼び出さない。
 void clear_screen_now(int slot);
 
 // hold_ns だけ待ってから枠を空ける予約を置く (Vesktop との接続が切れたときか、ハートビートが続けて返らなかった

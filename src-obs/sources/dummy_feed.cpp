@@ -260,7 +260,7 @@ void produce_frames(std::uint64_t frame_time, int canvas_w, int canvas_h)
 		// 合成のソースの子は緩衝なしで受ける (pipeline の渡し方と同じ。ダミーのフレームは待ち行列を通さず、
 		// 作ったその場で渡すので、緩衝なしなら最新の 1 つがそのまま表示される)。libobs はここでフレームの全体を
 		// 自分の領域へコピーする (負荷は dummy_feed.h の set_dummy_mode のコメント)。
-		detail::output_screen_video(slot, &frame, composite_present());
+		detail::output_screen_video(slot, &frame, composite_present(), /*dummy=*/true);
 	}
 }
 

@@ -22,6 +22,10 @@ void register_source_types()
 
 	obs_source_info tile_probe_info = make_tile_probe_filter_info();
 	obs_register_source(&tile_probe_info);
+
+	// 利用者が自分のソースに付けるフィルタ (合成のソースが 1 人の映像だけを全面に描いている間だけ、そのソースを描く)。
+	obs_source_info solo_filter_info = make_solo_filter_info();
+	obs_register_source(&solo_filter_info);
 }
 
 } // namespace cordmux::sources

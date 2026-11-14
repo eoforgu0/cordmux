@@ -126,6 +126,9 @@ struct MediaMessage {
 //   fps_divisor:        1 か 2。
 //   encoder_preference: "hardware" か "software"。
 //   latency_mode:       "realtime" か "quality"。
+//   silence_sub_stream_audio: 真偽値。メインアカウントとサブアカウントの運用で、メインアカウントが同じ通話にいる間、
+//                       サブアカウントの Vesktop で画面共有の音を鳴らさないか。省いたときは true (設定の
+//                       silence_sub_stream_audio が false のときだけ載せる)。
 // エンコードの設定の 2 つは、続いている画面共有には適用されず、次に始まる画面共有から反映される (送信側の encode/limits.ts)。
 // 範囲の外の値と型の違う値を含むメッセージは、まるごと捨てて数える。送信側の
 // src-vencord/transport/control.ts と同じ基準で、範囲の外の値が送信側のエンコードの処理に届いて RangeError に
@@ -135,12 +138,14 @@ struct LimitsMessage {
 	std::optional<int> fps_divisor;
 	std::optional<std::string> encoder_preference;
 	std::optional<std::string> latency_mode;
+	std::optional<bool> silence_sub_stream_audio;
 };
 
 inline bool operator==(const LimitsMessage &a, const LimitsMessage &b)
 {
 	return a.max_long_edge == b.max_long_edge && a.fps_divisor == b.fps_divisor &&
-	       a.encoder_preference == b.encoder_preference && a.latency_mode == b.latency_mode;
+	       a.encoder_preference == b.encoder_preference && a.latency_mode == b.latency_mode &&
+	       a.silence_sub_stream_audio == b.silence_sub_stream_audio;
 }
 
 inline bool operator!=(const LimitsMessage &a, const LimitsMessage &b)
@@ -340,7 +345,7 @@ inline constexpr std::size_t kMaxAvatarPngBase64Bytes = 32 * 1024;
 
 // ---- 組み立てる関数 (cordmux.dll が送るメッセージ) ----
 
-// limits の 4 つのキーだけを持つオブジェクトを作る (値がないキーは書かない)。limits のメッセージと、hello_ok の
+// limits の 5 つのキーだけを持つオブジェクトを作る (値がないキーは書かない)。limits のメッセージと、hello_ok の
 // 任意のキー limits の両方が使う。
 inline nlohmann::json limits_fields_to_json(const LimitsMessage &m)
 {
@@ -353,6 +358,8 @@ inline nlohmann::json limits_fields_to_json(const LimitsMessage &m)
 		j["encoder_preference"] = *m.encoder_preference;
 	if (m.latency_mode.has_value())
 		j["latency_mode"] = *m.latency_mode;
+	if (m.silence_sub_stream_audio.has_value())
+		j["silence_sub_stream_audio"] = *m.silence_sub_stream_audio;
 	return j;
 }
 
@@ -652,7 +659,7 @@ inline std::optional<MediaMessage> parse_media(const nlohmann::json &j)
 	return m;
 }
 
-// オブジェクトから limits の 4 つのキーを読む (limits のメッセージと、hello_ok のキー limits の共通の部分)。
+// オブジェクトから limits の 5 つのキーを読む (limits のメッセージと、hello_ok のキー limits の共通の部分)。
 // 型の違う値か範囲の外の値が 1 つでもあれば nullopt を返す (基準は LimitsMessage のコメント)。知らないキーは
 // 無視する。
 inline std::optional<LimitsMessage> parse_limits_fields(const nlohmann::json &j)
@@ -691,6 +698,11 @@ inline std::optional<LimitsMessage> parse_limits_fields(const nlohmann::json &j)
 		if (v != "realtime" && v != "quality")
 			return std::nullopt;
 		m.latency_mode = std::move(v);
+	}
+	if (const auto it = j.find("silence_sub_stream_audio"); it != j.end()) {
+		if (!it->is_boolean())
+			return std::nullopt;
+		m.silence_sub_stream_audio = it->get<bool>();
 	}
 	return m;
 }

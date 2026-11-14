@@ -634,6 +634,21 @@ TEST_CASE("エンコードの設定は、既定値ではキーを省き、既定
 	CHECK(quality != software);
 }
 
+TEST_CASE("サブアカウントの Vesktop で画面共有の音を鳴らさないかは、既定 (true) ではキーを省き、false のときだけ入る")
+{
+	using cordmux::config::EncodePriority;
+	using cordmux::config::EncoderPreference;
+	CHECK(limits_from_settings(0, 1, EncoderPreference::Hardware, EncodePriority::Speed, true) ==
+	      cordmux::ws::LimitsMessage{});
+	const cordmux::ws::LimitsMessage off =
+		limits_from_settings(0, 1, EncoderPreference::Hardware, EncodePriority::Speed, false);
+	CHECK(off.silence_sub_stream_audio == std::optional<bool>(false));
+	CHECK_FALSE(off.max_long_edge.has_value());
+	CHECK(cordmux::ws::limits_in_range(off));
+	// この値だけが違っても、前に送った値と比べて違うと分かる (set_limits が送り直す条件)。
+	CHECK(off != cordmux::ws::LimitsMessage{});
+}
+
 // ---------------------------------------------------------------------------
 // settings.json の読み込み
 // ---------------------------------------------------------------------------

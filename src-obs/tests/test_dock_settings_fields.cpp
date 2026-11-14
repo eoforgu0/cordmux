@@ -74,6 +74,7 @@ Settings all_changed()
 	s.self_frame_source_name = "capture";
 	s.self_frame_on = true;
 	s.allow_state_json_write = false;
+	s.silence_sub_stream_audio = false;
 	s.record_dir = "D:/rec";
 	s.record_output_pcm = cordmux::config::RecordPcmFormat::Int24;
 	s.record_space_check_interval_s = 60;
@@ -197,6 +198,7 @@ const T12Row kT12[] = {
 	{"self_slot_first", kTab, std::nullopt, false},
 	{"self_frame_on", kAction, std::nullopt, false},
 	{"allow_state_json_write", kFile, std::nullopt, false},
+	{"silence_sub_stream_audio", kFile, std::nullopt, false},
 	{"record_dir", kWindow, SettingsPage::Recording, false},
 	{"record_output_pcm", kWindow, SettingsPage::Recording, false},
 	{"record_space_check_interval_s", kFile, std::nullopt, false},
@@ -387,11 +389,11 @@ TEST_CASE("すべての行の、値を書き換える所、ページ、再起動
 		CHECK((got.owner == SettingsOwner::SettingsWindow) == got.page.has_value());
 	}
 	CHECK(window_rows_without_page == 0);
-	// 書き換える所ごとの数: ウィンドウ 12、ドックのタブ 53 (表示タブ 52、状態タブの映像のバッファ)、Action 4、FileOnly 33 (ドックの更新間隔 dock_poll_ms と、メッセージと一覧の並びと枠を空にするまでの時間 5 つと、接続し直した後に配置を保つ時間と、出来事の行の行数 2 つと、受信のやり直しを頼むまでの時間と、音声の置く位置を時刻に追従させる値 3 つと、配信の声の置き直しのしきい値は設定ファイルでだけ変える)。
+	// 書き換える所ごとの数: ウィンドウ 12、ドックのタブ 53 (表示タブ 52、状態タブの映像のバッファ)、Action 4、FileOnly 34 (ドックの更新間隔 dock_poll_ms と、メッセージと一覧の並びと枠を空にするまでの時間 5 つと、接続し直した後に配置を保つ時間と、出来事の行の行数 2 つと、受信のやり直しを頼むまでの時間と、音声の置く位置を時刻に追従させる値 3 つと、配信の声の置き直しのしきい値と、サブアカウントの Vesktop で画面共有の音を鳴らさないかは設定ファイルでだけ変える)。
 	CHECK(owners[SettingsOwner::SettingsWindow] == 12);
 	CHECK(owners[SettingsOwner::DockTab] == 53);
 	CHECK(owners[SettingsOwner::Action] == 4);
-	CHECK(owners[SettingsOwner::FileOnly] == 33);
+	CHECK(owners[SettingsOwner::FileOnly] == 34);
 	// ページごとの入力欄の数 (録画 4、映像の受信 5、詳細設定 3、バージョン情報 0)。
 	CHECK(window_pages[SettingsPage::Recording] == 4);
 	CHECK(window_pages[SettingsPage::Receive] == 5);
@@ -416,6 +418,7 @@ TEST_CASE("オンとオフの切り替えは ActionId を通し、照合の間�
 	CHECK(owner_of.at("broadcaster_user_id") == SettingsOwner::Action);
 	// 画面に表示しないキー (state.json に書き込まないテストのためのキーと、同梱のファイルの照合の間隔)。
 	CHECK(owner_of.at("allow_state_json_write") == SettingsOwner::FileOnly);
+	CHECK(owner_of.at("silence_sub_stream_audio") == SettingsOwner::FileOnly);
 	CHECK(owner_of.at("vencord_check_disconnected_s") == SettingsOwner::FileOnly);
 	CHECK(owner_of.at("vencord_check_connected_s") == SettingsOwner::FileOnly);
 }

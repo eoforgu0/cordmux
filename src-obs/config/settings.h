@@ -483,6 +483,13 @@ struct Settings {
 	// うち、通話のテスト以外で false を書く。
 	bool allow_state_json_write = true;
 
+	// メインアカウントとサブアカウントの運用で、メインアカウントが Vesktop と同じ通話にいる間、サブアカウントの Vesktop で
+	// 画面共有の音を鳴らさないか。既定値は true。画面には表示しない (settings.json でだけ変える)。送信側には、制御用の
+	// JSON の limits の silence_sub_stream_audio で伝える (pipeline/pipeline.h の limits_from_settings。false のときだけ
+	// 載せる)。送信側は Discord の設定を変えず、Vesktop の中の画面共有の接続の音量だけを 0 にする
+	// (src-vencord/adapter/stream_volume.ts)。
+	bool silence_sub_stream_audio = true;
+
 	// ---- 機能の ON と OFF、画質の上限、同梱のファイルを確認する周期 ----
 
 	// 機能の ON と OFF (選んだ値を保存する)。既定値は true。OFF の間も接続の待ち受けは開いたままで、送信側には
@@ -1193,6 +1200,8 @@ inline bool parse_settings(std::string_view json_text, Settings *out, std::strin
 	}
 	if (!detail::read_bool(j, "allow_state_json_write", &parsed.allow_state_json_write, error))
 		return false;
+	if (!detail::read_bool(j, "silence_sub_stream_audio", &parsed.silence_sub_stream_audio, error))
+		return false;
 	if (!detail::read_bool(j, "feature_enabled", &parsed.feature_enabled, error))
 		return false;
 	if (!detail::read_bool(j, "self_voice_muted", &parsed.self_voice_muted, error))
@@ -1411,6 +1420,7 @@ inline std::string settings_to_json(const Settings &settings)
 	j["self_frame_on"] = settings.self_frame_on;
 	j["self_slot_first"] = settings.self_slot_first;
 	j["allow_state_json_write"] = settings.allow_state_json_write;
+	j["silence_sub_stream_audio"] = settings.silence_sub_stream_audio;
 	j["record_dir"] = settings.record_dir;
 	j["record_output_pcm"] = settings.record_output_pcm == RecordPcmFormat::Int24 ? "in24" : "fl32";
 	j["record_space_check_interval_s"] = settings.record_space_check_interval_s;

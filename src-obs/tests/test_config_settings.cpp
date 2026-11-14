@@ -451,6 +451,7 @@ TEST_CASE("書き出した設定をもう一度読むと、同じ設定に戻る
 	written.broadcaster_user_id = "123456789012345678";
 	// 既定値 (true) と違う値を書く。
 	written.allow_state_json_write = false;
+	written.silence_sub_stream_audio = false;
 	// 機能の ON と OFF、画質の上限、同梱のファイルを確認する周期の 5 つ。どれも既定値と違う値にする。
 	written.feature_enabled = false;
 	written.limit_max_long_edge = 1280;
@@ -489,6 +490,7 @@ TEST_CASE("書き出した設定をもう一度読むと、同じ設定に戻る
 	CHECK(back.seen_people_max == written.seen_people_max);
 	CHECK(back.broadcaster_user_id == written.broadcaster_user_id);
 	CHECK(back.allow_state_json_write == written.allow_state_json_write);
+	CHECK(back.silence_sub_stream_audio == written.silence_sub_stream_audio);
 	CHECK(back.record_dir == written.record_dir);
 	CHECK(back.record_output_pcm == written.record_output_pcm);
 	CHECK(back.record_space_check_interval_s == written.record_space_check_interval_s);
@@ -1076,14 +1078,36 @@ TEST_CASE("既定値は自分の範囲と刻みの中にあり、既定値を書
 	CHECK(cordmux::config::settings_to_json(clamped) == cordmux::config::settings_to_json(Settings{}));
 }
 
-TEST_CASE("書き出した設定は 102 本のキーを持ち、22 本がその中にある")
+TEST_CASE("書き出した設定は 103 本のキーを持ち、22 本がその中にある")
 {
 	const std::set<std::string> keys = keys_of_json(cordmux::config::settings_to_json(Settings{}));
-	CHECK(keys.size() == 102);
+	CHECK(keys.size() == 103);
 	for (const char *key : kDocs07Keys) {
 		CAPTURE(key);
 		CHECK(keys.count(key) == 1);
 	}
+}
+
+TEST_CASE("silence_sub_stream_audio は既定で true で、真偽値だけを読む")
+{
+	Settings s;
+	CHECK(parse_settings("{}", &s, nullptr));
+	CHECK(s.silence_sub_stream_audio);
+	CHECK(parse_settings(R"({"silence_sub_stream_audio": false})", &s, nullptr));
+	CHECK_FALSE(s.silence_sub_stream_audio);
+	CHECK(parse_settings(R"({"silence_sub_stream_audio": true})", &s, nullptr));
+	CHECK(s.silence_sub_stream_audio);
+
+	// 真偽値でなければ、読み取り全体が失敗し、既定値のまま (allow_state_json_write と同じ扱い)。
+	Settings bad;
+	std::string error;
+	CHECK_FALSE(parse_settings(R"({"silence_sub_stream_audio": 0})", &bad, &error));
+	CHECK_FALSE(error.empty());
+	CHECK(bad.silence_sub_stream_audio);
+
+	// 書き出した設定に残る (次の起動に残る)。
+	const std::string text = cordmux::config::settings_to_json(Settings{});
+	CHECK(text.find("\"silence_sub_stream_audio\"") != std::string::npos);
 }
 
 TEST_CASE("22 本のキーがない settings.json はそのまま読め、ない鍵は既定になる")
@@ -1113,6 +1137,9 @@ TEST_CASE("22 本のキーがない settings.json はそのまま読め、ない
 	for (const char *key :
 	     {"audio_resync_ms", "audio_drift_max_ppm", "audio_drift_time_constant_ms", "voice_audio_resync_ms"})
 		expected.erase(key);
+	// サブアカウントの Vesktop で画面共有の音を鳴らさないかのキーも、この見本より後に足したキーである (専用のテストが
+	// 確認する)。
+	expected.erase("silence_sub_stream_audio");
 	CHECK(keys_of_json(kBaseKeysSettings) == expected);
 	CHECK(expected.size() == 27);
 

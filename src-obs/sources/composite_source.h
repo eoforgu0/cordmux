@@ -18,13 +18,23 @@
 // 受ける。OBS が表示に選んだフレームは、フィルタの filter_video でしか取り出せない (obs_source_get_frame を描画の前に
 // 呼ぶと、描画が受け取るフレームを奪って映像が止まり、描画の後に呼ぶと何も返らない)。
 //
+// 利用者が自分のソース (テキスト、画像など) に付けるフィルタ cordmux_solo_filter は、合成のソースが 1 人の映像だけを
+// キャンバスの全面に描いたときだけ、付けたソースを描く。合成のソースは、番組の描画 (メインのキャンバスのミックスの出力の描画)
+// の中で、実際に描いたもので 1 人の全面を描いたかを残し、フィルタは、番組の描画の中ではそれを、外では直前の番組の描画の値を
+// 読む (sources/composite_frame_plan.h の ProgramPassMark)。合成のソースの描画どうしは、動画のフレームごとに 1 回だけ作る値
+// (配置と、どのタイルに映像を描くか) を共に読む。
+//
 // ロック。次の順に取り、逆の順に取る処理を作らない。
 //   composite_source.cpp の lifecycle ロック (子と tick のコールバックの作成と解放) -> module のロック (g_mu)
 //   dummy_feed.cpp の状態のロック -> module のロック (渡すスレッドの知らせのロックは、持ったまま状態のロックを取らない)
 // module のロックは、子の表、配置の入力、合成のソースの一覧だけを守る短いロックで、持ったまま呼ぶ OBS の関数は
-// obs_source_get_ref だけである (子の作成と解放、フレームの出力、描画は、ロックを放してから行う)。描画のスレッドが
-// 取るのはこのロックだけで、lifecycle ロックは取らない。子への出力は、module のロックを
-// 放してから FrameSink の出力のロックを取る。
+// obs_source_get_ref (ロックを取らない) だけである (子の作成と解放、フレームの出力、描画は、ロックを放してから行う)。描画の
+// スレッドが取るのはこのロックだけで、lifecycle ロックと合成のソースの life_mu は取らない。フレームごとの値は、合成のソースの
+// 描画が、どのロックも持たずに作る (module のロックと、自分の枠の TargetRef のロックを 1 つずつ順に取る)。作った値を覚える
+// 入れ物のロック (CompositeFrameMemo) と、子のダミーかの記録のロック (TileOrigins::mu) は葉で、持ったまま何も取らない。番組の
+// 描画の前と後のコールバック (libobs が draw_callbacks_mutex を持ったまま呼ぶ) は、スレッドごとの印と atomic を書くだけで、
+// ロックを取らない。子への出力は、module のロックを放してから、ダミーかの記録のロック、FrameSink の出力のロックの順に取る
+// (同時には持たない)。
 //
 // 名前ラベルと話している人の光 (sources/composite_decor.h) を描くとき、描画のスレッドは module のロックを放した後に、
 // 次のロックを 1 つずつ順に取る。どれも持ったままほかの cordmux のロックを取らない (3 つ目だけは例外で、内部のロックを
@@ -65,6 +75,8 @@ namespace cordmux::sources {
 obs_source_info make_composite_source_info();
 obs_source_info make_tile_source_info();
 obs_source_info make_tile_probe_filter_info();
+// 利用者が自分のソースに付けるフィルタ cordmux_solo_filter。
+obs_source_info make_solo_filter_info();
 
 // 合成のソースのプロパティの [cordmuxの設定を開く] で呼ぶ関数を登録する (nullptr で外す)。設定ウィンドウを作るのはドックなので、
 // plugin-main.cpp がドックを追加できたときに登録し、ドックを止める前に外す。
@@ -92,10 +104,12 @@ obs_source_t *composite_self_frame_ref();
 bool self_frame_shown();
 
 // 枠 slot の子に映像を渡す。合成のソースがないとき (子がないとき)、枠の番号が範囲の外のときは何もしない。
-// unbuffered の約束は screen_feed.h の push_screen_video と同じ。
-void output_tile_video(int slot, const obs_source_frame2 *frame, bool unbuffered);
+// unbuffered の約束は screen_feed.h の push_screen_video と同じ。dummy はダミー表示のフレームか (渡す前に子の記録に残し、OBS が
+// そのフレームを表示に選び、合成のソースがその子を描いたら、描いた映像をダミーとして扱う。sources/frame_origin.h)。
+void output_tile_video(int slot, const obs_source_frame2 *frame, bool unbuffered, bool dummy);
 
-// 枠 slot の子をすぐ空ける、または hold_ns だけ待ってから空ける予約を置く。子がなければ何もしない。
+// 枠 slot の子を次の tick で空ける、または hold_ns だけ待ってから空ける予約を置く (どちらも空けるのは tick のコールバックの
+// 中。sources/frame_sink.h)。子がなければ何もしない。
 void clear_tile_now(int slot);
 void hold_then_clear_tile(int slot, std::uint64_t hold_ns);
 

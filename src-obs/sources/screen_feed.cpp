@@ -44,11 +44,11 @@ std::int64_t obs_now_us()
 
 namespace detail {
 
-void output_screen_video(int slot, const obs_source_frame2 *frame, bool unbuffered)
+void output_screen_video(int slot, const obs_source_frame2 *frame, bool unbuffered, bool dummy)
 {
 	// 合成のソースの子に渡す。合成のソースがなければ何もしない。
 	if (composite_present())
-		output_tile_video(slot, frame, unbuffered);
+		output_tile_video(slot, frame, unbuffered, dummy);
 }
 
 } // namespace detail
