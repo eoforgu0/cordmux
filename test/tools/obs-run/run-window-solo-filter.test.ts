@@ -19,7 +19,7 @@ import {
     SOLO_MARKER_SCENE_NAME,
     SOLO_OTHER_SCENE_NAME,
     SOLO_RECORDING_LABEL,
-    TEXT_ID_FULL_SCREEN_RESTORE,
+    SOLO_WHITE_PROBE_RECT,
     TEXT_ID_ROW_FULL_SCREEN,
     TEXT_ID_ROW_MORE_ACTIONS_FOR,
     classifySoloFrame,
@@ -119,7 +119,7 @@ describe("dock-view の solo-filter の実行計画", () => {
         expect(steps[stop + 2]).toMatchObject({ kind: "judge-solo-recording", recording: SOLO_RECORDING_LABEL, gate: true });
     });
 
-    it("全画面は 3 人目の行の [...] とメニューの [全画面で表示] で始め、1 行目の [元に戻す] で戻す (直後に撮る)", () => {
+    it("全画面は 3 人目の行の [...] とメニューの [全画面で表示] で始め、同じ行のメニューの項目で戻す (直後に撮る)", () => {
         const steps = soloPlan();
         const more = steps.find((s) => s.buttonTextId === TEXT_ID_ROW_MORE_ACTIONS_FOR);
         expect(more).toMatchObject({ kind: "dialog-click", buttonTextPrefixArg: "harness-screen-3", namePrefix: true, noWait: true });
@@ -127,12 +127,15 @@ describe("dock-view の solo-filter の実行計画", () => {
         expect(steps[i + 1]).toMatchObject({ kind: "dialog-click", popup: true, buttonTextId: TEXT_ID_ROW_FULL_SCREEN, controlType: "MenuItem" });
         expect(steps[i + 2]).toMatchObject({ kind: "solo-sample", label: "focus" });
         expect(steps[i - 1]).toMatchObject({ kind: "solo-sample", label: "two-again" });
-        expect(steps[i + 3]).toMatchObject({ kind: "dialog-click", buttonTextId: TEXT_ID_FULL_SCREEN_RESTORE });
+        // 1 行目の [元に戻す] は、テスト用の OBS では未読のメッセージが 1 行目を占めて出ないので、行のメニューで戻す。
+        expect(steps[i + 3]).toMatchObject({ kind: "dialog-click", buttonTextId: TEXT_ID_ROW_MORE_ACTIONS_FOR, buttonTextPrefixArg: "harness-screen-3", namePrefix: true });
+        expect(steps[i + 4]).toMatchObject({ kind: "dialog-click", popup: true, buttonTextId: TEXT_ID_ROW_FULL_SCREEN, controlType: "MenuItem" });
+        expect(steps[i + 6]).toMatchObject({ kind: "solo-sample", label: "restored" });
     });
 
     it("名指す製品のテキストの id は ja-JP.ini にある", () => {
         const ini = readFileSync(JA_INI, "utf8");
-        for (const id of [TEXT_ID_ROW_MORE_ACTIONS_FOR, TEXT_ID_ROW_FULL_SCREEN, TEXT_ID_FULL_SCREEN_RESTORE]) expect(ini).toContain(id + "=");
+        for (const id of [TEXT_ID_ROW_MORE_ACTIONS_FOR, TEXT_ID_ROW_FULL_SCREEN]) expect(ini).toContain(id + "=");
     });
 });
 
@@ -165,19 +168,32 @@ describe("classifySoloFrame (撮った 1 枚の読み取り)", () => {
         expect(classifySoloFrame(onlyMarker, 0, W, H)).toMatchObject({ marker: true, full: false });
     });
 
-    it("ダミーの色のタイル、白の線、黒は、全面の 1 人と読まない (灰色だけを全面と読む)", () => {
+    it("ダミーの色のタイル、左下だけの白の線、黒は、全面の 1 人と読まない", () => {
         for (const rgb of [
             [122, 46, 46],
             [46, 122, 58],
             [46, 58, 122],
             [122, 106, 46],
-            [255, 255, 255],
             [0, 0, 0],
         ]) {
             expect(classifySoloFrame(frameOf(W, H, rgb, []), 0, W, H).full).toBe(false);
         }
+        const lineOnly = frameOf(W, H, [0, 0, 0], [{ rect: SOLO_FULL_PROBE_RECT, rgb: [255, 255, 255] }]);
+        expect(classifySoloFrame(lineOnly, 0, W, H).full).toBe(false);
         // 録画の圧縮で少し揺れた灰色は全面と読む。
         expect(classifySoloFrame(frameOf(W, H, [52, 46, 50], []), 0, W, H).full).toBe(true);
+    });
+
+    it("全面に描いた 1 人の映像の、同期のマーカーの白のフレーム (左下と右下が白) は全面と読む", () => {
+        const flash = frameOf(W, H, [255, 255, 255], [{ rect: SOLO_MARKER_RECT, rgb: SOLO_MARKER_RGB }]);
+        expect(classifySoloFrame(flash, 0, W, H)).toMatchObject({ marker: true, full: true });
+        // 圧縮で少し暗くなった白も入る。
+        expect(classifySoloFrame(frameOf(W, H, [236, 238, 234], []), 0, W, H).full).toBe(true);
+    });
+
+    it("2 人を上の枠に描いているときの白のフレームは、下の半分が空なので全面と読まない", () => {
+        const twoFlash = frameOf(W, H, [0, 0, 0], [{ rect: { x: 0, y: 0, w: 0.5, h: 0.5 }, rgb: [255, 255, 255] }, { rect: { x: 0.5, y: 0, w: 0.5, h: 0.5 }, rgb: [48, 48, 48] }]);
+        expect(classifySoloFrame(twoFlash, 0, W, H).full).toBe(false);
     });
 
     it("つないだ絵の列の 2 枚目を offset で読む", () => {
@@ -194,6 +210,11 @@ describe("classifySoloFrame (撮った 1 枚の読み取り)", () => {
         expect(SOLO_MARKER_RECT.y + SOLO_MARKER_RECT.h).toBeLessThan(0.5);
         expect(SOLO_FULL_PROBE_RECT.x + SOLO_FULL_PROBE_RECT.w).toBeLessThan(0.5);
         expect(SOLO_FULL_PROBE_RECT.y).toBeGreaterThan(0.5);
+        // 右下の白の判定の矩形は、下の半分の右で、名前のラベル (右下の隅) にかからない。
+        expect(SOLO_WHITE_PROBE_RECT.x).toBeGreaterThan(0.5);
+        expect(SOLO_WHITE_PROBE_RECT.y).toBeGreaterThan(0.5);
+        expect(SOLO_WHITE_PROBE_RECT.x + SOLO_WHITE_PROBE_RECT.w).toBeLessThan(0.8);
+        expect(SOLO_WHITE_PROBE_RECT.y + SOLO_WHITE_PROBE_RECT.h).toBeLessThan(0.8);
     });
 });
 

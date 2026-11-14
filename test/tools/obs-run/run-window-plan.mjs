@@ -4006,6 +4006,12 @@ export const SOLO_MARKER_RGB = [255, 0, 255];
 // キャンバスに対する割合の矩形。印は右上の隅 (2 人のときは右上の枠の映像の上)。
 export const SOLO_MARKER_RECT = { x: 0.85, y: 0.05, w: 0.1, h: 0.1 };
 export const SOLO_FULL_PROBE_RECT = { x: 0.35, y: 0.58, w: 0.1, h: 0.04 };
+// 右下の 4 等分の中の 2 つ目の矩形。テスト用の送信側は、同期のマーカーで数秒ごとに映像の全面を 3 フレーム白一色にする
+// (test/tools/harness/sender.ts の drawSyncWhiteFrame。画面のストリームごとに出て、止める設定はない)。1 人を全面に描いている間の
+// その 3 フレームは、左下の矩形が白になる。左下と右下の両方が白なら、全面に描いた 1 人の映像の白のフレームと読む。2 人を上の
+// 枠に描いているときは、下の半分は空 (黒) なので、白の映像のフレームでも両方が白にはならない。右下は名前のラベル (右下の隅) と
+// 印 (右上) に重ならない所に置く。
+export const SOLO_WHITE_PROBE_RECT = { x: 0.6, y: 0.7, w: 0.1, h: 0.04 };
 // 印の平均の色がマゼンタからこの距離 (RGB の差の 2 乗和の平方根) の内なら見えている。左下の矩形は、平均の明るさ (RGB の平均)
 // がこの範囲にあり、RGB の最大と最小の差がこの値より小さければ、送信側の映像の地の灰色 (#303030 は明るさ 48、差 0)。黒は 0 から
 // 2 程度、ダミーのタイルの色は差が 76、白の線は明るさ 255 で外れる。録画の圧縮で数ほど揺れても入る幅にする。
@@ -4013,6 +4019,8 @@ export const SOLO_MARKER_MAX_DISTANCE = 60;
 export const SOLO_FULL_MIN_LEVEL = 24;
 export const SOLO_FULL_MAX_LEVEL = 90;
 export const SOLO_FULL_MAX_CHROMA = 24;
+// 白のフレームと読む明るさの下限 (録画の圧縮で数ほど下がっても入る幅)。RGB の差は SOLO_FULL_MAX_CHROMA を使う。
+export const SOLO_WHITE_MIN_LEVEL = 230;
 export const SOLO_FILTER_N_SCREEN = 3;
 export const SOLO_FILTER_HARNESS_SECONDS = 300;
 export const SOLO_FILTER_CONNECT_WAIT_TIMEOUT_MS = 15000;
@@ -4030,7 +4038,6 @@ export const SOLO_RECORDING_WIDTH = 192;
 export const SOLO_RECORDING_HEIGHT = 108;
 export const TEXT_ID_ROW_MORE_ACTIONS_FOR = "cordmux.dock.more_actions_for.a11y";
 export const TEXT_ID_ROW_FULL_SCREEN = "cordmux.dock.row_full_screen.menu";
-export const TEXT_ID_FULL_SCREEN_RESTORE = "cordmux.dock.full_screen_restore.button";
 
 // ini の文字列の %1 までを value で埋めた前の部分 (後ろは捨てる)。読み上げの名前の形が人によって 2 つある行の [...] を、
 // 名前の始まりで探すために使う (dialog-click.ps1 -NamePrefix)。%1 がなければそのまま返す。
@@ -4069,14 +4076,20 @@ export function classifySoloFrame(frame, offset, width, height, opts) {
   const markerRect = o.markerRect || SOLO_MARKER_RECT;
   const probeRect = o.probeRect || SOLO_FULL_PROBE_RECT;
   const markerRgb = o.markerRgb || SOLO_MARKER_RGB;
+  const whiteRect = o.whiteRect || SOLO_WHITE_PROBE_RECT;
   const m = meanRgb(frame, offset, width, height, markerRect);
   const p = meanRgb(frame, offset, width, height, probeRect);
   const distance = Math.sqrt((m[0] - markerRgb[0]) ** 2 + (m[1] - markerRgb[1]) ** 2 + (m[2] - markerRgb[2]) ** 2);
   const level = (p[0] + p[1] + p[2]) / 3;
   const chroma = Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]);
+  const maxChroma = o.maxChroma ?? SOLO_FULL_MAX_CHROMA;
+  const grey = level > (o.minLevel ?? SOLO_FULL_MIN_LEVEL) && level < (o.maxLevel ?? SOLO_FULL_MAX_LEVEL) && chroma < maxChroma;
+  // 同期のマーカーの白のフレーム (SOLO_WHITE_PROBE_RECT の前のコメント)。左下と右下の両方が白のときだけ。
+  const isWhite = (rgb) => (rgb[0] + rgb[1] + rgb[2]) / 3 >= SOLO_WHITE_MIN_LEVEL && Math.max(...rgb) - Math.min(...rgb) < maxChroma;
+  const white = isWhite(p) && isWhite(meanRgb(frame, offset, width, height, whiteRect));
   return {
     marker: distance <= (o.maxDistance ?? SOLO_MARKER_MAX_DISTANCE),
-    full: level > (o.minLevel ?? SOLO_FULL_MIN_LEVEL) && level < (o.maxLevel ?? SOLO_FULL_MAX_LEVEL) && chroma < (o.maxChroma ?? SOLO_FULL_MAX_CHROMA),
+    full: grey || white,
     markerRgb: m.map((v) => Math.round(v)),
     probeLevel: Math.round(level * 10) / 10,
     probeChroma: Math.round(chroma * 10) / 10,
@@ -4268,7 +4281,22 @@ function soloFilterScenarioSteps(args) {
       // 同じフレームの食い違いは録画で見る。
       checkConsistency: false,
     }),
-    uiClickStep("ドックの 1 行目の [" + TEXT_ID_FULL_SCREEN_RESTORE + "] を押す", DOCK_WINDOW, TEXT_ID_FULL_SCREEN_RESTORE, { gate: true }),
+    // 戻すのも同じ行のメニューの [全画面で表示] (チェックが付いている項目を押すと元の配置に戻す。rules_dock.cpp の
+    // focus_menu_item)。1 行目の [元に戻す] は使わない。テスト用の OBS の 1 行目は未読のメッセージ (Vesktop が別の Vencord を
+    // 使っている) が占め、全画面の行は未読のメッセージより優先しないので、[元に戻す] が出ないため (decide_dock の show_user_choice)。
+    {
+      ...uiClickStep("参加者の行「" + p3 + "」の [...] を押してメニューを開く (全画面を元に戻す)", DOCK_WINDOW, TEXT_ID_ROW_MORE_ACTIONS_FOR, {
+        noWait: true,
+        namePrefix: true,
+        gate: true,
+      }),
+      buttonTextPrefixArg: p3,
+    },
+    uiClickStep("行のメニューの、チェックが付いた [" + TEXT_ID_ROW_FULL_SCREEN + "] を選ぶ (元の配置に戻す)", MENU_POPUP, TEXT_ID_ROW_FULL_SCREEN, {
+      controlType: "MenuItem",
+      noWait: true,
+      gate: true,
+    }),
     settle("元に戻す"),
     soloSampleStep("restored", "off", "全画面を元に戻した 2 人"),
     step("record-stop", "OBS の出力の録画を止める", { stream: false, tailSeconds: 0, label: SOLO_RECORDING_LABEL }),
