@@ -83,7 +83,7 @@ If the top line of the dock (this guide calls it the first line) starts with "Co
 2. With your main account, create and copy an invite link to the server you use for the call.
 3. In Vesktop, log out of your main account, and log in with the alt account. Select [+] in the server list, select [Join a Server], paste the invite link, and select [Join Server]. Depending on the server's settings, you may be asked to verify a phone number.
 4. In the official Discord app logged in with your main account, join the same call as the alt account.
-5. If your main account and the alt account are both in the call on the same PC, the call's sound also plays from Vesktop, and your voice is also sent to the call from the alt account. In that case, mute and deafen the alt account in Vesktop. Neither affects the screen shares and voices that cordmux receives.
+5. If your main account and the alt account are both in the call on the same PC, the call's sound also plays from Vesktop, and your voice is also sent to the call from the alt account. In that case, mute and deafen the alt account in Vesktop. Neither affects the screen shares and voices that cordmux receives. Screen share audio still plays from Vesktop when deafened, but while your main account is in the same call, cordmux keeps it from playing in Vesktop. This doesn't affect the audio that cordmux receives. To hear a screen share in Vesktop, right-click it in Vesktop and change its volume. While it's silent, the volume in that menu still shows the value you set before. Once you change it, the screen share plays at that volume until it ends. Discord's volume settings aren't changed.
 6. In the dock, select [Change] in the "Main" row at the top, and then choose your main account.
 
 This step is done when the "Main" row and the "Alt" row at the top of the dock show the account names and the call names. If the "Alt" row doesn't appear, see "[No Alt row in the dock](#no-alt-row-in-the-dock)" in Troubleshooting. If the dock shows "Your main account (name) isn't in this call", see "[The dock says your main account isn't in this call](#the-dock-says-your-main-account-isnt-in-this-call)" in Troubleshooting.
@@ -155,6 +155,14 @@ You can temporarily show just one person full screen, from the people in slots a
 - If you show someone who isn't in a slot full screen, cordmux starts receiving their screen share then, so it can take a few seconds to appear.
 - While one person is full screen, the other participants' voices and the cordmux recording don't stop.
 - If that person stops sharing or leaves the call, it goes back automatically.
+
+You can show text or an image only while the cordmux source shows just one person's video over the whole stream. For example, you can show "Looking back" only while you show a past stream full screen.
+
+- In OBS, create the source you want to show (text, an image, and so on), right-click it, open [Filters], and add "cordmux: Show Only When One Person" with [+] under [Effect Filters]. Put that source above the cordmux source in the source list. If it's below, the cordmux source covers it. Its position, size, and text style come from that source's properties and its place in the scene. You can add it to as many sources as you like.
+- It's shown while one person is shown with [Show Full Screen], and while only one person is in the slots (including when only the self slot is shown). When you switch to full screen, it appears once that person's video fills the stream.
+- It isn't shown while two or more people are in the slots, while video hasn't arrived yet, while nobody is shown, while placeholders are shown, or while the cordmux source isn't on the stream (in Studio Mode, on the [Program] side).
+- If OBS can't load cordmux, or if you hide this filter, the filter doesn't work and the source you added it to is always shown.
+- During a scene transition such as Fade, the source may also be shown in a scene that has no cordmux source. With Cut, it changes at the moment of switching.
 
 ### Checking the look with placeholders
 
@@ -347,7 +355,7 @@ To go back to a previous version, do the same steps with the zip file of that ve
 Don't delete the cordmux files until uninstalling is finished. If you delete them first, Vesktop puts the official Vencord where they were. If you did, see "[You deleted the cordmux folder before uninstalling](#you-deleted-the-cordmux-folder-before-uninstalling)" in Troubleshooting.
 
 1. Stop streaming, OBS recording, the replay buffer, the virtual camera, and cordmux recording, and quit Vesktop. Closing the Vesktop window doesn't quit it. Right-click the Vesktop icon in the notification area and select [Quit]. You can't uninstall while any of them is running.
-2. In OBS, select [Uninstall cordmux] from the [Tools] menu. "Uninstall cordmux?" appears. Read what will be deleted and what stays, and then select [Uninstall]. The "cordmux" source is deleted from all scene collections in OBS. If this confirmation doesn't appear, the [About] page opens. The reason you can't uninstall is shown below the [Uninstall cordmux] button.
+2. In OBS, select [Uninstall cordmux] from the [Tools] menu. "Uninstall cordmux?" appears. Read what will be deleted and what stays, and then select [Uninstall]. The "cordmux" source is deleted from all scene collections in OBS, and "cordmux: Show Only When One Person" is removed from the sources you added it to. Those sources aren't deleted and are always shown after uninstalling, so delete them if you don't need them. If this confirmation doesn't appear, the [About] page opens. The reason you can't uninstall is shown below the [Uninstall cordmux] button.
 3. "Close OBS, then delete the cordmux folder" appears. Note the location under "Folder to delete:" or select [Open Folder Location]. Then close OBS, and delete that folder. If you created folders in step 2 of "Installation", also delete those folders once they're empty. If "Couldn't finish uninstalling" appears, see "[Uninstalling stopped partway](#uninstalling-stopped-partway)" in Troubleshooting.
 
 ## Compatibility
