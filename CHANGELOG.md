@@ -1,5 +1,21 @@
 # 変更履歴 (Changelog)
 
+## 1.0.4
+
+### ja
+
+#### 新機能
+
+- フィルタ「cordmux: 1人のときだけ表示」を追加しました。付けたソースは、cordmuxのソースが1人の映像だけを配信画面全体に映している間だけ表示されます。たとえば、過去の配信を全画面で映している間だけ「振り返り中」と表示できます。
+- サブアカウントで使うとき、メインアカウントが同じ通話にいる間は、Vesktopで画面共有の音声が鳴らないようにしました。cordmuxが受信する音声には影響しません。Vesktopで聞きたいときは、画面共有を右クリックして音量を動かします。Discordの音量の設定は変えません。
+
+### en
+
+#### New Features
+
+- Added the "cordmux: Show Only When One Person" filter. A source with this filter is shown only while the cordmux source shows one person's video across the whole stream, such as to show "Looking back" only while a past stream is shown full screen
+- Stopped screen share audio from playing in Vesktop while your main account is in the same call when you use an alt account. This doesn't affect the audio that cordmux receives. To hear a screen share in Vesktop, right-click it and change its volume. Discord's volume settings aren't changed
+
 ## 1.0.3
 
 ### ja
